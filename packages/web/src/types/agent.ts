@@ -11,6 +11,7 @@ export interface AgentListItem {
   status: AgentStatus
   teamIds: string[]
   model?: string
+  currentTask?: string
 }
 
 export interface AgentIdentity {
@@ -19,6 +20,8 @@ export interface AgentIdentity {
   theme?: string
   description?: string
   version?: string
+  vibe?: string
+  greeting?: string
 }
 
 export interface AgentSoul {
@@ -27,6 +30,10 @@ export interface AgentSoul {
   values?: string
   background?: string
   quirks?: string
+  vibe?: string
+  coreTruths?: string
+  boundaries?: string
+  continuity?: string
 }
 
 export interface AgentRules {
@@ -34,6 +41,10 @@ export interface AgentRules {
   constraints?: string[]
   safe_operations?: string[]
   tools?: string[]
+  startupFlow?: string
+  memoryRules?: string
+  securityRules?: string
+  toolProtocols?: string
 }
 
 export interface AgentConfig {

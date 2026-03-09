@@ -3,6 +3,7 @@
 // Enhanced with: Notification, notification/approval_update event types
 
 export interface SessionMessage {
+  id?: string
   role: 'user' | 'assistant' | 'system'
   content: string
   timestamp?: string
@@ -13,7 +14,9 @@ export interface CommunicationEvent {
   fromAgentId: string
   toAgentId: string
   type: 'request' | 'response' | 'broadcast'
+  eventType?: 'request' | 'response' | 'broadcast'
   content: string
+  message?: string
   timestamp: string
 }
 

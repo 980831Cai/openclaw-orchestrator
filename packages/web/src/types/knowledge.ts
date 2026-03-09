@@ -21,4 +21,5 @@ export interface KnowledgeSearchResult {
   score: number
   sourceType: string
   sourcePath: string
+  source?: string
 }

@@ -3,7 +3,7 @@
 
 export type TeamTheme = 'tech-lab' | 'creative-studio' | 'command-center' | 'default'
 
-export type ScheduleMode = 'round-robin' | 'priority' | 'time-based'
+export type ScheduleMode = 'round-robin' | 'priority' | 'time-based' | 'custom'
 
 export interface ScheduleEntry {
   agentId: string
@@ -13,6 +13,7 @@ export interface ScheduleEntry {
 }
 
 export interface TeamSchedule {
+  type: ScheduleMode
   mode: ScheduleMode
   entries: ScheduleEntry[]
   interval?: number
@@ -38,6 +39,7 @@ export interface TeamListItem {
   memberCount: number
   createdAt: string
   members?: TeamMember[]
+  activeTaskCount?: number
 }
 
 export interface Team {
@@ -50,4 +52,5 @@ export interface Team {
   createdAt: string
   members: TeamMember[]
   scheduleConfig?: TeamSchedule
+  schedule?: TeamSchedule
 }
