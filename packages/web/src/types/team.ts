@@ -10,6 +10,9 @@ export interface ScheduleEntry {
   order?: number
   priority?: number
   timeSlot?: string
+  startTime?: string
+  endTime?: string
+  customRule?: string
 }
 
 export interface TeamSchedule {

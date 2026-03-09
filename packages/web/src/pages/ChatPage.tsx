@@ -207,7 +207,7 @@ function MessageBubble({ message, agent }: { message: SessionMessage; agent: Age
           {message.content}
         </div>
         <p className={cn('text-white/15 text-[9px] mt-1 px-1', isUser && 'text-right')}>
-          {new Date(message.timestamp).toLocaleTimeString()}
+          {message.timestamp ? new Date(message.timestamp).toLocaleTimeString() : ''}
         </p>
       </div>
     </div>

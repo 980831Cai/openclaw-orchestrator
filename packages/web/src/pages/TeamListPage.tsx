@@ -91,7 +91,7 @@ function RoomDoorCard({ team, onClick }: { team: TeamListItem; onClick: () => vo
   return (
     <button onClick={onClick} className={cn('group relative rounded-2xl p-6 text-left transition-all duration-300 cursor-pointer', 'bg-gradient-to-br', style.bg, 'border', style.accent, 'hover:scale-[1.02] hover:glow-purple')}>
       {/* Room door shape */}
-      <div className="absolute top-3 right-3 w-3 h-3 rounded-full transition-colors" style={{ backgroundColor: team.activeTaskCount > 0 ? '#F59E0B' : '#64748B' }} />
+      <div className="absolute top-3 right-3 w-3 h-3 rounded-full transition-colors" style={{ backgroundColor: (team.activeTaskCount ?? 0) > 0 ? '#F59E0B' : '#64748B' }} />
 
       <div className="flex items-start gap-4">
         <div className="w-14 h-14 rounded-xl bg-cyber-bg/50 border border-white/10 flex items-center justify-center">
@@ -105,7 +105,7 @@ function RoomDoorCard({ team, onClick }: { team: TeamListItem; onClick: () => vo
 
       <div className="flex items-center justify-between mt-5 pt-4 border-t border-white/5">
         <div className="flex -space-x-2">
-          {team.members.slice(0, 5).map((m, i) => (
+          {(team.members ?? []).slice(0, 5).map((m, i) => (
             <div key={i} className="w-7 h-7 rounded-full bg-cyber-panel border-2 border-cyber-bg flex items-center justify-center text-xs">
               {m.emoji}
             </div>
@@ -118,7 +118,7 @@ function RoomDoorCard({ team, onClick }: { team: TeamListItem; onClick: () => vo
         </div>
         <div className="flex items-center gap-3 text-xs text-white/40">
           <span>{team.memberCount} 成员</span>
-          {team.activeTaskCount > 0 && (
+          {(team.activeTaskCount ?? 0) > 0 && (
             <span className="px-2 py-0.5 rounded-full bg-cyber-amber/20 text-cyber-amber">{team.activeTaskCount} 任务</span>
           )}
         </div>

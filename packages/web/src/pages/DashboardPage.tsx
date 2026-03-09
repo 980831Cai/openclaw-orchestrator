@@ -170,7 +170,7 @@ function TeamDoorMini({ team, onClick }: { team: TeamListItem; onClick: () => vo
         <p className="text-white text-sm font-medium truncate group-hover:text-cyber-lavender transition-colors">{team.name}</p>
         <p className="text-white/30 text-[10px]">{team.memberCount} 成员</p>
       </div>
-      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: team.activeTaskCount > 0 ? '#F59E0B' : '#475569' }} />
+      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: (team.activeTaskCount ?? 0) > 0 ? '#F59E0B' : '#475569' }} />
     </button>
   )
 }
@@ -185,12 +185,12 @@ function EventItem({ event }: { event: CommunicationEvent }) {
 
   return (
     <div className="flex items-start gap-2 text-[10px] animate-slide-in">
-      <div className={cn('w-1.5 h-1.5 rounded-full mt-1 flex-shrink-0', typeColors[event.eventType] || 'bg-white/30')} />
+      <div className={cn('w-1.5 h-1.5 rounded-full mt-1 flex-shrink-0', typeColors[event.eventType ?? event.type] || 'bg-white/30')} />
       <div className="flex-1 min-w-0">
         <span className="text-white/50">{event.fromAgentId}</span>
         <span className="text-white/20 mx-1">→</span>
         <span className="text-white/50">{event.toAgentId}</span>
-        <p className="text-white/30 truncate">{event.message}</p>
+        <p className="text-white/30 truncate">{event.message ?? event.content}</p>
       </div>
       <span className="text-white/15 flex-shrink-0">{new Date(event.timestamp).toLocaleTimeString()}</span>
     </div>

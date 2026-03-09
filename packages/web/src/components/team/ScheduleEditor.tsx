@@ -13,6 +13,7 @@ interface ScheduleEditorProps {
 
 const MODE_CONFIG: Record<ScheduleMode, { icon: typeof RotateCcw; label: string; desc: string; color: string }> = {
   'round-robin': { icon: RotateCcw, label: '轮询', desc: '按顺序依次分配任务', color: 'cyber-green' },
+  'priority': { icon: Calendar, label: '优先级', desc: '按优先级分配任务', color: 'cyber-blue' },
   'time-based': { icon: Clock, label: '时段', desc: '按时间段安排工作', color: 'cyber-amber' },
   'custom': { icon: Settings2, label: '自定义', desc: '自定义分配规则', color: 'cyber-violet' },
 }

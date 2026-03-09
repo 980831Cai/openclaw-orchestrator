@@ -144,10 +144,10 @@ function CommEventRow({ event }: { event: CommunicationEvent }) {
 
   return (
     <div className="flex items-center gap-2 py-1 px-2 rounded-md hover:bg-white/5 transition-colors text-[10px]">
-      <span className={cn('font-medium', colors[event.eventType])}>{event.fromAgentId}</span>
+      <span className={cn('font-medium', colors[event.eventType ?? event.type])}>{event.fromAgentId}</span>
       <span className="text-white/15">→</span>
       <span className="text-white/50">{event.toAgentId}</span>
-      <span className="text-white/20 truncate flex-1">{event.message}</span>
+      <span className="text-white/20 truncate flex-1">{event.message ?? event.content}</span>
     </div>
   )
 }
