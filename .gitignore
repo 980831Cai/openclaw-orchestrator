@@ -1,0 +1,40 @@
+# ─── Python ───
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+env/
+
+# ─── Node / Frontend ───
+node_modules/
+packages/web/dist/
+packages/web/.vite/
+*.tsbuildinfo
+
+# ─── IDE ───
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# ─── Database ───
+*.db
+*.sqlite
+*.sqlite3
+
+# ─── Logs ───
+*.log
+
+# ─── CodeBuddy ───
+.codebuddy/
+
+# ─── Environment ───
+.env
+.env.local
+.env.*.local

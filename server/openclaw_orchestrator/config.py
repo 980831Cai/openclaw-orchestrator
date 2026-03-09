@@ -1,0 +1,35 @@
+"""Application configuration."""
+
+import os
+from pathlib import Path
+
+from pydantic import Field
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    """Application settings, loaded from environment variables."""
+
+    port: int = Field(default=3721, alias="PORT")
+    openclaw_home: str = Field(
+        default_factory=lambda: os.environ.get(
+            "OPENCLAW_HOME", str(Path.home() / ".openclaw")
+        ),
+    )
+    cors_origin: str = Field(default="http://localhost:5173", alias="CORS_ORIGIN")
+
+    @property
+    def db_path(self) -> str:
+        return os.environ.get(
+            "DB_PATH", str(Path(self.openclaw_home) / "orchestrator.sqlite")
+        )
+
+    model_config = {"env_prefix": "", "extra": "ignore"}
+
+
+# Singleton instance
+settings = Settings()
+
+# Constants matching shared/constants
+DEFAULT_SERVER_PORT = 3721
+DEFAULT_WS_PORT = 3722
