@@ -9,6 +9,18 @@ description = "Multi-Agent Visual Orchestration Plugin for OpenClaw"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
+keywords = ["agent", "multi-agent", "workflow", "orchestration", "openclaw", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Framework :: FastAPI",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
@@ -25,7 +37,14 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24.0",
     "httpx>=0.27.0",
+    "build>=1.0.0",
+    "twine>=5.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/980831Cai/openclaw-orchestrator"
+Repository = "https://github.com/980831Cai/openclaw-orchestrator"
+Issues = "https://github.com/980831Cai/openclaw-orchestrator/issues"
 
 [project.scripts]
 openclaw-orchestrator = "openclaw_orchestrator.cli:main"
@@ -33,5 +52,6 @@ openclaw-orchestrator = "openclaw_orchestrator.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["openclaw_orchestrator"]
 
-[tool.hatch.build.targets.wheel.shared-data]
-"static" = "openclaw_orchestrator/static"
+# 将前端构建产物打包进 wheel（static/ 目录必须在构建前已存在）
+[tool.hatch.build.targets.wheel.force-include]
+"openclaw_orchestrator/static" = "openclaw_orchestrator/static"

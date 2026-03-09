@@ -1,0 +1,24 @@
+version: "3.8"
+
+services:
+  orchestrator:
+    build: .
+    container_name: openclaw-orchestrator
+    ports:
+      - "3721:3721"
+    volumes:
+      - openclaw-data:/root/.openclaw
+    environment:
+      - PORT=3721
+      - OPENCLAW_HOME=/root/.openclaw
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3721/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  openclaw-data:
+    driver: local

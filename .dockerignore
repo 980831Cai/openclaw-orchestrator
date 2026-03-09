@@ -1,0 +1,34 @@
+# Git
+.git
+.gitignore
+
+# Node
+packages/web/node_modules
+packages/web/dist
+
+# Python
+server/__pycache__
+server/**/__pycache__
+server/*.egg-info
+server/dist
+server/build
+server/.venv
+
+# IDE
+.vscode
+.idea
+*.swp
+.DS_Store
+
+# Data
+*.db
+*.sqlite
+*.sqlite3
+
+# CodeBuddy
+.codebuddy
+
+# Docs
+*.md
+!server/README.md
+LICENSE

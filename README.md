@@ -112,8 +112,12 @@ openclaw-orchestrator/
 │
 ├── scripts/
 │   ├── build_frontend.sh            # 构建前端 → 复制到 static/
+│   ├── build_and_publish.sh         # 构建 wheel + 发布 PyPI
+│   ├── deploy.sh                    # 服务器一键部署
 │   └── dev.sh                       # 开发模式启动脚本
 │
+├── Dockerfile                       # 多阶段构建镜像
+├── docker-compose.yml               # Docker Compose 一键启动
 └── package.json                     # 根配置（开发脚本）
 ```
 
@@ -125,42 +129,62 @@ openclaw-orchestrator/
 
 ## 🚀 快速开始
 
-### 环境要求
-
-| 组件 | 版本 |
-|------|------|
-| Python | ≥ 3.10 |
-| Node.js | ≥ 18（仅开发/构建前端需要） |
-| pnpm | ≥ 8（仅开发/构建前端需要） |
-
-### 安装（生产模式）
+### 方式一：pip 安装（推荐）
 
 ```bash
-# 1. 克隆项目
-git clone https://git.woa.com/lurkacai/openclaw-orchestrator.git
-cd openclaw-orchestrator
-
-# 2. 安装 Python 后端
-cd server
-pip install -e .
-
-# 3. 构建前端（一次性）
-cd ..
-bash scripts/build_frontend.sh
-
-# 4. 启动服务
-openclaw-orchestrator serve
-```
-
-服务启动后访问 **http://localhost:3721** 即可使用。
-
-### 安装（pip 一键安装）
-
-```bash
-# 未来支持
 pip install openclaw-orchestrator
 openclaw-orchestrator serve
 ```
+
+访问 **http://localhost:3721** 即可使用。
+
+### 方式二：Docker
+
+```bash
+docker run -d \
+  --name openclaw-orchestrator \
+  -p 3721:3721 \
+  -v ~/.openclaw:/root/.openclaw \
+  980831cai/openclaw-orchestrator
+```
+
+### 方式三：Docker Compose
+
+```bash
+git clone https://github.com/980831Cai/openclaw-orchestrator.git
+cd openclaw-orchestrator
+docker compose up -d
+```
+
+### 方式四：源码安装
+
+```bash
+git clone https://github.com/980831Cai/openclaw-orchestrator.git
+cd openclaw-orchestrator
+
+# 构建前端（需要 Node.js 18+ 和 pnpm）
+bash scripts/build_frontend.sh
+
+# 安装后端
+cd server && pip install -e . && cd ..
+
+# 启动
+openclaw-orchestrator serve
+```
+
+### 服务器一键部署
+
+在 Linux 服务器上（如腾讯云轻量、CVM）：
+
+```bash
+git clone https://github.com/980831Cai/openclaw-orchestrator.git
+cd openclaw-orchestrator
+sudo bash scripts/deploy.sh
+```
+
+脚本自动完成：环境检测 → 依赖安装 → 前端构建 → systemd 服务注册 → 开机自启
+
+> ⚠️ 外网访问请确保云服务器安全组放行 **TCP 3721** 端口
 
 ---
 
