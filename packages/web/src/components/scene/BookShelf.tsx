@@ -1,4 +1,3 @@
-import { BookOpen } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface BookShelfProps {
@@ -6,11 +5,11 @@ interface BookShelfProps {
 }
 
 const BOOK_COLORS = [
-  'from-indigo-500 to-purple-600',
-  'from-cyan-500 to-blue-600',
-  'from-amber-500 to-orange-600',
-  'from-emerald-500 to-teal-600',
-  'from-rose-500 to-pink-600',
+  { from: '#6366F1', to: '#4F46E5' },
+  { from: '#8B5CF6', to: '#7C3AED' },
+  { from: '#EC4899', to: '#DB2777' },
+  { from: '#06B6D4', to: '#0891B2' },
+  { from: '#F59E0B', to: '#D97706' },
 ]
 
 export function BookShelf({ teamId }: BookShelfProps) {
@@ -19,39 +18,56 @@ export function BookShelf({ teamId }: BookShelfProps) {
   return (
     <div className="relative group cursor-pointer">
       <div className={cn(
-        'flex items-end gap-1 px-3 py-2 rounded-xl transition-all duration-300',
-        'bg-cyber-panel/40 border border-white/5',
-        'group-hover:border-cyber-cyan/30 group-hover:scale-105'
+        'flex items-end gap-2 px-4 py-2.5 rounded-2xl transition-all duration-300',
+        'cartoon-card',
       )}>
-        {/* Shelf icon */}
-        <div className="flex items-center gap-1.5 mr-2">
-          <BookOpen className="w-3.5 h-3.5 text-cyber-cyan/60" />
-          <span className="text-white/30 text-[10px] font-semibold">知识库</span>
+        {/* Shelf label */}
+        <div className="flex items-center gap-1.5 mr-1">
+          <span className="text-sm">📚</span>
+          <span className="text-white/30 text-[10px] font-bold">知识库</span>
         </div>
 
-        {/* Book spines */}
-        <div className="flex items-end gap-0.5">
-          {[...Array(Math.min(bookCount, 5))].map((_, i) => (
-            <div
-              key={i}
-              className={cn(
-                'w-2 rounded-t-sm bg-gradient-to-t transition-all duration-300',
-                BOOK_COLORS[i % BOOK_COLORS.length],
-                'group-hover:translate-y-[-2px]'
-              )}
-              style={{
-                height: `${14 + (i % 3) * 4}px`,
-                transitionDelay: `${i * 50}ms`,
-                opacity: 0.6,
-              }}
-            />
-          ))}
+        {/* Book spines — cartoon style with rounded tops */}
+        <div className="flex items-end gap-[3px]">
+          {[...Array(Math.min(bookCount, 5))].map((_, i) => {
+            const color = BOOK_COLORS[i % BOOK_COLORS.length]
+            const heights = [18, 22, 16, 20, 17]
+            return (
+              <div
+                key={i}
+                className="relative rounded-t-sm transition-all duration-300 group-hover:translate-y-[-3px]"
+                style={{
+                  width: '6px',
+                  height: `${heights[i % heights.length]}px`,
+                  background: `linear-gradient(180deg, ${color.from}80, ${color.to}60)`,
+                  transitionDelay: `${i * 60}ms`,
+                  borderRadius: '2px 2px 0 0',
+                }}
+              >
+                {/* Book spine detail line */}
+                <div
+                  className="absolute top-1 left-1/2 -translate-x-1/2 w-[2px] rounded-full"
+                  style={{
+                    height: '3px',
+                    background: `${color.from}`,
+                    opacity: 0.5,
+                  }}
+                />
+              </div>
+            )
+          })}
         </div>
 
+        {/* Count badge */}
         {bookCount > 0 && (
-          <span className="text-white/20 text-[9px] ml-1">{bookCount}</span>
+          <span className="text-white/15 text-[9px] ml-1 px-1 py-0.5 rounded bg-white/3">
+            {bookCount}
+          </span>
         )}
       </div>
+
+      {/* Shelf edge — wood-like bottom line */}
+      <div className="absolute -bottom-0.5 left-2 right-2 h-[2px] rounded-full bg-amber-900/10" />
     </div>
   )
 }

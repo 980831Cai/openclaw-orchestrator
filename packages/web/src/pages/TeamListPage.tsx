@@ -1,19 +1,20 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Search, Users, DoorOpen } from 'lucide-react'
+import { Plus, Search, Users, DoorOpen, ArrowRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { AgentAvatar } from '@/components/avatar/AgentAvatar'
+import { EmptyState } from '@/components/brand/EmptyState'
 import { useTeams } from '@/hooks/use-teams'
 import { cn } from '@/lib/utils'
 import type { TeamListItem, TeamTheme } from '@/types'
 
 const THEME_STYLES: Record<TeamTheme, { bg: string; accent: string; label: string }> = {
-  'tech-lab': { bg: 'from-indigo-900/20 to-purple-900/10', accent: 'border-indigo-500/30', label: '科技实验室' },
-  'creative-studio': { bg: 'from-orange-900/20 to-amber-900/10', accent: 'border-orange-500/30', label: '创意工作室' },
-  'command-center': { bg: 'from-slate-900/30 to-gray-900/20', accent: 'border-slate-400/30', label: '指挥中心' },
-  'default': { bg: 'from-cyber-purple/10 to-cyber-violet/5', accent: 'border-cyber-purple/20', label: '标准办公室' },
+  'tech-lab': { bg: 'from-indigo-900/20 to-purple-900/10', accent: 'border-indigo-500/20', label: '科技实验室' },
+  'creative-studio': { bg: 'from-orange-900/20 to-amber-900/10', accent: 'border-orange-500/20', label: '创意工作室' },
+  'command-center': { bg: 'from-slate-900/30 to-gray-900/20', accent: 'border-slate-400/20', label: '指挥中心' },
+  'default': { bg: 'from-cyber-purple/10 to-cyber-violet/5', accent: 'border-cyber-purple/15', label: '标准办公室' },
 }
 
 export function TeamListPage() {
@@ -72,10 +73,10 @@ export function TeamListPage() {
       </div>
 
       {filtered.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-32">
-          <DoorOpen className="h-20 w-20 text-white/10 mb-4" />
-          <p className="text-white/30 text-lg">{teams.length === 0 ? '还没有工作室，创建一个吧' : '没有匹配的工作室'}</p>
-        </div>
+        <EmptyState
+          scene={teams.length === 0 ? 'no-teams' : 'no-results'}
+          title={teams.length === 0 ? undefined : '没有匹配的工作室'}
+        />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filtered.map((team) => <RoomDoorCard key={team.id} team={team} onClick={() => navigate(`/teams/${team.id}`)} />)}
@@ -87,40 +88,46 @@ export function TeamListPage() {
 
 function RoomDoorCard({ team, onClick }: { team: TeamListItem; onClick: () => void }) {
   const style = THEME_STYLES[team.theme] || THEME_STYLES.default
+  const hasActivity = (team.activeTaskCount ?? 0) > 0
 
   return (
-    <button onClick={onClick} className={cn('group relative rounded-2xl p-6 text-left transition-all duration-300 cursor-pointer', 'bg-gradient-to-br', style.bg, 'border', style.accent, 'hover:scale-[1.02] hover:glow-purple')}>
-      {/* Room door shape */}
-      <div className="absolute top-3 right-3 w-3 h-3 rounded-full transition-colors" style={{ backgroundColor: (team.activeTaskCount ?? 0) > 0 ? '#F59E0B' : '#64748B' }} />
+    <button onClick={onClick} className={cn('group relative rounded-2xl p-6 text-left transition-all duration-300 cursor-pointer cartoon-card', hasActivity && 'border-cyber-amber/20')}>
+      {/* Activity indicator */}
+      <div className="absolute top-3 right-3 flex items-center gap-1.5">
+        {hasActivity && (
+          <span className="px-1.5 py-0.5 rounded-md bg-cyber-amber/10 text-cyber-amber text-[9px] border border-cyber-amber/20 font-medium">
+            {team.activeTaskCount} 任务
+          </span>
+        )}
+        <div className={cn('w-2 h-2 rounded-full', hasActivity ? 'bg-cyber-amber animate-pulse' : 'bg-white/10')} />
+      </div>
 
       <div className="flex items-start gap-4">
-        <div className="w-14 h-14 rounded-xl bg-cyber-bg/50 border border-white/10 flex items-center justify-center">
-          <Users className="h-6 w-6 text-cyber-lavender" />
+        <div className={cn('w-14 h-14 rounded-xl flex items-center justify-center border border-white/5', hasActivity ? 'bg-cyber-amber/10' : 'bg-white/5')}>
+          <Users className={cn('h-6 w-6', hasActivity ? 'text-cyber-amber' : 'text-cyber-lavender/60')} />
         </div>
         <div className="flex-1 min-w-0">
-          <h3 className="text-white font-bold text-lg truncate">{team.name}</h3>
-          <p className="text-white/30 text-sm mt-1 line-clamp-2">{team.description || '暂无描述'}</p>
+          <h3 className="text-white/90 font-bold text-lg truncate group-hover:text-white transition-colors">{team.name}</h3>
+          <p className="text-white/25 text-sm mt-1 line-clamp-2">{team.description || '暂无描述'}</p>
         </div>
       </div>
 
       <div className="flex items-center justify-between mt-5 pt-4 border-t border-white/5">
         <div className="flex -space-x-2">
           {(team.members ?? []).slice(0, 5).map((m, i) => (
-            <div key={i} className="w-7 h-7 rounded-full bg-cyber-panel border-2 border-cyber-bg flex items-center justify-center text-xs">
-              {m.emoji}
+            <div key={i} className="w-7 h-7 rounded-full bg-cyber-panel border-2 border-cyber-bg flex items-center justify-center text-xs overflow-hidden">
+              <AgentAvatar emoji={m.emoji || '🤖'} theme={m.theme} size="sm" />
             </div>
           ))}
           {team.memberCount > 5 && (
-            <div className="w-7 h-7 rounded-full bg-cyber-panel border-2 border-cyber-bg flex items-center justify-center text-[10px] text-white/50">
+            <div className="w-7 h-7 rounded-full bg-cyber-panel border-2 border-cyber-bg flex items-center justify-center text-[10px] text-white/40">
               +{team.memberCount - 5}
             </div>
           )}
         </div>
-        <div className="flex items-center gap-3 text-xs text-white/40">
-          <span>{team.memberCount} 成员</span>
-          {(team.activeTaskCount ?? 0) > 0 && (
-            <span className="px-2 py-0.5 rounded-full bg-cyber-amber/20 text-cyber-amber">{team.activeTaskCount} 任务</span>
-          )}
+        <div className="flex items-center gap-1 text-white/15 group-hover:text-white/30 transition-colors">
+          <span className="text-xs">{team.memberCount} 成员</span>
+          <ArrowRight className="w-3 h-3" />
         </div>
       </div>
     </button>

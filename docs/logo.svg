@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <defs>
+    <radialGradient id="paw-grad" cx="45%" cy="40%">
+      <stop offset="0%" stop-color="#A78BFA" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#6366F1" stop-opacity="0.8"/>
+    </radialGradient>
+    <radialGradient id="pad-glow" cx="50%" cy="50%">
+      <stop offset="0%" stop-color="#C4B5FD" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#8B5CF6" stop-opacity="0.3"/>
+    </radialGradient>
+    <filter id="circuit-glow">
+      <feGaussianBlur stdDeviation="1"/>
+    </filter>
+  </defs>
+
+  <!-- Paw body (palm) -->
+  <ellipse cx="50" cy="58" rx="28" ry="24" fill="url(#paw-grad)" stroke="#7C3AED" stroke-width="1.5" stroke-opacity="0.4"/>
+  <ellipse cx="44" cy="50" rx="10" ry="6" fill="white" opacity="0.08"/>
+
+  <!-- Toe beans (4 toes) -->
+  <ellipse cx="26" cy="38" rx="10" ry="12" fill="url(#paw-grad)" stroke="#7C3AED" stroke-width="1.2" stroke-opacity="0.3"/>
+  <ellipse cx="40" cy="30" rx="9" ry="11" fill="url(#paw-grad)" stroke="#7C3AED" stroke-width="1.2" stroke-opacity="0.3"/>
+  <ellipse cx="58" cy="30" rx="9" ry="11" fill="url(#paw-grad)" stroke="#7C3AED" stroke-width="1.2" stroke-opacity="0.3"/>
+  <ellipse cx="72" cy="38" rx="10" ry="12" fill="url(#paw-grad)" stroke="#7C3AED" stroke-width="1.2" stroke-opacity="0.3"/>
+
+  <!-- Paw pads (pink) -->
+  <ellipse cx="26" cy="38" rx="5" ry="6" fill="url(#pad-glow)"/>
+  <ellipse cx="40" cy="31" rx="4.5" ry="5.5" fill="url(#pad-glow)"/>
+  <ellipse cx="58" cy="31" rx="4.5" ry="5.5" fill="url(#pad-glow)"/>
+  <ellipse cx="72" cy="38" rx="5" ry="6" fill="url(#pad-glow)"/>
+  <ellipse cx="50" cy="60" rx="12" ry="9" fill="url(#pad-glow)"/>
+
+  <!-- Digital circuit lines (tech feel) -->
+  <g filter="url(#circuit-glow)" opacity="0.5">
+    <line x1="38" y1="55" x2="42" y2="42" stroke="#C4B5FD" stroke-width="0.8" stroke-linecap="round"/>
+    <line x1="42" y1="42" x2="50" y2="42" stroke="#C4B5FD" stroke-width="0.8" stroke-linecap="round"/>
+    <line x1="62" y1="55" x2="58" y2="42" stroke="#C4B5FD" stroke-width="0.8" stroke-linecap="round"/>
+    <line x1="50" y1="65" x2="50" y2="70" stroke="#C4B5FD" stroke-width="0.8" stroke-linecap="round"/>
+    <circle cx="42" cy="42" r="1.2" fill="#C4B5FD"/>
+    <circle cx="50" cy="42" r="1.2" fill="#C4B5FD"/>
+    <circle cx="50" cy="70" r="1.2" fill="#C4B5FD"/>
+  </g>
+
+  <!-- Antenna (online indicator) -->
+  <line x1="50" y1="20" x2="50" y2="10" stroke="#A78BFA" stroke-width="2" stroke-linecap="round" opacity="0.6"/>
+  <circle cx="50" cy="8" r="3" fill="#22C55E" opacity="0.8"/>
+  <circle cx="50" cy="8" r="5" fill="none" stroke="#22C55E" stroke-width="0.5" opacity="0.3"/>
+
+  <!-- Happy face (^_^) -->
+  <path d="M41 52 Q44 49 47 52" fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>
+  <path d="M53 52 Q56 49 59 52" fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>
+  <path d="M46 59 Q50 62 54 59" fill="none" stroke="white" stroke-width="1" stroke-linecap="round" opacity="0.4"/>
+</svg>

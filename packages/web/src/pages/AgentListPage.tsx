@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Search, Bot } from 'lucide-react'
+import { Plus, Search, Bot, LayoutGrid, List } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -11,6 +11,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { AgentAvatar } from '@/components/avatar/AgentAvatar'
+import { EmptyState } from '@/components/brand/EmptyState'
 import { useAgents } from '@/hooks/use-agents'
 import { cn } from '@/lib/utils'
 import type { AgentListItem } from '@/types'
@@ -20,6 +21,7 @@ export function AgentListPage() {
   const [search, setSearch] = useState('')
   const [newName, setNewName] = useState('')
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -47,23 +49,39 @@ export function AgentListPage() {
             <Bot className="h-8 w-8 text-cyber-violet" />
             人员档案
           </h1>
-          <p className="text-white/40 mt-1">管理和配置你的 AI Agent 团队</p>
+          <p className="text-white/30 mt-1 text-sm">管理和配置你的 AI Agent 团队</p>
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
+          {/* View toggle */}
+          <div className="flex items-center rounded-xl bg-white/5 border border-white/5 p-0.5">
+            <button
+              onClick={() => setViewMode('grid')}
+              className={cn('p-1.5 rounded-lg transition-colors cursor-pointer', viewMode === 'grid' ? 'bg-cyber-purple/20 text-white' : 'text-white/25 hover:text-white/50')}
+            >
+              <LayoutGrid className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => setViewMode('list')}
+              className={cn('p-1.5 rounded-lg transition-colors cursor-pointer', viewMode === 'list' ? 'bg-cyber-purple/20 text-white' : 'text-white/25 hover:text-white/50')}
+            >
+              <List className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-white/30" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-white/20" />
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="搜索 Agent..."
-              className="pl-10 w-64 bg-cyber-surface/50 border-white/10 text-white placeholder:text-white/30"
+              className="pl-10 w-56 bg-white/5 border-white/8 text-white placeholder:text-white/20 rounded-xl"
             />
           </div>
 
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
             <DialogTrigger asChild>
-              <Button className="bg-gradient-to-r from-cyber-purple to-cyber-violet hover:from-cyber-purple/90 hover:to-cyber-violet/90 glow-purple">
+              <Button className="bg-gradient-to-r from-cyber-purple to-cyber-violet hover:from-cyber-purple/90 hover:to-cyber-violet/90 rounded-xl">
                 <Plus className="h-4 w-4 mr-2" />
                 创建 Agent
               </Button>
@@ -93,18 +111,22 @@ export function AgentListPage() {
         </div>
       </div>
 
-      {/* Agent Grid */}
+      {/* Agent Grid / List */}
       {filtered.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-32">
-          <Bot className="h-20 w-20 text-white/10 mb-4" />
-          <p className="text-white/30 text-lg">
-            {agents.length === 0 ? '还没有 Agent，创建第一个吧' : '没有匹配的 Agent'}
-          </p>
+        <EmptyState
+          scene={agents.length === 0 ? 'no-agents' : 'no-results'}
+          title={agents.length === 0 ? undefined : '没有匹配的 Agent'}
+        />
+      ) : viewMode === 'grid' ? (
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+          {filtered.map((agent, i) => (
+            <AgentCard key={agent.id} agent={agent} index={i} onClick={() => navigate(`/agents/${agent.id}`)} />
+          ))}
         </div>
       ) : (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-          {filtered.map((agent) => (
-            <AgentCard key={agent.id} agent={agent} onClick={() => navigate(`/agents/${agent.id}`)} />
+        <div className="space-y-2">
+          {filtered.map((agent, i) => (
+            <AgentListRow key={agent.id} agent={agent} index={i} onClick={() => navigate(`/agents/${agent.id}`)} />
           ))}
         </div>
       )}
@@ -112,16 +134,15 @@ export function AgentListPage() {
   )
 }
 
-function AgentCard({ agent, onClick }: { agent: AgentListItem; onClick: () => void }) {
+function AgentCard({ agent, index, onClick }: { agent: AgentListItem; index: number; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
       className={cn(
-        'group relative flex flex-col items-center gap-3 p-6 rounded-2xl',
-        'bg-cyber-surface/50 border border-white/5',
-        'hover:bg-cyber-surface hover:border-white/10 hover:glow-purple',
-        'transition-all duration-300 cursor-pointer text-left'
+        'group relative flex flex-col items-center gap-3 p-6 rounded-2xl cartoon-card',
+        'transition-all duration-300 cursor-pointer text-left animate-fade-in'
       )}
+      style={{ animationDelay: `${index * 40}ms` }}
     >
       <AgentAvatar
         emoji={agent.emoji}
@@ -131,17 +152,41 @@ function AgentCard({ agent, onClick }: { agent: AgentListItem; onClick: () => vo
       />
 
       <div className="text-center">
-        <p className="text-white font-semibold text-sm">{agent.name}</p>
-        <p className="text-white/30 text-xs mt-0.5 capitalize">{agent.status}</p>
+        <p className="text-white/90 font-semibold text-sm">{agent.name}</p>
+        <p className="text-white/25 text-xs mt-0.5 capitalize">{agent.status}</p>
       </div>
 
       {agent.model && (
-        <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyber-purple/20 text-cyber-lavender">
+        <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyber-purple/10 text-cyber-lavender/60 border border-cyber-purple/15">
           {agent.model}
         </span>
       )}
 
-      <div className="absolute inset-0 rounded-2xl bg-gradient-to-b from-transparent to-cyber-purple/5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
+      {agent.teamIds.length > 0 && (
+        <span className="text-[9px] text-white/15">{agent.teamIds.length} 团队</span>
+      )}
+    </button>
+  )
+}
+
+function AgentListRow({ agent, index, onClick }: { agent: AgentListItem; index: number; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="w-full cartoon-card p-3 flex items-center gap-4 cursor-pointer text-left animate-fade-in"
+      style={{ animationDelay: `${index * 30}ms` }}
+    >
+      <AgentAvatar emoji={agent.emoji} theme={agent.theme} status={agent.status} size="sm" />
+      <div className="flex-1 min-w-0">
+        <p className="text-white/90 text-sm font-medium truncate">{agent.name}</p>
+        <p className="text-white/20 text-[10px]">{agent.status}</p>
+      </div>
+      {agent.model && (
+        <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyber-purple/10 text-cyber-lavender/50 border border-cyber-purple/15">
+          {agent.model}
+        </span>
+      )}
+      <span className="text-white/15 text-[10px]">{agent.teamIds.length} 团队</span>
     </button>
   )
 }

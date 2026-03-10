@@ -1,4 +1,3 @@
-import { Calendar } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { TeamSchedule } from '@/types'
 
@@ -12,19 +11,22 @@ const MODE_LABELS: Record<string, string> = {
   'custom': '自定义',
 }
 
+const DAY_LABELS = ['一', '二', '三', '四', '五', '六', '日']
+
 export function ScheduleCalendar({ schedule }: ScheduleCalendarProps) {
   return (
     <div className="relative group cursor-pointer">
       <div className={cn(
-        'flex items-center gap-2 px-3 py-2 rounded-xl transition-all duration-300',
-        'bg-cyber-panel/40 border border-white/5',
-        'group-hover:border-cyber-violet/30 group-hover:scale-105'
+        'flex items-center gap-3 px-4 py-2.5 rounded-2xl transition-all duration-300',
+        'cartoon-card',
       )}>
-        <Calendar className="w-3.5 h-3.5 text-cyber-violet/60" />
+        {/* Calendar emoji */}
+        <span className="text-sm">📅</span>
+
         <div>
-          <span className="text-white/30 text-[10px] font-semibold block">排班表</span>
+          <span className="text-white/40 text-[10px] font-bold block">排班表</span>
           {schedule ? (
-            <span className="text-cyber-lavender/60 text-[9px]">
+            <span className="text-cyber-lavender/50 text-[9px]">
               {MODE_LABELS[schedule.type] || schedule.type} · {schedule.entries.length} 条
             </span>
           ) : (
@@ -32,18 +34,20 @@ export function ScheduleCalendar({ schedule }: ScheduleCalendarProps) {
           )}
         </div>
 
-        {/* Mini calendar dots */}
-        <div className="grid grid-cols-7 gap-px ml-2">
-          {[...Array(7)].map((_, i) => (
-            <div
-              key={i}
-              className={cn(
-                'w-1 h-1 rounded-full',
-                schedule && schedule.entries.length > i
-                  ? 'bg-cyber-violet/60'
-                  : 'bg-white/10'
-              )}
-            />
+        {/* Mini week calendar */}
+        <div className="flex gap-0.5 ml-1">
+          {DAY_LABELS.map((day, i) => (
+            <div key={day} className="flex flex-col items-center gap-0.5">
+              <span className="text-white/15 text-[6px]">{day}</span>
+              <div
+                className={cn(
+                  'w-2 h-2 rounded-sm transition-colors',
+                  schedule && schedule.entries.length > i
+                    ? 'bg-cyber-violet/40 group-hover:bg-cyber-violet/60'
+                    : 'bg-white/5 group-hover:bg-white/8'
+                )}
+              />
+            </div>
           ))}
         </div>
       </div>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ClipboardList, Plus } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
@@ -11,17 +11,13 @@ interface TaskWhiteboardProps {
   teamId: string
 }
 
-const STATUS_COLORS: Record<string, string> = {
-  active: 'bg-cyber-green/30 border-cyber-green/40',
-  completed: 'bg-cyber-blue/20 border-cyber-blue/30',
-  archived: 'bg-white/5 border-white/10',
+const STATUS_COLORS: Record<string, { bg: string; border: string; dot: string }> = {
+  active: { bg: 'bg-cyber-green/8', border: 'border-cyber-green/20', dot: 'bg-cyber-green' },
+  completed: { bg: 'bg-cyber-blue/8', border: 'border-cyber-blue/15', dot: 'bg-cyber-blue' },
+  archived: { bg: 'bg-white/3', border: 'border-white/8', dot: 'bg-white/30' },
 }
 
-const STATUS_DOT: Record<string, string> = {
-  active: 'bg-cyber-green',
-  completed: 'bg-cyber-blue',
-  archived: 'bg-white/30',
-}
+const STICKY_ROTATIONS = ['-1deg', '0.5deg', '-0.3deg', '0.8deg', '-0.6deg']
 
 export function TaskWhiteboard({ teamId }: TaskWhiteboardProps) {
   const [tasks, setTasks] = useState<TaskListItem[]>([])
@@ -45,61 +41,67 @@ export function TaskWhiteboard({ teamId }: TaskWhiteboardProps) {
 
   return (
     <div className="relative">
-      {/* Whiteboard frame */}
+      {/* Whiteboard frame — cartoon corkboard style */}
       <div className={cn(
-        'w-64 rounded-xl overflow-hidden transition-all duration-300',
-        'bg-cyber-panel/60 border border-white/10',
-        'hover:border-cyber-amber/30 hover:scale-[1.02]'
+        'w-64 rounded-2xl overflow-hidden transition-all duration-300',
+        'cartoon-card',
       )}>
-        {/* Header */}
-        <div className="flex items-center justify-between px-3 py-2 border-b border-white/5">
-          <div className="flex items-center gap-1.5">
-            <ClipboardList className="w-3.5 h-3.5 text-cyber-amber" />
-            <span className="text-white/60 text-[10px] font-semibold uppercase tracking-wider">
+        {/* Header — looks like a whiteboard marker title */}
+        <div className="flex items-center justify-between px-3 py-2.5 border-b border-white/5">
+          <div className="flex items-center gap-2">
+            <span className="text-sm">📌</span>
+            <span className="text-white/50 text-[10px] font-bold uppercase tracking-wider">
               任务白板
             </span>
           </div>
           {activeTasks.length > 0 && (
-            <span className="text-cyber-amber text-[10px] font-mono">
+            <span className="px-1.5 py-0.5 rounded-md bg-cyber-amber/10 border border-cyber-amber/20 text-cyber-amber text-[10px] font-mono">
               {activeTasks.length} 进行中
             </span>
           )}
         </div>
 
         {/* Task sticky notes */}
-        <div className="p-2 space-y-1.5 max-h-[120px] overflow-y-auto">
+        <div className="p-2.5 space-y-1.5 max-h-[120px] overflow-y-auto">
           {tasks.length === 0 ? (
-            <p className="text-white/15 text-[10px] text-center py-3 italic">暂无任务</p>
+            <div className="flex flex-col items-center py-3">
+              <span className="text-xl opacity-20 mb-1">📋</span>
+              <p className="text-white/15 text-[10px]">暂无任务</p>
+            </div>
           ) : (
-            tasks.slice(0, 5).map((task, i) => (
-              <div
-                key={task.id}
-                className={cn(
-                  'px-2.5 py-1.5 rounded-md border text-[10px] transition-all',
-                  STATUS_COLORS[task.status],
-                  task.status === 'active' && 'animate-[wiggle_3s_ease-in-out_infinite]'
-                )}
-                style={{
-                  animationDelay: task.status === 'active' ? `${i * 0.3}s` : undefined,
-                }}
-              >
-                <div className="flex items-center gap-1.5">
-                  <div className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0', STATUS_DOT[task.status])} />
-                  <span className="text-white/70 truncate font-medium">{task.title}</span>
+            tasks.slice(0, 5).map((task, i) => {
+              const colors = STATUS_COLORS[task.status] || STATUS_COLORS.archived
+              return (
+                <div
+                  key={task.id}
+                  className={cn(
+                    'px-2.5 py-2 rounded-lg border text-[10px] transition-all hover:scale-[1.02]',
+                    colors.bg,
+                    colors.border,
+                  )}
+                  style={{
+                    transform: `rotate(${STICKY_ROTATIONS[i % STICKY_ROTATIONS.length]})`,
+                  }}
+                >
+                  <div className="flex items-center gap-1.5">
+                    <div className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0', colors.dot)} />
+                    <span className="text-white/60 truncate font-medium">{task.title}</span>
+                    {task.status === 'completed' && <span className="text-[8px] ml-auto">✓</span>}
+                  </div>
                 </div>
-              </div>
-            ))
+              )
+            })
           )}
           {tasks.length > 5 && (
             <p className="text-white/20 text-[9px] text-center">+{tasks.length - 5} 更多</p>
           )}
         </div>
 
-        {/* New task button with dialog */}
-        <div className="px-2 pb-2">
+        {/* New task button */}
+        <div className="px-2.5 pb-2.5">
           <Dialog open={createOpen} onOpenChange={setCreateOpen}>
             <DialogTrigger asChild>
-              <button className="w-full flex items-center justify-center gap-1 py-1 rounded-md border border-dashed border-white/10 text-white/20 text-[10px] hover:border-cyber-amber/30 hover:text-cyber-amber/60 transition-colors cursor-pointer">
+              <button className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-dashed border-white/10 text-white/20 text-[10px] hover:border-cyber-amber/30 hover:text-cyber-amber/60 hover:bg-cyber-amber/5 transition-all cursor-pointer">
                 <Plus className="w-3 h-3" />
                 新任务
               </button>

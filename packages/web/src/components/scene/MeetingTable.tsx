@@ -12,68 +12,86 @@ export function MeetingTable({ summary, memberCount }: MeetingTableProps) {
 
   return (
     <div className="relative group cursor-pointer">
-      {/* Table surface */}
+      {/* Table surface — cartoon conference table style */}
       <div className={cn(
-        'relative w-48 h-36 rounded-2xl overflow-hidden transition-all duration-500',
-        'bg-gradient-to-br from-cyber-panel/80 to-cyber-surface/60',
-        'border border-white/10 group-hover:border-cyber-purple/30',
-        'group-hover:glow-purple group-hover:scale-105'
+        'relative w-52 h-40 rounded-2xl overflow-hidden transition-all duration-400',
+        'cartoon-card',
       )}>
-        {/* Scan line effect */}
-        <div className="absolute inset-0 overflow-hidden pointer-events-none">
-          <div
-            className="absolute w-full h-[1px] bg-gradient-to-r from-transparent via-cyber-purple/30 to-transparent animate-beam"
-            style={{ top: '30%' }}
-          />
-        </div>
+        {/* Subtle table pattern */}
+        <div className="absolute inset-0 pointer-events-none" style={{
+          backgroundImage: 'linear-gradient(135deg, rgba(139,92,246,0.03) 25%, transparent 25%, transparent 50%, rgba(139,92,246,0.03) 50%, rgba(139,92,246,0.03) 75%, transparent 75%)',
+          backgroundSize: '20px 20px',
+        }} />
 
         {/* Content */}
         <div className="relative z-10 p-4 h-full flex flex-col">
+          {/* Header with meeting emoji */}
           <div className="flex items-center gap-2 mb-2">
-            <div className="w-4 h-4 rounded flex items-center justify-center text-[10px] bg-cyber-purple/20">
-              📋
-            </div>
-            <span className="text-cyber-lavender text-[10px] font-semibold uppercase tracking-wider">
-              team.md
+            <span className="text-sm">📋</span>
+            <span className="text-white/50 text-[10px] font-bold uppercase tracking-wider">
+              团队记忆
             </span>
+            <div className="flex-1" />
+            <div className="flex items-center gap-1">
+              {[...Array(Math.min(memberCount, 3))].map((_, i) => (
+                <div
+                  key={i}
+                  className="w-3 h-3 rounded-full border border-white/10"
+                  style={{
+                    background: `hsl(${i * 90 + 240}, 70%, 60%)`,
+                    opacity: 0.4,
+                    marginLeft: i > 0 ? '-4px' : '0',
+                  }}
+                />
+              ))}
+              {memberCount > 3 && (
+                <span className="text-white/20 text-[8px] ml-0.5">+{memberCount - 3}</span>
+              )}
+            </div>
           </div>
 
-          {/* Preview text */}
+          {/* Separator */}
+          <div className="w-full h-px bg-gradient-to-r from-transparent via-white/8 to-transparent mb-2" />
+
+          {/* Preview text — looks like handwritten notes */}
           <div className="flex-1 overflow-hidden">
             {previewLines.length > 0 ? (
-              <div className="space-y-0.5">
+              <div className="space-y-1">
                 {previewLines.map((line, i) => (
                   <p
                     key={i}
-                    className="text-white/30 text-[9px] font-mono truncate leading-tight"
+                    className="text-white/30 text-[9px] font-mono truncate leading-tight pl-2 border-l border-white/5"
                   >
                     {line}
                   </p>
                 ))}
                 {summary.split('\n').filter(Boolean).length > 4 && (
-                  <p className="text-cyber-purple/50 text-[9px]">...</p>
+                  <p className="text-cyber-purple/40 text-[9px] pl-2">…</p>
                 )}
               </div>
             ) : (
-              <p className="text-white/15 text-[10px] italic">暂无团队记忆</p>
+              <div className="flex flex-col items-center justify-center h-full">
+                <span className="text-2xl opacity-20 mb-1">📝</span>
+                <p className="text-white/15 text-[10px]">暂无团队记忆</p>
+              </div>
             )}
           </div>
 
           {/* Bottom bar */}
           <div className="flex items-center justify-between mt-auto pt-2 border-t border-white/5">
-            <span className="text-white/20 text-[9px]">{memberCount} 成员</span>
-            <span className="text-cyber-purple/40 text-[9px] group-hover:text-cyber-lavender transition-colors">
+            <span className="text-white/20 text-[9px]">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyber-green/30 mr-1" />
+              {memberCount} 成员在线
+            </span>
+            <span className="text-cyber-purple/30 text-[9px] group-hover:text-cyber-purple/60 transition-colors font-medium">
               点击编辑 →
             </span>
           </div>
         </div>
-
-        {/* Subtle holographic overlay */}
-        <div className="absolute inset-0 bg-gradient-to-t from-cyber-purple/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
       </div>
 
       {/* Table shadow */}
-      <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-4/5 h-4 rounded-full bg-cyber-purple/5 blur-lg" />
+      <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-4/5 h-4 rounded-full bg-black/10 blur-lg" />
     </div>
   )
 }

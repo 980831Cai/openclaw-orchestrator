@@ -1,13 +1,23 @@
-# 🐾 OpenClaw Orchestrator
+<p align="center">
+  <img src="docs/logo.svg" width="80" height="80" alt="OpenClaw Logo" />
+</p>
 
-**多 Agent 可视化编排管理平台** — 基于 [OpenClaw](https://github.com/openclaw) 生态构建，为多 Agent 协作场景提供工作流设计、实时调度、通信监控与全链路可视化能力。
+<h1 align="center">OpenClaw Orchestrator</h1>
+
+<p align="center">
+  <strong>多 Agent 可视化编排管理平台</strong><br/>
+  基于 <a href="https://github.com/openclaw">OpenClaw</a> 生态构建，为多 Agent 协作场景提供<br/>工作流设计 · 实时调度 · 通信监控 · 全链路可视化
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-≥3.10-blue?logo=python" alt="Python" />
+  <img src="https://img.shields.io/badge/FastAPI-0.115+-green?logo=fastapi" alt="FastAPI" />
+  <img src="https://img.shields.io/badge/React-18-blue?logo=react" alt="React" />
+  <img src="https://img.shields.io/badge/TypeScript-5.0-blue?logo=typescript" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/License-MIT-yellow" alt="License" />
+</p>
 
 > 不局限于 SDLC 场景。数据分析、内容创作、自动化运维、翻译流水线——任何需要多个 AI Agent 分工协作的场景均可编排。
-
-![Python](https://img.shields.io/badge/Python-≥3.10-blue?logo=python)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green?logo=fastapi)
-![React](https://img.shields.io/badge/React-18-blue?logo=react)
-![License](https://img.shields.io/badge/License-MIT-yellow)
 
 ---
 
@@ -85,6 +95,44 @@ OpenClaw Orchestrator 是 OpenClaw 生态中的**上层编排管理层**。OpenC
 
 - WebSocket 实时推送 + 浏览器桌面通知
 - 通知中心面板支持在通知内直接完成审批操作
+
+---
+
+## 🎨 界面设计
+
+OpenClaw Orchestrator 采用**卡通办公室**视觉风格，以温暖的深色主题为基调，融合 Linear/Vercel/Raycast 等优秀产品的交互模式：
+
+### 品牌吉祥物 — 小爪子 🐾
+
+Logo 是一只带有数字电路纹理的机械猫爪（SVG 纯代码绘制，无外部图片依赖），顶部天线表示在线状态，面部表情随 Gateway 连接状态动态变化：
+
+| 心情 | 场景 | 表现 |
+|------|------|------|
+| 😊 开心 | Gateway 已连接 | 弯弯笑眼 + 呼吸缩放 |
+| 💼 专注 | 后台处理中 | 横线眼 + 上下微动 |
+| 😟 担忧 | Gateway 断连 | 圆眼 + 波浪嘴 |
+| 👋 打招呼 | Dashboard 欢迎 | 星星眼 + 大嘴笑 + 摆手 |
+
+### 核心 UI 特性
+
+- **卡通办公室工作室** — Agent 以 SVG 绘制的卡通人物形象入座办公桌，基于 emoji 哈希生成确定性面部特征（4 眼 × 4 嘴 × 5 配饰 = 80 种组合）
+- **Command Palette** — `⌘K` 全局搜索面板，跨 Agent / 工作室 / 页面快速导航，键盘驱动
+- **统一空状态系统** — 10 种场景预配置（无 Agent / 无工作室 / 加载中 / 断连...），Logo 吉祥物陪伴用户
+- **通信频道** — 消息气泡滑入动画，三点跳动打字指示器，Agent 卡通头像伴随对话
+- **指挥中心** — Agent 状态呼吸灯光环，通信环旋转装饰，数据驱动的 SVG 通信连线
+- **页面过渡** — 全局 fade-in 动画，卡片交错入场，hover 上浮微交互
+- **导航指示条** — 侧边栏每个菜单项有独立配色的左侧活跃指示条
+
+### 设计系统
+
+```
+样式基础：Tailwind CSS + 自定义 CSS utility 类
+组件库：  shadcn/ui（定制深色主题）
+动画系统：14 个自定义 keyframes（cartoon-bob/wave/sparkle/sway/msg-slide/dot-pulse/status-breathe...）
+色彩：    cyber-purple/violet/lavender/green/red/amber/blue/cyan 8 色调色盘
+卡片风格：cartoon-card — 渐变背景 + 内发光 + hover 上浮 + 紫色边框高亮
+图标：    Lucide React 统一图标库
+```
 
 ---
 
@@ -228,6 +276,7 @@ WebSocket 事件：`agent_status` · `communication` · `new_message` · `gatewa
 |----|------|
 | 后端 | FastAPI · Uvicorn · Pydantic · SQLite(WAL) · websockets · watchfiles · httpx |
 | 前端 | React 18 · Vite · TypeScript · Tailwind CSS · shadcn/ui · React Flow · Zustand |
+| UI 设计 | SVG 卡通角色系统 · 14 自定义动画 · cartoon-card 设计语言 · Lucide 图标 |
 | 部署 | Docker · systemd · hatch wheel（pip install 一键安装） |
 
 ---
