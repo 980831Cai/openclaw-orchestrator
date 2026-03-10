@@ -1,20 +1,20 @@
-"""Database initialization - create tables and indexes."""
+﻿"""Database initialization and schema setup."""
+
+from __future__ import annotations
 
 from openclaw_orchestrator.database.db import get_db
 
 
 def init_database() -> None:
-    """Initialize the database schema."""
     db = get_db()
-
     db.executescript("""
         CREATE TABLE IF NOT EXISTS teams (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             description TEXT DEFAULT '',
             goal TEXT DEFAULT '',
-            schedule_config TEXT DEFAULT '{}',
             theme TEXT DEFAULT 'default',
+            schedule_json TEXT DEFAULT '{}',
             team_dir TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
@@ -22,8 +22,8 @@ def init_database() -> None:
         CREATE TABLE IF NOT EXISTS team_members (
             team_id TEXT NOT NULL,
             agent_id TEXT NOT NULL,
-            role TEXT DEFAULT 'member',
-            join_order INTEGER DEFAULT 0,
+            role TEXT NOT NULL DEFAULT 'member',
+            join_order INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (team_id, agent_id),
             FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE
         );
@@ -72,10 +72,23 @@ def init_database() -> None:
             source_path TEXT NOT NULL,
             title TEXT NOT NULL,
             chunk_count INTEGER DEFAULT 0,
+            content_text TEXT DEFAULT '',
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
-        -- 审批记录表
+        CREATE TABLE IF NOT EXISTS knowledge_chunks (
+            rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_id TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            FOREIGN KEY (entry_id) REFERENCES knowledge_entries(id) ON DELETE CASCADE
+        );
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_fts USING fts5(
+            content,
+            tokenize='unicode61'
+        );
+
         CREATE TABLE IF NOT EXISTS approvals (
             id TEXT PRIMARY KEY,
             execution_id TEXT NOT NULL,
@@ -89,7 +102,6 @@ def init_database() -> None:
             FOREIGN KEY (execution_id) REFERENCES workflow_executions(id) ON DELETE CASCADE
         );
 
-        -- 通知表
         CREATE TABLE IF NOT EXISTS notifications (
             id TEXT PRIMARY KEY,
             type TEXT NOT NULL,
@@ -105,17 +117,19 @@ def init_database() -> None:
         CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
         CREATE INDEX IF NOT EXISTS idx_team_members_agent ON team_members(agent_id);
         CREATE INDEX IF NOT EXISTS idx_knowledge_owner ON knowledge_entries(owner_type, owner_id);
+        CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_entry ON knowledge_chunks(entry_id, chunk_index);
         CREATE INDEX IF NOT EXISTS idx_approvals_execution ON approvals(execution_id);
         CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);
         CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(read);
         CREATE INDEX IF NOT EXISTS idx_notifications_execution ON notifications(execution_id);
     """)
 
-    # 兼容性升级：为已有的 workflow_executions 表添加 context_json 列
     _migrate_add_column(db, "workflow_executions", "context_json", "TEXT DEFAULT NULL")
-
     # 为 tasks 表添加 assigned_agent_id 列（排班分配的 Agent）
     _migrate_add_column(db, "tasks", "assigned_agent_id", "TEXT DEFAULT NULL")
+
+    _migrate_add_column(db, "knowledge_entries", "content_text", "TEXT DEFAULT ''")
+    _ensure_knowledge_tables(db)
 
     # 调度任务状态表（记录排班调度的执行历史）
     db.executescript("""
@@ -136,7 +150,6 @@ def init_database() -> None:
         CREATE INDEX IF NOT EXISTS idx_schedule_jobs_agent ON schedule_jobs(agent_id);
         CREATE INDEX IF NOT EXISTS idx_schedule_jobs_status ON schedule_jobs(status);
     """)
-
     # 为 teams 表添加 lead_agent_id 列（Team Lead 角色）
     _migrate_add_column(db, "teams", "lead_agent_id", "TEXT DEFAULT NULL")
 
@@ -164,14 +177,33 @@ def init_database() -> None:
         CREATE INDEX IF NOT EXISTS idx_meetings_status ON meetings(status);
     """)
 
-    print("📦 Database initialized successfully")
+    print("Database initialized successfully")
 
 
 def _migrate_add_column(db, table: str, column: str, column_def: str) -> None:
-    """Safely add a column to an existing table (no-op if column already exists)."""
     cursor = db.execute(f"PRAGMA table_info({table})")
     existing_columns = {row[1] for row in cursor.fetchall()}
     if column not in existing_columns:
         db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_def}")
         db.commit()
-        print(f"  ↳ Migrated: added {column} to {table}")
+
+
+def _ensure_knowledge_tables(db) -> None:
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS knowledge_chunks (
+            rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_id TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            FOREIGN KEY (entry_id) REFERENCES knowledge_entries(id) ON DELETE CASCADE
+        )
+        """
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_entry ON knowledge_chunks(entry_id, chunk_index)"
+    )
+    db.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_fts USING fts5(content, tokenize='unicode61')"
+    )
+    db.commit()

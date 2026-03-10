@@ -12,7 +12,7 @@ import ReactFlow, {
   type Node,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
-import { GitBranch, Loader2, Merge, Play, Plus, Save, Square, Split, Trash2, UserCheck, Zap } from 'lucide-react'
+import { GitBranch, Loader2, Merge, MessageSquare, Play, Plus, Save, Square, Split, Swords, Trash2, UserCheck, Zap } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { EmptyState } from '@/components/brand/EmptyState'
@@ -26,7 +26,10 @@ import { TaskNodeComponent } from '@/components/workflow/TaskNode'
 import { ConditionNodeComponent } from '@/components/workflow/ConditionNode'
 import { ApprovalNodeComponent } from '@/components/workflow/ApprovalNode'
 import { JoinNodeComponent } from '@/components/workflow/JoinNode'
-import type { WorkflowDefinition, WorkflowExecution, WorkflowNodeData, WorkflowEdge, WorkflowSchedule, AgentListItem } from '@/types'
+import { MeetingNodeComponent } from '@/components/workflow/MeetingNode'
+import { DebateNodeComponent } from '@/components/workflow/DebateNode'
+import { MEETING_TYPE_LABELS } from '@/types'
+import type { WorkflowDefinition, WorkflowExecution, WorkflowNodeData, WorkflowEdge, WorkflowSchedule, AgentListItem, MeetingType } from '@/types'
 
 const nodeTypes = {
   task: TaskNodeComponent,
@@ -34,6 +37,8 @@ const nodeTypes = {
   join: JoinNodeComponent,
   parallel: JoinNodeComponent,
   approval: ApprovalNodeComponent,
+  meeting: MeetingNodeComponent,
+  debate: DebateNodeComponent,
 }
 
 const EDGE_STYLE = { stroke: '#6366F1', strokeWidth: 2 }
@@ -497,6 +502,8 @@ export function WorkflowEditorPage() {
       approval: { type: 'approval', label: '审批节点', title: '请确认', description: '', approver: 'web-user', timeoutMinutes: 30, onTimeout: 'reject', position: { x: 240, y: 120 } },
       join: { type: 'join', label: '汇合节点', joinMode: 'and', waitForAll: true, position: { x: 240, y: 120 } },
       parallel: { type: 'parallel', label: '汇合节点', joinMode: 'and', waitForAll: true, position: { x: 240, y: 120 } },
+      meeting: { type: 'meeting', label: '会议节点', meetingType: 'brainstorm', topic: '', participants: [], position: { x: 240, y: 120 } },
+      debate: { type: 'debate', label: '辩论节点', topic: '', participants: [], maxRounds: 3, position: { x: 240, y: 120 } },
     }
 
     const nextNode: Node = {
@@ -731,6 +738,18 @@ export function WorkflowEditorPage() {
                   </button>
                   <button onClick={() => addNode('join')} className="cartoon-card flex items-center gap-1.5 px-3 py-2 text-xs text-white/50 hover:text-white hover:border-cyber-green/30 transition-all cursor-pointer">
                     <Merge className="w-3.5 h-3.5 text-cyber-green" /> 汇合
+                  </button>
+                  <button
+                    onClick={() => addNode('meeting')}
+                    className="cartoon-card flex items-center gap-1.5 px-3 py-2 text-xs text-white/50 hover:text-white hover:border-purple-400/30 transition-all cursor-pointer"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5 text-purple-400" /> 会议
+                  </button>
+                  <button
+                    onClick={() => addNode('debate')}
+                    className="cartoon-card flex items-center gap-1.5 px-3 py-2 text-xs text-white/50 hover:text-white hover:border-orange-400/30 transition-all cursor-pointer"
+                  >
+                    <Swords className="w-3.5 h-3.5 text-orange-400" /> 辩论
                   </button>
                 </Panel>
 

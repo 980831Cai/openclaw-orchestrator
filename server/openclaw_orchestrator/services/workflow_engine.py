@@ -1453,15 +1453,28 @@ class WorkflowEngine:
     def _resolve_approval_agent_id(raw_approver: Any) -> str | None:
         if raw_approver is None:
             return None
-        raw_text = str(raw_approver).strip()
-        if not raw_text:
-            return None
 
-        candidates = [raw_text]
-        if raw_text.startswith("agent:"):
-            candidates.append(raw_text.split(":", 1)[1].strip())
-        if raw_text.startswith("@"):
-            candidates.append(raw_text[1:].strip())
+        candidates: list[str] = []
+        if isinstance(raw_approver, dict):
+            for key in ("agentId", "agent_id", "id", "value", "name"):
+                value = raw_approver.get(key)
+                if value is not None:
+                    candidates.append(str(value).strip())
+        else:
+            candidates.append(str(raw_approver).strip())
+
+        normalized_candidates: list[str] = []
+        for candidate in candidates:
+            if not candidate:
+                continue
+            normalized_candidates.append(candidate)
+            if candidate.startswith("agent:"):
+                normalized_candidates.append(candidate.split(":", 1)[1].strip())
+            if candidate.startswith("@"):
+                normalized_candidates.append(candidate[1:].strip())
+
+        if not normalized_candidates:
+            return None
 
         try:
             from openclaw_orchestrator.services.agent_service import agent_service
@@ -1470,7 +1483,7 @@ class WorkflowEngine:
         except Exception:
             known_ids = set()
 
-        for candidate in candidates:
+        for candidate in normalized_candidates:
             if candidate in known_ids:
                 return candidate
         return None

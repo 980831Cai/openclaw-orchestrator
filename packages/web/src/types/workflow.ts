@@ -98,6 +98,16 @@ export interface WorkflowEdge {
   condition?: string
 }
 
+export interface WorkflowDefinition {
+  id: string
+  name: string
+  teamId: string
+  nodes: Record<string, WorkflowNodeData>
+  edges: WorkflowEdge[]
+  maxIterations?: number
+  schedule?: WorkflowSchedule | null
+}
+
 export interface WorkflowScheduleWindow {
   start: string
   end: string
@@ -108,19 +118,12 @@ export interface WorkflowSchedule {
   enabled: boolean
   cron: string
   timezone: string
+  expression?: string
+  tz?: string
   window?: WorkflowScheduleWindow | null
   activeFrom?: string | null
   activeUntil?: string | null
-}
-
-export interface WorkflowDefinition {
-  id: string
-  name: string
-  teamId: string
-  nodes: Record<string, WorkflowNodeData>
-  edges: WorkflowEdge[]
-  maxIterations?: number
-  schedule?: WorkflowSchedule | null
+  nextRunAt?: string | null
 }
 
 export type WorkflowExecutionStatus =
