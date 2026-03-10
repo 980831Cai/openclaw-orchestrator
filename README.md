@@ -1,12 +1,13 @@
 <p align="center">
-  <img src="docs/logo.svg" width="80" height="80" alt="OpenClaw Logo" />
+  <img src="docs/logo.svg" width="80" height="80" alt="OpenClaw Orchestrator Logo" />
 </p>
 
 <h1 align="center">OpenClaw Orchestrator</h1>
 
 <p align="center">
-  <strong>多 Agent 可视化编排管理平台</strong><br/>
-  基于 <a href="https://github.com/openclaw">OpenClaw</a> 生态构建，为多 Agent 协作场景提供<br/>工作流设计 · 实时调度 · 通信监控 · 全链路可视化
+  <strong>给 OpenClaw 多 Agent 运行时加上大脑</strong><br/>
+  一个寄生于 <a href="https://github.com/openclaw">OpenClaw</a> 文件系统之上的可视化编排层<br/>
+  让 AI Agent 们知道「什么时候、做什么、把结果给谁」
 </p>
 
 <p align="center">
@@ -17,158 +18,171 @@
   <img src="https://img.shields.io/badge/License-MIT-yellow" alt="License" />
 </p>
 
+---
+
+## 这个项目是什么？
+
+**OpenClaw** 是一个文件系统驱动的多 Agent 运行时——每个 Agent 是一组 Markdown 文件，会话是 JSONL，配置是 JSON。它优雅地解决了"怎么运行一个 Agent"的问题。
+
+但当你有 5 个、10 个 Agent 需要协作时，问题变了：
+
+- 谁先做？谁后做？谁的输出传给谁？
+- A 做完了，怎么自动把结果喂给 B？
+- 5 个 Agent 开会讨论，怎么组织？谁来总结？
+- 这些 Agent 的工作状态，我怎么实时看到？
+
+**OpenClaw Orchestrator 就是来回答这些问题的。**
+
+它不是另一个 Agent 框架。它不替代 OpenClaw，而是**寄生在 OpenClaw 的文件系统之上**，用它自己的语言（Markdown、JSONL、JSON）与之对话，为多 Agent 场景加上编排决策和可视化能力。
+
+```
+你在 UI 上把两个 Agent 拖进一个团队
+    ↓
+Orchestrator 自动在 ~/.openclaw/teams/ 创建协作目录
+    ↓
+自动在 openclaw.json 中注册 A2A 通信权限
+    ↓
+自动生成 team.md 协作契约
+    ↓
+你设计一个工作流：分析 → 条件判断 → 编码 → 审批
+    ↓
+Orchestrator 通过 Gateway/Webhook/JSONL 三层降级触发 Agent
+    ↓
+上游 Agent 的输出自动注入下游 Agent 的 prompt
+    ↓
+整个过程你在卡通办公室场景中实时观看
+```
+
 > 不局限于 SDLC 场景。数据分析、内容创作、自动化运维、翻译流水线——任何需要多个 AI Agent 分工协作的场景均可编排。
 
 ---
 
-## 🎯 平台定位
+## 与 OpenClaw 的结合方式
 
-OpenClaw Orchestrator 是 OpenClaw 生态中的**上层编排管理层**。OpenClaw 提供了 Agent 运行时、Gateway 网关和会话管理，而 Orchestrator 在此之上构建可视化编排与团队协作能力：
+核心设计原则是**寄生式架构**——不在 OpenClaw 旁边建新城，而是长在它身上。
+
+### 共享文件系统，不复制数据
+
+Orchestrator 所有对 Agent 的操作都直接读写 `~/.openclaw/` 目录：
+
+| 你在 UI 上做的事 | Orchestrator 背后做的事 | 落到 OpenClaw 文件系统 |
+|-----------------|----------------------|---------------------|
+| 修改 Agent 名字/emoji | `generate_identity_md()` | 写 `agents/<id>/IDENTITY.md` |
+| 编辑 Agent 灵魂 | `generate_soul_md()` | 写 `agents/<id>/SOUL.md` |
+| 选择 AI 模型 | `_set_agent_model()` | 写 `openclaw.json → agents.list[].model.primary` |
+| 配置 API Key | `provider_keys_service` | 写 `openclaw.json → models.providers.<name>.apiKey` |
+| 创建团队 | `create_team()` | 建 `teams/<id>/` 目录 + `team.md` |
+| 添加团队成员 | `_update_agent_to_agent_config()` | 写 `openclaw.json → agentToAgent.allow[]` |
+| 向 Agent 发消息 | `invoke_agent()` 三层降级 | 追加 `agents/<id>/sessions/*.jsonl` |
+
+**Orchestrator 没有自己的 Agent 配置数据库。** OpenClaw 的文件就是唯一数据源。这意味着你用命令行修改 Agent 的 Markdown，UI 上立即可见；你在 UI 上改配置，OpenClaw 运行时下次加载就生效。
+
+### 三通道通信，自动降级
+
+向 Agent 发送指令时，不走单一通道，而是三层自动降级：
 
 ```
-┌─────────────────────────────────────────────────────┐
-│            OpenClaw Orchestrator（本项目）             │
-│    可视化编排 · 团队管理 · 实时监控 · 排班调度          │
-├─────────────────────────────────────────────────────┤
-│               OpenClaw Gateway 网关                   │
-│    WebSocket 控制面 · JSON-RPC 2.0 · 事件广播         │
-├─────────────────────────────────────────────────────┤
-│             OpenClaw Agent 运行时                     │
-│    Agent 执行 · 会话管理 · 工具调用 · A2A 通信         │
-└─────────────────────────────────────────────────────┘
+① Gateway RPC (sessions.spawn)     ← WebSocket 直连，毫秒级
+         ↓ 失败
+② Webhook HTTP (POST /hooks/agent)  ← HTTP 触发，秒级
+         ↓ 失败
+③ JSONL 文件直写                     ← 直接 append 到会话文件，最慢但永远可用
+```
+
+Gateway 是 OpenClaw 的 WebSocket 通信总线。Orchestrator 通过 JSON-RPC 2.0 协议直连 `ws://localhost:18789`，实时收发事件。本地连接自动放行无需认证，远程连接支持 Token 认证。
+
+同时，JSONL 文件监控 + Gateway 事件推送双源并行、ID 去重，既保证低延迟又不丢消息。
+
+### 共享配置，一份源头
+
+`openclaw.json` 是 OpenClaw 和 Orchestrator 的**唯一共享配置**。模型选择、API Key、A2A 通信权限、Gateway Token——全部在同一个文件中。Orchestrator 支持 OpenClaw 的三种 API Key 格式：明文字符串、`${ENV_VAR}` 环境变量引用、SecretRef 安全对象。
+
+---
+
+## 独特创新
+
+### 1. 文件驱动的团队协作模型
+
+**不走 HTTP API，走文件系统。**
+
+传统多 Agent 框架用消息队列或 API 调用来协调 Agent。但 OpenClaw 的 Agent 天然理解文件——它们读 Markdown 理解任务，写 JSONL 记录对话。Orchestrator 顺势而为：
+
+```
+~/.openclaw/teams/<team-id>/
+├── team.md          ← 活的协作契约（持续演化的团队记忆）
+├── meetings/        ← 会议记录（meeting_<id>.md）
+├── active/          ← 进行中的任务
+│   └── task-<id>/
+│       ├── task.md          ← 五段式协作文档
+│       └── artifacts/       ← Agent 产出的文件
+│           ├── manifest.json
+│           └── *.md / *.py / *.json ...
+├── archive/         ← 已完成的任务归档
+└── knowledge/       ← 团队知识库
+```
+
+**team.md 不是写完就不管的静态文档**——每次任务完成后，系统自动将总结追加到"历史教训与最佳实践"段落。随着团队运行，这份文档越来越厚，成为团队的"公共记忆"。下次有类似任务，Agent 读取 team.md 就能获得历史经验。
+
+**task.md 是 Agent 之间的"异步聊天板"**——信息交换区供 Agent 写入进度、问题、决策；产物引用区自动追加 `📦` 指针。整个任务文档既是 Agent 可读的输入，也是人类可读的协作记录。
+
+### 2. 工作流产物链传递
+
+**上游 Agent 的输出自动成为下游 Agent 的输入。**
+
+这是 Orchestrator 最核心的编排能力。工作流不是简单地"先运行 A 再运行 B"，而是把 A 的思考结果编织进 B 的 prompt：
+
+```
+分析 Agent 完成 → 输出 "发现3个安全漏洞：XSS、CSRF、SQL注入..."
+    ↓ 产物自动收集
+编码 Agent 收到的 prompt:
+    ## 任务: 修复安全漏洞
+    根据分析报告修复所有问题
+    
+    ### 上游节点产出：
+    **security-analyst** 的输出:
+    发现3个安全漏洞：XSS、CSRF、SQL注入...
+```
+
+产物沿工作流 DAG 的边传递，支持条件分支（Agent 输出包含 error → 回跳重做）、并行汇合、暂停审批后从断点继续。
+
+### 3. 共享文档会议系统
+
+**7 种会议类型，Agent 们"坐下来"开会讨论。**
+
+站会、启动会、评审会、头脑风暴、决策会、回顾会、辩论——每种会议类型有专属的 prompt 模板和发言格式。
+
+会议执行模型很独特：不是消息队列来回传，而是**共享文档模式**。创建 `meeting_<id>.md`，Agent 轮流读取文件、追加发言、读取他人观点再回应。最终由 Lead 阅读全部记录写结论，结论自动追加到 team.md。
+
+Debate 是特殊子类型：固定 2 人、交替多轮对抗，内置共识检测——如果双方开始同意对方观点就自动终止。
+
+**Token 成本**：共享文档模式 Token 线性增长（N 人 × 文档长度），而消息队列模式是平方级增长（每人看所有人的所有消息）。
+
+### 4. Team Lead 自主编排
+
+**团队有主心骨，不只是一群平等的 Agent。**
+
+Team Lead 不只是标签——它有实际的编排职责：
+- 任务分配时优先分析并拆解子任务
+- 会议中最后发言、撰写结论
+- 结论和总结自动追加到团队记忆
+
+### 5. 卡通办公室可视化
+
+**Agent 不再是抽象的 ID，而是有面孔的"同事"。**
+
+每个 Agent 是一个 SVG 绘制的卡通人物（基于 emoji 哈希确定性生成 80 种面孔），坐在办公桌前，有显示器、咖啡杯、绿植。Agent 之间的通信以数据驱动的 SVG 连线呈现。忙碌的 Agent 有绿色脉冲光环，出错的有红色警告，离线的变灰。
+
+```
+工作室场景实时展示：
+  🟢 code-reviewer — 执行中 "分析 PR #42..."
+  🔵 tech-writer — 空闲
+  🔴 data-analyst — 异常
+  ⚪ devops — 离线
 ```
 
 ---
 
-## ✨ 核心能力
-
-### 🔌 深度接入 OpenClaw 生态
-
-**Gateway 实时通道**
-- 通过 WebSocket 直连 OpenClaw Gateway（`ws://localhost:18789`），使用 JSON-RPC 2.0 协议实现毫秒级双向通信
-- 支持 Gateway 认证：自动从 `openclaw.json` 读取 Token，或通过 `OPENCLAW_GATEWAY_TOKEN` 环境变量配置。本地连接（127.0.0.1）自动放行无需 Token
-- 实时订阅 Agent 消息、状态变化、Agent-to-Agent 通信、工具调用等 7 类事件
-- 支持通过 Gateway RPC 主动查询 Agent 状态、会话列表，以及远程中断 Agent 执行
-- 自动重连（指数退避 2s→30s），认证失败时 60s 长间隔重试，Gateway 不可用时无缝降级到文件监控
-
-**统一配置共享**
-- 直接读写 OpenClaw 的 `~/.openclaw/openclaw.json`，与运行时共享模型配置和 API Key
-- 支持 OpenClaw 三种 API Key 格式：明文字符串、`${ENV_VAR}` 环境变量引用、SecretRef 安全对象
-- Agent 模型选择使用 OpenClaw 标准的 `provider/model-id` 格式（如 `anthropic/claude-sonnet-4-5`）
-
-**三层触发降级**
-- 发送指令到 Agent 时自动选择通道：Gateway RPC → Webhook HTTP → JSONL 文件直写
-- 每一层有独立的失败检测和降级逻辑，确保在任何环境下指令都能送达
-
-**双源事件去重**
-- Gateway 实时推送 + 文件系统 JSONL 监控双通道并行，消息通过 ID 去重，既保证低延迟又保证不丢消息
-
-### 🔄 可视化工作流引擎
-
-- **有向图执行模型** — 基于节点指针在工作流 DAG 上逐节点推进，天然支持分支、汇合、回跳
-- **四种节点类型** — Task（任务执行）、Condition（条件分支）、Parallel（并行执行）、Approval（人工审批）
-- **条件表达式引擎** — 支持 `contains`/`regex`/`json` 三种匹配 + `||`/`&&` 组合 + 回跳上游节点
-- **人工审批卡点** — 执行到审批节点自动暂停，审批通过后从断点继续
-- **上下文穿透** — 上游节点产物自动注入下游 Task 的 prompt，Agent 间形成信息传递链
-- **断点续跑** — 执行上下文持久化到数据库，服务重启后可无缝恢复暂停中的工作流
-
-### 📡 Agent 实时通信
-
-- **实时消息流** — 选中 Agent 后自动接收 Gateway 推送的新消息，无需手动刷新
-- **A2A 通信检测** — 自动识别 OpenClaw 乒乓模式下的跨 Agent 消息
-- **通信连线可视化** — 工作室场景中 Agent 间的通信以数据驱动的 SVG 连线呈现，线宽反映通信频率
-- **工位一键导航** — 点击工作室中任意 Agent 工位直接跳转到通信频道
-
-### 👥 团队与排班
-
-- **Team 组建** — 灵活的成员角色分配，支持多 Agent 组成协作团队
-- **四种排班模式** — 轮询 / 优先级 / 时间段 / 自定义规则
-- **排班同步** — 配置直接写入 OpenClaw Cron 系统（`~/.openclaw/cron/jobs.json`），由运行时执行
-- **心跳感知** — 读取 Agent `HEARTBEAT.md`，结合排班和活动时间综合判断在线状态
-
-### 🤖 Agent 独立模型配置
-
-- 每个 Agent 可独立选择 AI 模型，内置 Claude/GPT/Gemini/DeepSeek 等 14+ 预定义模型
-- API Key 在平台内配置，自动写入 `openclaw.json`，无需手动编辑配置文件
-
-### 🔔 通知与审批
-
-- WebSocket 实时推送 + 浏览器桌面通知
-- 通知中心面板支持在通知内直接完成审批操作
-
----
-
-## 🎨 界面设计
-
-OpenClaw Orchestrator 采用**卡通办公室**视觉风格，以温暖的深色主题为基调，融合 Linear/Vercel/Raycast 等优秀产品的交互模式：
-
-### 品牌吉祥物 — 小爪子 🐾
-
-Logo 是一只带有数字电路纹理的机械猫爪（SVG 纯代码绘制，无外部图片依赖），顶部天线表示在线状态，面部表情随 Gateway 连接状态动态变化：
-
-| 心情 | 场景 | 表现 |
-|------|------|------|
-| 😊 开心 | Gateway 已连接 | 弯弯笑眼 + 呼吸缩放 |
-| 💼 专注 | 后台处理中 | 横线眼 + 上下微动 |
-| 😟 担忧 | Gateway 断连 | 圆眼 + 波浪嘴 |
-| 👋 打招呼 | Dashboard 欢迎 | 星星眼 + 大嘴笑 + 摆手 |
-
-### 核心 UI 特性
-
-- **卡通办公室工作室** — Agent 以 SVG 绘制的卡通人物形象入座办公桌，基于 emoji 哈希生成确定性面部特征（4 眼 × 4 嘴 × 5 配饰 = 80 种组合）
-- **Command Palette** — `⌘K` 全局搜索面板，跨 Agent / 工作室 / 页面快速导航，键盘驱动
-- **统一空状态系统** — 10 种场景预配置（无 Agent / 无工作室 / 加载中 / 断连...），Logo 吉祥物陪伴用户
-- **通信频道** — 消息气泡滑入动画，三点跳动打字指示器，Agent 卡通头像伴随对话
-- **指挥中心** — Agent 状态呼吸灯光环，通信环旋转装饰，数据驱动的 SVG 通信连线
-- **页面过渡** — 全局 fade-in 动画，卡片交错入场，hover 上浮微交互
-- **导航指示条** — 侧边栏每个菜单项有独立配色的左侧活跃指示条
-
-### 设计系统
-
-```
-样式基础：Tailwind CSS + 自定义 CSS utility 类
-组件库：  shadcn/ui（定制深色主题）
-动画系统：14 个自定义 keyframes（cartoon-bob/wave/sparkle/sway/msg-slide/dot-pulse/status-breathe...）
-色彩：    cyber-purple/violet/lavender/green/red/amber/blue/cyan 8 色调色盘
-卡片风格：cartoon-card — 渐变背景 + 内发光 + hover 上浮 + 紫色边框高亮
-图标：    Lucide React 统一图标库
-```
-
----
-
-## 🏗️ 架构
-
-```
-openclaw-orchestrator/
-├── server/                          # Python/FastAPI 后端
-│   └── openclaw_orchestrator/
-│       ├── app.py                   # 入口（API + WebSocket + 静态前端）
-│       ├── services/
-│       │   ├── gateway_connector.py # Gateway WebSocket 连接器
-│       │   ├── openclaw_bridge.py   # OpenClaw 桥接层（Webhook/Cron/Heartbeat/JSONL）
-│       │   ├── workflow_engine.py   # 工作流图遍历引擎
-│       │   ├── schedule_executor.py # 排班调度器
-│       │   ├── session_watcher.py   # JSONL 文件监控（双源之一）
-│       │   └── ...                  # agent/team/task/chat/knowledge 等服务
-│       ├── routes/                  # RESTful API
-│       └── websocket/               # WebSocket 事件广播
-│
-├── packages/web/                    # React 前端
-│   └── src/
-│       ├── pages/                   # 页面：Dashboard/Chat/Monitor/Workflow...
-│       ├── components/scene/        # 工作室可视化场景
-│       └── stores/                  # Zustand 状态管理
-│
-├── scripts/                         # 构建/部署脚本
-├── Dockerfile                       # 多阶段构建
-└── docker-compose.yml               # 一键启动
-```
-
-**单端口部署**：API + WebSocket + 前端 UI 全部通过同一端口（默认 3721），无需 Nginx 反代。
-
----
-
-## 🚀 快速开始
+## 快速开始
 
 ### pip 安装（推荐）
 
@@ -215,21 +229,68 @@ sudo bash scripts/deploy.sh
 
 ---
 
-## ⚙️ 配置
+## 架构概览
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              OpenClaw Orchestrator（本项目）                  │
+│   可视化编排 · 团队管理 · 会议系统 · 实时监控 · 排班调度     │
+│   ↕ 读写 Markdown / JSONL / openclaw.json                    │
+├─────────────────────────────────────────────────────────────┤
+│               OpenClaw Gateway 网关                          │
+│    WebSocket 控制面 · JSON-RPC 2.0 · 事件广播                │
+├─────────────────────────────────────────────────────────────┤
+│             OpenClaw Agent 运行时                             │
+│    Agent 执行 · 会话管理 · 工具调用 · A2A 通信               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**单端口部署**：API + WebSocket + 前端 UI 全部通过同一端口（默认 3721）。
+
+```
+openclaw-orchestrator/
+├── server/                          # Python/FastAPI 后端
+│   └── openclaw_orchestrator/
+│       ├── app.py                   # 入口（API + WebSocket + 静态前端）
+│       ├── services/
+│       │   ├── gateway_connector.py # Gateway WebSocket 连接器
+│       │   ├── openclaw_bridge.py   # OpenClaw 桥接层（三层降级）
+│       │   ├── meeting_service.py   # 会议/辩论执行引擎
+│       │   ├── workflow_engine.py   # 工作流 DAG 遍历引擎
+│       │   ├── schedule_executor.py # 排班调度器
+│       │   ├── session_watcher.py   # JSONL 文件监控（双源之一）
+│       │   └── ...                  # agent/team/task/chat/knowledge 等服务
+│       ├── routes/                  # RESTful API
+│       └── websocket/               # WebSocket 事件广播
+│
+├── packages/web/                    # React 前端
+│   └── src/
+│       ├── pages/                   # 页面：Dashboard/Chat/Monitor/Workflow...
+│       ├── components/scene/        # 卡通办公室工作室场景
+│       └── stores/                  # Zustand 状态管理
+│
+├── docs/architecture.md             # 技术架构设计文档
+├── Dockerfile                       # 多阶段构建
+└── docker-compose.yml               # 一键启动
+```
+
+---
+
+## 配置
 
 | 环境变量 | 默认值 | 说明 |
 |---------|--------|------|
 | `PORT` | `3721` | 服务端口 |
 | `OPENCLAW_HOME` | `~/.openclaw` | OpenClaw 主目录 |
 | `OPENCLAW_GATEWAY_URL` | `ws://localhost:18789` | Gateway WebSocket 地址 |
-| `OPENCLAW_GATEWAY_TOKEN` | *(空)* | Gateway 认证 Token（本地连接可留空，远程连接必填） |
+| `OPENCLAW_GATEWAY_TOKEN` | *(空)* | Gateway 认证 Token（本地连接可留空） |
 | `OPENCLAW_WEBHOOK_URL` | `http://localhost:3578` | Webhook HTTP 地址 |
 | `CORS_ORIGIN` | `http://localhost:5173` | CORS 允许源 |
 | `DB_PATH` | `$OPENCLAW_HOME/orchestrator.sqlite` | 数据库路径 |
 
 ---
 
-## 🛠️ 开发
+## 开发
 
 ```bash
 bash scripts/dev.sh
@@ -237,40 +298,9 @@ bash scripts/dev.sh
 # ⚡ Vite 前端：http://localhost:5173（HMR）
 ```
 
-或分别启动：
-
-```bash
-# 终端 1 — 后端
-cd server && pip install -e ".[dev]" && python -m openclaw_orchestrator serve --reload
-
-# 终端 2 — 前端
-cd packages/web && pnpm install && pnpm dev
-```
-
 ---
 
-## 📡 API
-
-所有端点以 `/api` 为前缀。WebSocket 端点：`ws://localhost:3721/ws`
-
-| 模块 | 端点示例 | 说明 |
-|------|---------|------|
-| 健康检查 | `GET /api/health` | 返回 Gateway 连接状态、活跃 Agent 数等 |
-| Agent | `GET/POST/PUT/DELETE /api/agents/:id` | Agent CRUD + 技能管理 |
-| Team | `GET/POST/PUT/DELETE /api/teams/:id` | Team CRUD + 成员管理 |
-| Task | `POST /api/teams/:tid/tasks` | 任务创建/分配/制品管理 |
-| 工作流 | `POST /api/workflows/:id/execute` | 工作流 CRUD + 执行/停止 |
-| 审批 | `POST /api/approvals/:id/approve` | 审批通过/驳回 |
-| 通知 | `GET /api/notifications` | 通知列表/未读数/标记已读 |
-| Chat | `POST /api/agents/:id/sessions/:sid/send` | 发送消息/获取会话 |
-| 知识库 | `POST /api/agents/:id/knowledge/search` | Agent/Team 知识 CRUD + 搜索 |
-| 设置 | `GET/PUT /api/settings/providers` | AI 模型 Provider API Key 管理 |
-
-WebSocket 事件：`agent_status` · `communication` · `new_message` · `gateway_status` · `tool_call` · `notification` · `approval_update` · `workflow_update`
-
----
-
-## 🧰 技术栈
+## 技术栈
 
 | 层 | 技术 |
 |----|------|
@@ -281,6 +311,6 @@ WebSocket 事件：`agent_status` · `communication` · `new_message` · `gatewa
 
 ---
 
-## 📄 License
+## License
 
 [MIT](LICENSE)
