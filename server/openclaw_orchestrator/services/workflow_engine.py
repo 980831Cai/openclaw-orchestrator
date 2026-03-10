@@ -605,6 +605,10 @@ class WorkflowEngine:
             return await self._execute_approval_node(
                 execution_id, node_id, node, upstream_artifacts, node_artifacts
             )
+        if node_type in ("meeting", "debate"):
+            return await self._execute_meeting_node(
+                execution_id, node_id, node, upstream_artifacts, node_artifacts
+            )
 
         self._append_log(
             execution_id,
@@ -881,6 +885,119 @@ class WorkflowEngine:
                 "level": "info",
             },
         )
+        return None
+
+    async def _execute_meeting_node(
+        self,
+        execution_id: str,
+        node_id: str,
+        node: dict[str, Any],
+        upstream_artifacts: list[dict[str, Any]],
+        node_artifacts: dict[str, list[dict[str, Any]]],
+    ) -> None:
+        """Execute a meeting or debate node in a workflow."""
+        from openclaw_orchestrator.services.meeting_service import meeting_service
+
+        label = node.get("label", node_id)
+        node_type = node.get("type", "meeting")
+        meeting_type = node.get("meetingType", "debate" if node_type == "debate" else "review")
+        topic = node.get("topic", label)
+        topic_description = node.get("topicDescription", "")
+        participants = node.get("participants", [])
+        team_id = node.get("teamId", "default")
+        lead_agent_id = node.get("leadAgentId") or node.get("judgeAgentId")
+        max_rounds = node.get("maxRounds", 3)
+
+        if not participants:
+            self._append_log(
+                execution_id,
+                {
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "nodeId": node_id,
+                    "message": f"会议/辩论节点缺少参与者配置，跳过",
+                    "level": "error",
+                },
+            )
+            return None
+
+        # Augment topic with upstream artifacts
+        if upstream_artifacts:
+            artifact_summaries = []
+            for art in upstream_artifacts[:5]:
+                content = art.get("content", "")
+                preview = content[:200] if content else "(空)"
+                artifact_summaries.append(f"- {art.get('agentId', 'unknown')}: {preview}")
+            topic_description += "\n\n### 上游节点产出：\n" + "\n".join(artifact_summaries)
+
+        self._append_log(
+            execution_id,
+            {
+                "timestamp": datetime.utcnow().isoformat(),
+                "nodeId": node_id,
+                "message": f"执行{'辩论' if meeting_type == 'debate' else '会议'}节点: {label} ({meeting_type}，{len(participants)} 人)",
+                "level": "info",
+            },
+        )
+
+        try:
+            # Create and run meeting
+            meeting = meeting_service.create_meeting(
+                team_id=team_id,
+                meeting_type=meeting_type,
+                topic=topic,
+                participants=participants,
+                topic_description=topic_description,
+                lead_agent_id=lead_agent_id,
+                max_rounds=max_rounds,
+            )
+
+            result = await meeting_service.run_meeting(meeting["id"])
+            summary = result.get("summary", "")
+
+            self._append_log(
+                execution_id,
+                {
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "nodeId": node_id,
+                    "message": f"会议已结束: {summary[:120]}...",
+                    "level": "info",
+                },
+            )
+
+            # Store meeting conclusion as node artifact
+            node_artifacts[node_id] = [
+                {
+                    "nodeId": node_id,
+                    "agentId": lead_agent_id or "meeting",
+                    "content": summary,
+                    "success": True,
+                    "filename": f"meeting-{meeting['id'][:8]}.md",
+                    "type": "meeting_conclusion",
+                    "meetingId": meeting["id"],
+                },
+            ]
+
+        except Exception as err:
+            self._append_log(
+                execution_id,
+                {
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "nodeId": node_id,
+                    "message": f"会议/辩论节点执行失败: {err}",
+                    "level": "error",
+                },
+            )
+            node_artifacts[node_id] = [
+                {
+                    "nodeId": node_id,
+                    "agentId": "meeting",
+                    "content": f"Meeting failed: {err}",
+                    "success": False,
+                    "filename": f"meeting-error-{node_id}.txt",
+                    "type": "meeting_conclusion",
+                },
+            ]
+
         return None
 
     async def _execute_approval_node(

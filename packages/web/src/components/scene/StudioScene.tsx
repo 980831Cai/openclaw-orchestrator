@@ -5,6 +5,7 @@ import { TaskWhiteboard } from './TaskWhiteboard'
 import { BookShelf } from './BookShelf'
 import { ScheduleCalendar } from './ScheduleCalendar'
 import { useMonitorStore } from '@/stores/monitor-store'
+import { useAgentStore } from '@/stores/agent-store'
 import type { Team, TeamMember } from '@/types'
 
 interface StudioSceneProps {
@@ -87,11 +88,29 @@ function BulletinBoard() {
 export function StudioScene({ team, teamMd, onAddMember, onViewAgent }: StudioSceneProps) {
   const [hoveredDesk, setHoveredDesk] = useState<string | null>(null)
   const { events } = useMonitorStore()
+  const { agents } = useAgentStore()
   const members = team.members || []
-  const maxDesks = Math.max(members.length, 4)
+
+  // Enrich members with real-time agent data from the store
+  const enrichedMembers: TeamMember[] = useMemo(() => {
+    return members.map((m) => {
+      const agentData = agents.find((a) => a.id === m.agentId)
+      if (!agentData) return m
+      return {
+        ...m,
+        name: m.name || agentData.name,
+        emoji: m.emoji || agentData.emoji,
+        theme: m.theme || agentData.theme,
+        status: agentData.status || m.status || 'idle',
+        currentTask: agentData.currentTask,
+      }
+    })
+  }, [members, agents])
+
+  const maxDesks = Math.max(enrichedMembers.length, 4)
   const deskSlots: (TeamMember | null)[] = [
-    ...members,
-    ...Array(maxDesks - members.length).fill(null),
+    ...enrichedMembers,
+    ...Array(maxDesks - enrichedMembers.length).fill(null),
   ]
 
   // Compute active communication links from recent events (last 60s)
@@ -193,6 +212,7 @@ export function StudioScene({ team, teamMd, onAddMember, onViewAgent }: StudioSc
                   member={member}
                   color={MEMBER_COLORS[i % MEMBER_COLORS.length]}
                   isHovered={hoveredDesk === (member?.agentId || `left-${i}`)}
+                  isLead={member?.agentId === team.leadAgentId}
                   onHover={(h) => setHoveredDesk(h ? (member?.agentId || `left-${i}`) : null)}
                   onAddMember={onAddMember}
                   onViewAgent={onViewAgent}
@@ -202,7 +222,7 @@ export function StudioScene({ team, teamMd, onAddMember, onViewAgent }: StudioSc
 
             {/* Center: Meeting table */}
             <div className="flex-shrink-0">
-              <MeetingTable summary={teamMd} memberCount={members.length} />
+              <MeetingTable summary={teamMd} memberCount={enrichedMembers.length} />
             </div>
 
             {/* Right desks */}
@@ -215,6 +235,7 @@ export function StudioScene({ team, teamMd, onAddMember, onViewAgent }: StudioSc
                     member={member}
                     color={MEMBER_COLORS[idx % MEMBER_COLORS.length]}
                     isHovered={hoveredDesk === (member?.agentId || `right-${i}`)}
+                    isLead={member?.agentId === team.leadAgentId}
                     onHover={(h) => setHoveredDesk(h ? (member?.agentId || `right-${i}`) : null)}
                     onAddMember={onAddMember}
                     onViewAgent={onViewAgent}

@@ -52,6 +52,7 @@ export interface TeamMember {
   emoji?: string
   theme?: string
   status?: string
+  currentTask?: string
 }
 
 export interface TeamListItem {
@@ -75,6 +76,56 @@ export interface Team {
   teamDir: string
   createdAt: string
   members: TeamMember[]
+  leadAgentId?: string | null
   scheduleConfig?: TeamSchedule
   schedule?: TeamSchedule
+}
+
+// ── Meeting types ──
+
+export type MeetingType = 'standup' | 'kickoff' | 'review' | 'brainstorm' | 'decision' | 'retro' | 'debate'
+export type MeetingStatus = 'preparing' | 'in_progress' | 'concluded' | 'cancelled'
+
+export interface Meeting {
+  id: string
+  teamId: string
+  meetingType: MeetingType
+  topic: string
+  topicDescription: string
+  leadAgentId: string
+  participants: string[]
+  status: MeetingStatus
+  filePath: string
+  summary: string | null
+  maxRounds: number
+  currentRound: number
+  createdAt: string
+  concludedAt: string | null
+}
+
+export const MEETING_TYPE_LABELS: Record<MeetingType, string> = {
+  standup: '站会',
+  kickoff: '启动会',
+  review: '评审会',
+  brainstorm: '头脑风暴',
+  decision: '决策会',
+  retro: '复盘会',
+  debate: '辩论',
+}
+
+export const MEETING_TYPE_ICONS: Record<MeetingType, string> = {
+  standup: '🧍',
+  kickoff: '🚀',
+  review: '🔍',
+  brainstorm: '💡',
+  decision: '⚖️',
+  retro: '🔄',
+  debate: '🥊',
+}
+
+export const MEETING_STATUS_LABELS: Record<MeetingStatus, string> = {
+  preparing: '准备中',
+  in_progress: '进行中',
+  concluded: '已结束',
+  cancelled: '已取消',
 }

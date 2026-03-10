@@ -2,7 +2,7 @@
 // Migrated from @openclaw/shared to local types
 // Enhanced with ApprovalNode and waiting_approval status
 
-export type WorkflowNodeType = 'task' | 'condition' | 'join' | 'parallel' | 'approval'
+export type WorkflowNodeType = 'task' | 'condition' | 'join' | 'parallel' | 'approval' | 'meeting' | 'debate'
 export type WorkflowJoinMode = 'and' | 'or' | 'xor'
 
 export interface TaskNodeData {
@@ -53,12 +53,38 @@ export interface ApprovalNodeData {
   position?: { x: number; y: number }
 }
 
+export interface MeetingNodeData {
+  type: 'meeting'
+  label: string
+  meetingType: 'standup' | 'kickoff' | 'review' | 'brainstorm' | 'decision' | 'retro'
+  topic: string
+  topicDescription?: string
+  participants: string[]
+  teamId?: string
+  leadAgentId?: string
+  position?: { x: number; y: number }
+}
+
+export interface DebateNodeData {
+  type: 'debate'
+  label: string
+  topic: string
+  topicDescription?: string
+  participants: string[]  // exactly 2
+  teamId?: string
+  judgeAgentId?: string
+  maxRounds: number
+  position?: { x: number; y: number }
+}
+
 export type WorkflowNodeData =
   | TaskNodeData
   | ConditionNodeData
   | JoinNodeData
   | ParallelNodeData
   | ApprovalNodeData
+  | MeetingNodeData
+  | DebateNodeData
 
 export interface WorkflowEdge {
   from: string

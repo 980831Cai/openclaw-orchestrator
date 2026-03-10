@@ -1,14 +1,23 @@
 import { AgentAvatar } from '@/components/avatar/AgentAvatar'
 import { cn } from '@/lib/utils'
-import type { TeamMember } from '@/types'
+import type { TeamMember, AgentStatus } from '@/types'
 
 interface DeskSlotProps {
   member: TeamMember | null
   color: string
   isHovered: boolean
+  isLead?: boolean
   onHover: (hovered: boolean) => void
   onAddMember?: () => void
   onViewAgent?: (agentId: string) => void
+}
+
+/** Map status string to color and label for the status indicator bar */
+const STATUS_CONFIG: Record<AgentStatus, { color: string; label: string; glow: string }> = {
+  busy: { color: '#22C55E', label: '执行中', glow: '0 0 8px rgba(34, 197, 94, 0.5)' },
+  idle: { color: '#3B82F6', label: '空闲', glow: '0 0 6px rgba(59, 130, 246, 0.3)' },
+  error: { color: '#EF4444', label: '异常', glow: '0 0 8px rgba(239, 68, 68, 0.5)' },
+  offline: { color: '#6B7280', label: '离线', glow: 'none' },
 }
 
 /** Small desk items for decoration */
@@ -49,7 +58,7 @@ function DeskItems({ color }: { color: string }) {
   )
 }
 
-export function DeskSlot({ member, color, isHovered, onHover, onAddMember, onViewAgent }: DeskSlotProps) {
+export function DeskSlot({ member, color, isHovered, isLead, onHover, onAddMember, onViewAgent }: DeskSlotProps) {
   if (!member) {
     return (
       <div className="relative group">
@@ -99,6 +108,9 @@ export function DeskSlot({ member, color, isHovered, onHover, onAddMember, onVie
     )
   }
 
+  const agentStatus: AgentStatus = (member.status as AgentStatus) || 'idle'
+  const statusCfg = STATUS_CONFIG[agentStatus]
+
   return (
     <div
       className="relative group"
@@ -118,20 +130,62 @@ export function DeskSlot({ member, color, isHovered, onHover, onAddMember, onVie
         onClick={() => onViewAgent?.(member.agentId)}
       >
         {/* Agent cartoon avatar */}
-        <AgentAvatar
-          emoji="🤖"
-          theme={color}
-          status="idle"
-          size="md"
-        />
+        <div className="relative">
+          {isLead && (
+            <div className="absolute -top-3 left-1/2 -translate-x-1/2 z-10 animate-cartoon-bob">
+              <span className="text-sm drop-shadow-lg">👑</span>
+            </div>
+          )}
+          <AgentAvatar
+            emoji={member.emoji || '🤖'}
+            theme={member.theme || color}
+            status={agentStatus}
+            size="md"
+          />
+        </div>
+
+        {/* Status indicator bar below avatar */}
+        <div className="flex items-center justify-center gap-1.5 mt-1">
+          <div
+            className={cn(
+              'h-[3px] rounded-full transition-all duration-500',
+              agentStatus === 'busy' ? 'w-10 animate-pulse' : 'w-6',
+            )}
+            style={{
+              backgroundColor: statusCfg.color,
+              boxShadow: statusCfg.glow,
+            }}
+          />
+        </div>
 
         {/* Agent info */}
-        <div className="text-center mt-1">
+        <div className="text-center mt-0.5">
           <p className="text-white/90 text-xs font-semibold truncate max-w-[90px]">
-            {member.agentId}
+            {member.name || member.agentId}
           </p>
-          <p className="text-white/30 text-[10px]">{member.role || 'member'}</p>
+          <div className="flex items-center justify-center gap-1 mt-0.5">
+            <div
+              className={cn(
+                'w-1.5 h-1.5 rounded-full flex-shrink-0',
+                agentStatus === 'busy' && 'animate-pulse',
+              )}
+              style={{ backgroundColor: statusCfg.color }}
+            />
+            <p className="text-[10px]" style={{ color: `${statusCfg.color}CC` }}>
+              {isLead ? `👑 ${statusCfg.label}` : statusCfg.label}
+            </p>
+          </div>
         </div>
+
+        {/* Current task hint for busy agents */}
+        {agentStatus === 'busy' && (
+          <div className="mt-0.5 px-2 py-0.5 rounded-full bg-cyber-green/10 border border-cyber-green/20 animate-pulse">
+            <span className="text-cyber-green text-[8px] font-medium flex items-center gap-1">
+              <span className="inline-block w-1 h-1 rounded-full bg-cyber-green" />
+              工作中...
+            </span>
+          </div>
+        )}
 
         {/* Desk items decoration */}
         <DeskItems color={color} />
@@ -141,9 +195,20 @@ export function DeskSlot({ member, color, isHovered, onHover, onAddMember, onVie
       {isHovered && (
         <div className="absolute -top-2 left-1/2 -translate-x-1/2 -translate-y-full z-20 animate-fade-in">
           <div className="cartoon-card px-4 py-3 text-center whitespace-nowrap">
-            <p className="text-white text-xs font-semibold">{member.agentId}</p>
-            <p className="text-cyber-lavender text-[10px] mt-0.5">角色: {member.role || 'member'}</p>
-            <p className="text-white/25 text-[10px]">加入顺序: #{member.joinOrder}</p>
+            <p className="text-white text-xs font-semibold">{member.name || member.agentId}</p>
+            <p className="text-cyber-lavender text-[10px] mt-0.5">
+              角色: {isLead ? '👑 Team Lead' : (member.role || 'member')}
+            </p>
+            <div className="flex items-center justify-center gap-1 mt-1">
+              <div
+                className={cn('w-2 h-2 rounded-full', agentStatus === 'busy' && 'animate-pulse')}
+                style={{ backgroundColor: statusCfg.color }}
+              />
+              <span className="text-[10px] font-medium" style={{ color: statusCfg.color }}>
+                {statusCfg.label}
+              </span>
+            </div>
+            <p className="text-white/25 text-[10px] mt-0.5">加入顺序: #{member.joinOrder}</p>
             <div className="flex items-center justify-center gap-1 mt-1.5">
               <div className="w-1 h-1 rounded-full bg-cyber-purple animate-pulse" />
               <p className="text-cyber-purple text-[10px] font-medium">查看工作空间 →</p>

@@ -12,7 +12,7 @@ import ReactFlow, {
   type Node,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
-import { GitBranch, Loader2, Merge, Play, Plus, Save, Square, Split, UserCheck, Zap } from 'lucide-react'
+import { GitBranch, Loader2, Merge, Play, Plus, Save, Square, Split, UserCheck, Zap, MessageSquare, Swords } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { EmptyState } from '@/components/brand/EmptyState'
@@ -26,7 +26,10 @@ import { TaskNodeComponent } from '@/components/workflow/TaskNode'
 import { ConditionNodeComponent } from '@/components/workflow/ConditionNode'
 import { ApprovalNodeComponent } from '@/components/workflow/ApprovalNode'
 import { JoinNodeComponent } from '@/components/workflow/JoinNode'
-import type { WorkflowDefinition, WorkflowExecution, WorkflowNodeData, WorkflowEdge, AgentListItem } from '@/types'
+import { MeetingNodeComponent } from '@/components/workflow/MeetingNode'
+import { DebateNodeComponent } from '@/components/workflow/DebateNode'
+import { MEETING_TYPE_LABELS } from '@/types'
+import type { WorkflowDefinition, WorkflowExecution, WorkflowNodeData, WorkflowEdge, AgentListItem, MeetingType } from '@/types'
 
 const nodeTypes = {
   task: TaskNodeComponent,
@@ -34,6 +37,8 @@ const nodeTypes = {
   join: JoinNodeComponent,
   parallel: JoinNodeComponent,
   approval: ApprovalNodeComponent,
+  meeting: MeetingNodeComponent,
+  debate: DebateNodeComponent,
 }
 
 function toFlowNodes(workflow: WorkflowDefinition): Node[] {
@@ -244,6 +249,8 @@ export function WorkflowEditorPage() {
       approval: { type: 'approval', label: '审批节点', title: '请确认', description: '', approver: 'web-user', timeoutMinutes: 30, onTimeout: 'reject', position: { x: 240, y: 120 } },
       join: { type: 'join', label: '汇合节点', joinMode: 'and', waitForAll: true, position: { x: 240, y: 120 } },
       parallel: { type: 'parallel', label: '汇合节点', joinMode: 'and', waitForAll: true, position: { x: 240, y: 120 } },
+      meeting: { type: 'meeting', label: '会议节点', meetingType: 'brainstorm', topic: '', participants: [], position: { x: 240, y: 120 } },
+      debate: { type: 'debate', label: '辩论节点', topic: '', participants: [], maxRounds: 3, position: { x: 240, y: 120 } },
     }
 
     const nextNode: Node = {
@@ -408,6 +415,18 @@ export function WorkflowEditorPage() {
                   </button>
                   <button onClick={() => addNode('join')} className="cartoon-card flex items-center gap-1.5 px-3 py-2 text-xs text-white/50 hover:text-white hover:border-cyber-green/30 transition-all cursor-pointer">
                     <Merge className="w-3.5 h-3.5 text-cyber-green" /> 汇合
+                  </button>
+                  <button
+                    onClick={() => addNode('meeting')}
+                    className="cartoon-card flex items-center gap-1.5 px-3 py-2 text-xs text-white/50 hover:text-white hover:border-purple-400/30 transition-all cursor-pointer"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5 text-purple-400" /> 会议
+                  </button>
+                  <button
+                    onClick={() => addNode('debate')}
+                    className="cartoon-card flex items-center gap-1.5 px-3 py-2 text-xs text-white/50 hover:text-white hover:border-orange-400/30 transition-all cursor-pointer"
+                  >
+                    <Swords className="w-3.5 h-3.5 text-orange-400" /> 辩论
                   </button>
                 </Panel>
 
@@ -589,6 +608,159 @@ export function WorkflowEditorPage() {
                           </div>
                         ) : null}
                         <p className="text-xs text-white/40">普通节点接出多条线时会并行分发；汇合节点根据这里的逻辑门决定何时放行下游。</p>
+                      </>
+                    ) : null}
+                    {(selectedNode.data as WorkflowNodeData).type === 'meeting' ? (
+                      <>
+                        <div className="space-y-2">
+                          <Label className="text-xs text-white/60">会议类型</Label>
+                          <Select value={(selectedNode.data as any).meetingType || 'brainstorm'} onValueChange={(value) => updateSelectedNode({ meetingType: value } as Partial<WorkflowNodeData>)}>
+                            <SelectTrigger className="bg-cyber-bg border-white/10 text-white">
+                              <SelectValue placeholder="选择会议类型" />
+                            </SelectTrigger>
+                            <SelectContent className="bg-cyber-panel border-white/10 text-white">
+                              {(['standup', 'kickoff', 'review', 'brainstorm', 'decision', 'retro'] as MeetingType[]).map((t) => (
+                                <SelectItem key={t} value={t}>{MEETING_TYPE_LABELS[t]}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-xs text-white/60">会议议题</Label>
+                          <Input value={(selectedNode.data as any).topic || ''} onChange={(event) => updateSelectedNode({ topic: event.target.value } as Partial<WorkflowNodeData>)} placeholder="会议要讨论的主题" className="bg-cyber-bg border-white/10 text-white" />
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-xs text-white/60">议题描述（可选）</Label>
+                          <textarea value={(selectedNode.data as any).topicDescription || ''} onChange={(event) => updateSelectedNode({ topicDescription: event.target.value } as Partial<WorkflowNodeData>)} placeholder="提供更多背景信息..." className="w-full min-h-20 rounded-lg border border-white/10 bg-cyber-bg px-3 py-2 text-sm text-white outline-none resize-y" />
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-xs text-white/60">参与者 Agent ID（逗号分隔）</Label>
+                          <Input value={((selectedNode.data as any).participants || []).join(', ')} onChange={(event) => updateSelectedNode({ participants: event.target.value.split(',').map((s: string) => s.trim()).filter(Boolean) } as Partial<WorkflowNodeData>)} placeholder="agent-1, agent-2, agent-3" className="bg-cyber-bg border-white/10 text-white" />
+                          {agents.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mt-1">
+                              {agents.map((agent) => {
+                                const participants: string[] = (selectedNode.data as any).participants || []
+                                const isIn = participants.includes(agent.id)
+                                return (
+                                  <button key={agent.id} onClick={() => {
+                                    const currentParticipants: string[] = [...((selectedNode.data as any).participants || [])]
+                                    if (isIn) {
+                                      updateSelectedNode({ participants: currentParticipants.filter((p: string) => p !== agent.id) } as Partial<WorkflowNodeData>)
+                                    } else {
+                                      updateSelectedNode({ participants: [...currentParticipants, agent.id] } as Partial<WorkflowNodeData>)
+                                    }
+                                  }} className={cn('text-[10px] px-1.5 py-0.5 rounded border cursor-pointer transition-all', isIn ? 'bg-purple-400/15 text-purple-300 border-purple-400/30' : 'bg-white/5 text-white/40 border-white/10 hover:border-white/20')}>
+                                    {agent.name || agent.id}
+                                  </button>
+                                )
+                              })}
+                            </div>
+                          )}
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-xs text-white/60">主持人 Agent ID（可选，默认 Team Lead）</Label>
+                          <Select value={(selectedNode.data as any).leadAgentId || '__auto__'} onValueChange={(value) => updateSelectedNode({ leadAgentId: value === '__auto__' ? undefined : value } as Partial<WorkflowNodeData>)}>
+                            <SelectTrigger className="bg-cyber-bg border-white/10 text-white">
+                              <SelectValue placeholder="自动（Team Lead）" />
+                            </SelectTrigger>
+                            <SelectContent className="bg-cyber-panel border-white/10 text-white">
+                              <SelectItem value="__auto__">自动（Team Lead）</SelectItem>
+                              {agents.map((agent) => (
+                                <SelectItem key={agent.id} value={agent.id}>{agent.name || agent.id}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-xs text-white/60">Team ID（可选，自动推断）</Label>
+                          <Input value={(selectedNode.data as any).teamId || ''} onChange={(event) => updateSelectedNode({ teamId: event.target.value } as Partial<WorkflowNodeData>)} placeholder="留空则使用工作流所属团队" className="bg-cyber-bg border-white/10 text-white" />
+                        </div>
+                        <p className="text-xs text-white/40">会议节点会创建并执行一场 Agent 会议，会议结论将作为节点产物传递给下游。</p>
+                      </>
+                    ) : null}
+                    {(selectedNode.data as WorkflowNodeData).type === 'debate' ? (
+                      <>
+                        <div className="space-y-2">
+                          <Label className="text-xs text-white/60">辩题</Label>
+                          <Input value={(selectedNode.data as any).topic || ''} onChange={(event) => updateSelectedNode({ topic: event.target.value } as Partial<WorkflowNodeData>)} placeholder="辩论的核心问题" className="bg-cyber-bg border-white/10 text-white" />
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-xs text-white/60">辩题描述（可选）</Label>
+                          <textarea value={(selectedNode.data as any).topicDescription || ''} onChange={(event) => updateSelectedNode({ topicDescription: event.target.value } as Partial<WorkflowNodeData>)} placeholder="提供辩论的背景和具体要求..." className="w-full min-h-20 rounded-lg border border-white/10 bg-cyber-bg px-3 py-2 text-sm text-white outline-none resize-y" />
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-xs text-white/60">辩手（恰好 2 个 Agent ID）</Label>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <Label className="text-[10px] text-orange-300/60 mb-1">正方</Label>
+                              <Select value={((selectedNode.data as any).participants || [])[0] || '__none__'} onValueChange={(value) => {
+                                const participants: string[] = [...((selectedNode.data as any).participants || ['', ''])]
+                                participants[0] = value === '__none__' ? '' : value
+                                updateSelectedNode({ participants } as Partial<WorkflowNodeData>)
+                              }}>
+                                <SelectTrigger className="bg-cyber-bg border-white/10 text-white">
+                                  <SelectValue placeholder="选择 Agent" />
+                                </SelectTrigger>
+                                <SelectContent className="bg-cyber-panel border-white/10 text-white">
+                                  <SelectItem value="__none__">未选择</SelectItem>
+                                  {agents.map((agent) => (
+                                    <SelectItem key={agent.id} value={agent.id}>{agent.name || agent.id}</SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div>
+                              <Label className="text-[10px] text-orange-300/60 mb-1">反方</Label>
+                              <Select value={((selectedNode.data as any).participants || ['', ''])[1] || '__none__'} onValueChange={(value) => {
+                                const participants: string[] = [...((selectedNode.data as any).participants || ['', ''])]
+                                participants[1] = value === '__none__' ? '' : value
+                                updateSelectedNode({ participants } as Partial<WorkflowNodeData>)
+                              }}>
+                                <SelectTrigger className="bg-cyber-bg border-white/10 text-white">
+                                  <SelectValue placeholder="选择 Agent" />
+                                </SelectTrigger>
+                                <SelectContent className="bg-cyber-panel border-white/10 text-white">
+                                  <SelectItem value="__none__">未选择</SelectItem>
+                                  {agents.map((agent) => (
+                                    <SelectItem key={agent.id} value={agent.id}>{agent.name || agent.id}</SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-xs text-white/60">最大回合数</Label>
+                          <Select value={String((selectedNode.data as any).maxRounds || 3)} onValueChange={(value) => updateSelectedNode({ maxRounds: Number(value) } as Partial<WorkflowNodeData>)}>
+                            <SelectTrigger className="bg-cyber-bg border-white/10 text-white w-24">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent className="bg-cyber-panel border-white/10 text-white">
+                              {[2, 3, 4, 5].map((n) => (
+                                <SelectItem key={n} value={String(n)}>{n} 轮</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-xs text-white/60">裁判 Agent ID（可选，默认 Team Lead）</Label>
+                          <Select value={(selectedNode.data as any).judgeAgentId || '__auto__'} onValueChange={(value) => updateSelectedNode({ judgeAgentId: value === '__auto__' ? undefined : value } as Partial<WorkflowNodeData>)}>
+                            <SelectTrigger className="bg-cyber-bg border-white/10 text-white">
+                              <SelectValue placeholder="自动（Team Lead）" />
+                            </SelectTrigger>
+                            <SelectContent className="bg-cyber-panel border-white/10 text-white">
+                              <SelectItem value="__auto__">自动（Team Lead）</SelectItem>
+                              {agents.map((agent) => (
+                                <SelectItem key={agent.id} value={agent.id}>{agent.name || agent.id}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-xs text-white/60">Team ID（可选）</Label>
+                          <Input value={(selectedNode.data as any).teamId || ''} onChange={(event) => updateSelectedNode({ teamId: event.target.value } as Partial<WorkflowNodeData>)} placeholder="留空则使用工作流所属团队" className="bg-cyber-bg border-white/10 text-white" />
+                        </div>
+                        <p className="text-xs text-white/40">辩论节点让两个 Agent 就特定话题进行多轮对抗，裁判 Agent 最终评判胜方，辩论结论作为节点产物传递。</p>
                       </>
                     ) : null}
                   </>

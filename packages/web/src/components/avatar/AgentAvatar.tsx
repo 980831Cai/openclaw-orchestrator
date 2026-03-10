@@ -5,7 +5,7 @@ interface AgentAvatarProps {
   emoji: string
   theme?: string
   status?: AgentStatus
-  size?: 'sm' | 'md' | 'lg' | 'xl'
+  size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl'
   className?: string
   onClick?: () => void
   /** Show full cartoon body (for config page preview) */
@@ -13,6 +13,7 @@ interface AgentAvatarProps {
 }
 
 const sizeMap = {
+  xs: { container: 'w-8 h-8', emoji: 'text-xs', body: 'w-10 h-14' },
   sm: { container: 'w-10 h-10', emoji: 'text-base', body: 'w-14 h-20' },
   md: { container: 'w-14 h-14', emoji: 'text-xl', body: 'w-20 h-28' },
   lg: { container: 'w-20 h-20', emoji: 'text-3xl', body: 'w-28 h-40' },
@@ -60,10 +61,10 @@ function CartoonFace({
 }: {
   emoji: string
   theme: string
-  size: 'sm' | 'md' | 'lg' | 'xl'
+  size: 'xs' | 'sm' | 'md' | 'lg' | 'xl'
 }) {
   const traits = getCartoonTraits(emoji)
-  const s = size === 'sm' ? 40 : size === 'md' ? 56 : size === 'lg' ? 80 : 112
+  const s = size === 'xs' ? 32 : size === 'sm' ? 40 : size === 'md' ? 56 : size === 'lg' ? 80 : 112
   const cx = s / 2
   const cy = s / 2
   const r = s * 0.42
@@ -485,12 +486,12 @@ export function AgentAvatar({
           'absolute -bottom-0.5 -right-0.5 rounded-full border-2 border-[#1a1a2e]',
           statusColors[status],
           status === 'busy' && 'animate-pulse',
-          size === 'sm' ? 'w-2.5 h-2.5' : size === 'md' ? 'w-3 h-3' : 'w-4 h-4'
+          size === 'xs' ? 'w-2 h-2' : size === 'sm' ? 'w-2.5 h-2.5' : size === 'md' ? 'w-3 h-3' : 'w-4 h-4'
         )}
       />
 
       {/* Busy typing bubble */}
-      {status === 'busy' && size !== 'sm' && (
+      {status === 'busy' && size !== 'sm' && size !== 'xs' && (
         <div className="absolute -top-6 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded-full bg-cyber-panel/90 border border-white/10 text-[10px] text-white/70 whitespace-nowrap">
           <span className="inline-flex gap-0.5">
             <span className="w-1 h-1 rounded-full bg-cyber-green animate-bounce" style={{ animationDelay: '0ms' }} />
@@ -501,7 +502,7 @@ export function AgentAvatar({
       )}
 
       {/* Error indicator */}
-      {status === 'error' && size !== 'sm' && (
+      {status === 'error' && size !== 'sm' && size !== 'xs' && (
         <div className="absolute -top-5 left-1/2 -translate-x-1/2 text-cyber-red text-sm font-bold animate-bounce">
           ⚠
         </div>
