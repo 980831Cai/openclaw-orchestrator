@@ -36,9 +36,10 @@ OpenClaw Orchestrator 是 OpenClaw 生态中的**上层编排管理层**。OpenC
 
 **Gateway 实时通道**
 - 通过 WebSocket 直连 OpenClaw Gateway（`ws://localhost:18789`），使用 JSON-RPC 2.0 协议实现毫秒级双向通信
+- 支持 Gateway 认证：自动从 `openclaw.json` 读取 Token，或通过 `OPENCLAW_GATEWAY_TOKEN` 环境变量配置。本地连接（127.0.0.1）自动放行无需 Token
 - 实时订阅 Agent 消息、状态变化、Agent-to-Agent 通信、工具调用等 7 类事件
 - 支持通过 Gateway RPC 主动查询 Agent 状态、会话列表，以及远程中断 Agent 执行
-- 自动重连（指数退避 2s→30s），Gateway 不可用时无缝降级到文件监控
+- 自动重连（指数退避 2s→30s），认证失败时 60s 长间隔重试，Gateway 不可用时无缝降级到文件监控
 
 **统一配置共享**
 - 直接读写 OpenClaw 的 `~/.openclaw/openclaw.json`，与运行时共享模型配置和 API Key
@@ -173,6 +174,7 @@ sudo bash scripts/deploy.sh
 | `PORT` | `3721` | 服务端口 |
 | `OPENCLAW_HOME` | `~/.openclaw` | OpenClaw 主目录 |
 | `OPENCLAW_GATEWAY_URL` | `ws://localhost:18789` | Gateway WebSocket 地址 |
+| `OPENCLAW_GATEWAY_TOKEN` | *(空)* | Gateway 认证 Token（本地连接可留空，远程连接必填） |
 | `OPENCLAW_WEBHOOK_URL` | `http://localhost:3578` | Webhook HTTP 地址 |
 | `CORS_ORIGIN` | `http://localhost:5173` | CORS 允许源 |
 | `DB_PATH` | `$OPENCLAW_HOME/orchestrator.sqlite` | 数据库路径 |

@@ -6,8 +6,14 @@ This is the primary channel for:
 - Agent-to-Agent communication events
 - Active queries (agent state, session list, etc.)
 
+Authentication:
+- Gateway requires ``connect.params.auth.token`` during WebSocket handshake.
+- Local connections (127.0.0.1) are auto-approved by Gateway without a token.
+- For remote connections, token is read from config or ``~/.openclaw/openclaw.json``.
+- New devices may require one-time pairing: ``openclaw devices approve <requestId>``.
+
 Falls back gracefully to file-system monitoring (session_watcher) if Gateway
-is unreachable.
+is unreachable or authentication fails.
 """
 
 from __future__ import annotations
@@ -15,7 +21,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import urlparse
 
 from openclaw_orchestrator.config import settings
 from openclaw_orchestrator.websocket.ws_handler import broadcast
@@ -37,9 +45,10 @@ class GatewayConnector:
 
     Responsibilities:
     1. Maintain persistent WebSocket connection with auto-reconnect
-    2. Forward Gateway events to our WebSocket hub (broadcast)
-    3. Provide JSON-RPC 2.0 call interface for active queries
-    4. Detect and broadcast Agent-to-Agent communication events
+    2. Authenticate via ``connect.params.auth.token`` (auto-read from config/openclaw.json)
+    3. Forward Gateway events to our WebSocket hub (broadcast)
+    4. Provide JSON-RPC 2.0 call interface for active queries
+    5. Detect and broadcast Agent-to-Agent communication events
     """
 
     def __init__(self) -> None:
@@ -50,6 +59,7 @@ class GatewayConnector:
         self._reconnect_delay = 2.0  # seconds, increases on repeated failures
         self._max_reconnect_delay = 30.0
         self._event_handlers: dict[str, list[Callable[..., Any]]] = {}
+        self._auth_token: Optional[str] = None  # Cached auth token
 
     @property
     def gateway_url(self) -> str:
@@ -58,6 +68,90 @@ class GatewayConnector:
     @property
     def connected(self) -> bool:
         return self._connected
+
+    def _is_local_connection(self) -> bool:
+        """Check if the Gateway URL points to localhost (auto-approved, no auth needed)."""
+        try:
+            parsed = urlparse(self.gateway_url)
+            host = parsed.hostname or ""
+            return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+        except Exception:
+            return False
+
+    def _resolve_auth_token(self) -> Optional[str]:
+        """Resolve the Gateway authentication token.
+
+        Priority:
+        1. Config setting ``openclaw_gateway_token`` (from env var or settings)
+        2. Auto-read from ``~/.openclaw/openclaw.json`` → ``gateway.auth.token``
+        3. None (local connections are auto-approved by Gateway)
+
+        Returns:
+            The auth token string, or None if not available.
+        """
+        # Use cached token if available
+        if self._auth_token:
+            return self._auth_token
+
+        # ① Config / environment variable
+        config_token = getattr(settings, "openclaw_gateway_token", "")
+        if config_token:
+            self._auth_token = config_token
+            logger.info("🔑 Using Gateway auth token from config/env")
+            return self._auth_token
+
+        # ② Auto-read from openclaw.json
+        openclaw_json_path = Path(settings.openclaw_home) / "openclaw.json"
+        if openclaw_json_path.exists():
+            try:
+                with open(openclaw_json_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+
+                # Try multiple possible paths where token might be stored
+                token = None
+
+                # Path A: gateway.auth.token
+                gateway_config = config.get("gateway", {})
+                if isinstance(gateway_config, dict):
+                    auth = gateway_config.get("auth", {})
+                    if isinstance(auth, dict):
+                        token = auth.get("token")
+
+                # Path B: connect.params.auth.token
+                if not token:
+                    connect = config.get("connect", {})
+                    if isinstance(connect, dict):
+                        params = connect.get("params", {})
+                        if isinstance(params, dict):
+                            auth = params.get("auth", {})
+                            if isinstance(auth, dict):
+                                token = auth.get("token")
+
+                # Path C: auth.token (top-level)
+                if not token:
+                    auth = config.get("auth", {})
+                    if isinstance(auth, dict):
+                        token = auth.get("token")
+
+                if token and isinstance(token, str) and token.strip():
+                    self._auth_token = token.strip()
+                    logger.info("🔑 Using Gateway auth token from openclaw.json")
+                    return self._auth_token
+
+            except (json.JSONDecodeError, OSError) as e:
+                logger.debug("Could not read openclaw.json for auth token: %s", e)
+
+        # ③ No token found
+        if self._is_local_connection():
+            logger.info("🔑 No auth token found — local connection should be auto-approved")
+        else:
+            logger.warning(
+                "⚠️ No Gateway auth token found for remote connection %s. "
+                "Set OPENCLAW_GATEWAY_TOKEN env var, or ensure token is in "
+                "~/.openclaw/openclaw.json. Connection may fail with 1008.",
+                self.gateway_url,
+            )
+        return None
 
     # ════════════════════════════════════════════════════════════
     # Lifecycle
@@ -90,12 +184,35 @@ class GatewayConnector:
     # ════════════════════════════════════════════════════════════
 
     async def _connection_loop(self) -> None:
-        """Persistent connection loop with exponential backoff reconnect."""
+        """Persistent connection loop with exponential backoff reconnect.
+
+        Auth failures use a longer delay (60s) to avoid hammering Gateway
+        with unauthenticated connections.
+        """
         while True:
             try:
                 await self._connect_and_listen()
             except asyncio.CancelledError:
                 break
+            except GatewayAuthError as e:
+                self._connected = False
+                logger.error(
+                    "🔒 Gateway authentication error: %s — retrying in 60s. "
+                    "Fix: set OPENCLAW_GATEWAY_TOKEN env var or add token to "
+                    "~/.openclaw/openclaw.json",
+                    e,
+                )
+                broadcast({
+                    "type": "gateway_status",
+                    "payload": {
+                        "connected": False,
+                        "error": f"Auth failed: {e}",
+                        "authRequired": True,
+                    },
+                    "timestamp": _now(),
+                })
+                # Longer delay for auth errors — token won't magically appear
+                await asyncio.sleep(60.0)
             except Exception as e:
                 self._connected = False
                 logger.warning(
@@ -114,7 +231,14 @@ class GatewayConnector:
                 )
 
     async def _connect_and_listen(self) -> None:
-        """Establish connection and process incoming messages."""
+        """Establish authenticated connection and process incoming messages.
+
+        Authentication flow:
+        1. Resolve auth token (config → openclaw.json → None for local)
+        2. Connect with token in ``additional_headers`` (Bearer scheme)
+        3. Send ``connect`` JSON-RPC handshake with ``auth.token`` in params
+        4. Gateway responds with connect result or 1008 policy violation
+        """
         try:
             import websockets
         except ImportError:
@@ -126,13 +250,80 @@ class GatewayConnector:
             await asyncio.sleep(999999)
             return
 
+        # Resolve auth token
+        auth_token = self._resolve_auth_token()
+
+        # Build connection kwargs
+        connect_kwargs: dict[str, Any] = {
+            "ping_interval": 20,
+            "ping_timeout": 10,
+            "close_timeout": 5,
+        }
+
+        # Pass token as Bearer header (websockets library accepts additional_headers)
+        if auth_token:
+            connect_kwargs["additional_headers"] = {
+                "Authorization": f"Bearer {auth_token}",
+            }
+
         async with websockets.connect(
             self.gateway_url,
-            ping_interval=20,
-            ping_timeout=10,
-            close_timeout=5,
+            **connect_kwargs,
         ) as ws:
             self._ws = ws
+
+            # Send JSON-RPC connect handshake with auth params
+            # This is the protocol-level authentication that OpenClaw Gateway expects
+            connect_request: dict[str, Any] = {
+                "jsonrpc": "2.0",
+                "id": _next_rpc_id(),
+                "method": "connect",
+                "params": {
+                    "client": "openclaw-orchestrator",
+                    "version": "1.0.0",
+                },
+            }
+            if auth_token:
+                connect_request["params"]["auth"] = {
+                    "token": auth_token,
+                }
+
+            await ws.send(json.dumps(connect_request))
+
+            # Wait for connect response (with short timeout)
+            try:
+                raw_response = await asyncio.wait_for(ws.recv(), timeout=10.0)
+                response = json.loads(raw_response)
+
+                if "error" in response:
+                    error_msg = response["error"].get("message", "Unknown error")
+                    error_code = response["error"].get("code", 0)
+                    if error_code == 1008 or "policy" in error_msg.lower():
+                        logger.error(
+                            "🔒 Gateway authentication failed (1008 policy violation). "
+                            "Set OPENCLAW_GATEWAY_TOKEN env var or configure token in "
+                            "~/.openclaw/openclaw.json. Error: %s",
+                            error_msg,
+                        )
+                        raise GatewayAuthError(
+                            f"Gateway auth failed: {error_msg}. "
+                            "Set OPENCLAW_GATEWAY_TOKEN or ensure token in openclaw.json."
+                        )
+                    else:
+                        logger.warning("Gateway connect returned error: %s", error_msg)
+                        # Non-auth error — still try to proceed (some Gateways don't require connect)
+                elif "result" in response:
+                    logger.info("✅ Gateway connect handshake accepted")
+                else:
+                    # Response without result or error — treat as event, re-process below
+                    logger.debug("Gateway connect response (unusual format): %s", response)
+
+            except asyncio.TimeoutError:
+                # Some Gateway versions don't respond to connect — proceed anyway
+                logger.debug("Gateway did not respond to connect handshake (proceeding)")
+            except json.JSONDecodeError:
+                logger.debug("Gateway sent non-JSON connect response (proceeding)")
+
             self._connected = True
             self._reconnect_delay = 2.0  # reset backoff on successful connect
 
@@ -435,6 +626,11 @@ class GatewayNotConnectedError(Exception):
 
 class GatewayRPCError(Exception):
     """Raised when Gateway returns a JSON-RPC error response."""
+    pass
+
+
+class GatewayAuthError(Exception):
+    """Raised when Gateway rejects connection due to authentication failure (1008)."""
     pass
 
 

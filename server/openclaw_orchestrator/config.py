@@ -37,6 +37,18 @@ class Settings(BaseSettings):
         description="WebSocket URL of the OpenClaw Gateway control plane",
     )
 
+    # OpenClaw Gateway auth token (for remote connections)
+    # Local connections (127.0.0.1) are auto-approved by Gateway.
+    # For remote connections, set this via env var or let the system
+    # auto-read from ~/.openclaw/openclaw.json (generated during onboarding).
+    openclaw_gateway_token: str = Field(
+        default="",
+        alias="OPENCLAW_GATEWAY_TOKEN",
+        description="Auth token for OpenClaw Gateway WebSocket connection. "
+                    "Leave empty for local connections (auto-approved). "
+                    "For remote, set via env var or auto-read from openclaw.json.",
+    )
+
     @property
     def db_path(self) -> str:
         return os.environ.get(
