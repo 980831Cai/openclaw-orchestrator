@@ -1,0 +1,32 @@
+# ─────────────────────────────────────────────
+# OpenClaw Orchestrator — CODEOWNERS
+# ─────────────────────────────────────────────
+# GitHub will automatically request reviews from
+# listed owners when a PR modifies matching files.
+#
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# ─── Global: all changes require maintainer review ───
+*                                   @980831Cai
+
+# ─── Backend (Python / FastAPI) ───
+/server/                            @980831Cai
+/server/openclaw_orchestrator/services/   @980831Cai
+/server/openclaw_orchestrator/routes/     @980831Cai
+
+# ─── Frontend (React / TypeScript) ───
+/packages/web/                      @980831Cai
+/packages/web/src/types/            @980831Cai
+/packages/web/src/pages/            @980831Cai
+/packages/web/src/components/       @980831Cai
+
+# ─── Workflow engine (critical path) ───
+/server/openclaw_orchestrator/services/workflow_engine.py  @980831Cai
+/packages/web/src/types/workflow.ts                        @980831Cai
+/packages/web/src/components/workflow/                     @980831Cai
+
+# ─── Infrastructure & Config ───
+/Dockerfile                         @980831Cai
+/docker-compose.yml                 @980831Cai
+/scripts/                           @980831Cai
+/.github/                           @980831Cai
