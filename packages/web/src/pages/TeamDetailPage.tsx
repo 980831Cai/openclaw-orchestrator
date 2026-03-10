@@ -63,7 +63,12 @@ export function TeamDetailPage() {
 
       {/* Studio Scene (60% height) */}
       <div className="flex-1 min-h-[400px] max-h-[60vh] relative overflow-hidden">
-        <StudioScene team={selectedTeam} teamMd={teamMd} onAddMember={() => setActiveTab('members')} />
+        <StudioScene
+          team={selectedTeam}
+          teamMd={teamMd}
+          onAddMember={() => setActiveTab('members')}
+          onViewAgent={(agentId) => navigate(`/chat?agent=${agentId}`)}
+        />
       </div>
 
       {/* Bottom control panel (40%) */}

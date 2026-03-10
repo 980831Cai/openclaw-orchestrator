@@ -24,6 +24,7 @@ from openclaw_orchestrator.routes.notification_routes import router as notificat
 from openclaw_orchestrator.routes.task_routes import router as task_router
 from openclaw_orchestrator.routes.team_routes import router as team_router
 from openclaw_orchestrator.routes.workflow_routes import router as workflow_router
+from openclaw_orchestrator.routes.settings_routes import router as settings_router
 from openclaw_orchestrator.websocket.ws_handler import handle_ws_connection
 
 
@@ -39,13 +40,35 @@ async def lifespan(app: FastAPI):
 
     session_watcher.start()
 
+    # Start schedule executor (loads saved schedules from DB)
+    from openclaw_orchestrator.services.schedule_executor import schedule_executor
+
+    schedule_executor.start()
+
+    # Initialize OpenClaw bridge (tests Webhook connectivity)
+    from openclaw_orchestrator.services.openclaw_bridge import openclaw_bridge
+
+    await openclaw_bridge.check_connectivity()
+
+    # Start Gateway connector (direct WebSocket to OpenClaw Gateway)
+    from openclaw_orchestrator.services.gateway_connector import gateway_connector
+
+    await gateway_connector.start()
+
     print(f"🚀 OpenClaw Orchestrator server running")
     print(f"📁 OpenClaw home: {settings.openclaw_home}")
+    print(f"🔗 OpenClaw Webhook: {settings.openclaw_webhook_url}")
+    print(f"🔌 OpenClaw Gateway: {settings.openclaw_gateway_url}")
 
     yield
 
     # ─── Shutdown ───
+    await gateway_connector.stop()
+    schedule_executor.stop()
     session_watcher.stop()
+
+    # Close OpenClaw bridge HTTP client
+    await openclaw_bridge.close()
 
     from openclaw_orchestrator.database.db import close_db
 
@@ -79,17 +102,24 @@ app.include_router(knowledge_router, prefix="/api")
 app.include_router(chat_router, prefix="/api")
 app.include_router(notification_router, prefix="/api")
 app.include_router(workflow_router, prefix="/api")
+app.include_router(settings_router, prefix="/api")
 
 
 # ─── Health check ───
 @app.get("/api/health")
 def health_check():
     from datetime import datetime
+    from openclaw_orchestrator.services.gateway_connector import gateway_connector
+    from openclaw_orchestrator.services.session_watcher import session_watcher
 
     return {
         "status": "ok",
         "timestamp": datetime.utcnow().isoformat(),
         "openclawHome": settings.openclaw_home,
+        "gatewayConnected": gateway_connector.connected,
+        "gatewayUrl": settings.openclaw_gateway_url,
+        "webhookUrl": settings.openclaw_webhook_url,
+        "activeAgents": len(session_watcher.get_all_statuses()),
     }
 
 

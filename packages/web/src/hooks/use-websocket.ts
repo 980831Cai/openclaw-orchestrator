@@ -4,7 +4,7 @@ import { useMonitorStore } from '@/stores/monitor-store'
 import type { Notification } from '@/types'
 
 export function useWebSocket() {
-  const { setConnected, setAgentStatus, addEvent, addNotification } = useMonitorStore()
+  const { setConnected, setGatewayConnected, setAgentStatus, addEvent, addNotification, addRealtimeMessage } = useMonitorStore()
 
   useEffect(() => {
     wsClient.connect()
@@ -21,6 +21,16 @@ export function useWebSocket() {
 
     const unsubComm = wsClient.on('communication', (data) => {
       addEvent(data as any)
+    })
+
+    // Subscribe to real-time agent messages (from session_watcher + Gateway)
+    const unsubMessage = wsClient.on('new_message', (data) => {
+      addRealtimeMessage(data as any)
+    })
+
+    // Subscribe to Gateway connection status
+    const unsubGateway = wsClient.on('gateway_status', (data) => {
+      setGatewayConnected((data as any)?.connected ?? false)
     })
 
     // Subscribe to notification events
@@ -59,10 +69,12 @@ export function useWebSocket() {
     return () => {
       unsubStatus()
       unsubComm()
+      unsubMessage()
+      unsubGateway()
       unsubNotification()
       unsubApproval()
       wsClient.disconnect()
       setConnected(false)
     }
-  }, [setConnected, setAgentStatus, addEvent, addNotification])
+  }, [setConnected, setGatewayConnected, setAgentStatus, addEvent, addNotification, addRealtimeMessage])
 }

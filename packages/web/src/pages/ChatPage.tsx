@@ -4,6 +4,7 @@ import { AgentAvatar } from '@/components/avatar/AgentAvatar'
 import { Button } from '@/components/ui/button'
 import { useAgents } from '@/hooks/use-agents'
 import { useWebSocket } from '@/hooks/use-websocket'
+import { useMonitorStore } from '@/stores/monitor-store'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import type { AgentListItem, SessionMessage } from '@/types'
@@ -28,6 +29,17 @@ export function ChatPage() {
 
   useEffect(() => { fetchAgents() }, [fetchAgents])
 
+  // Auto-select agent from URL query ?agent=xxx (e.g., from DeskSlot click)
+  useEffect(() => {
+    if (agents.length === 0) return
+    const params = new URLSearchParams(window.location.search)
+    const agentParam = params.get('agent')
+    if (agentParam && !selectedAgent) {
+      const match = agents.find((a) => a.id === agentParam || a.name === agentParam)
+      if (match) setSelectedAgent(match)
+    }
+  }, [agents, selectedAgent])
+
   useEffect(() => {
     if (selectedAgent) {
       api.get<Session[]>(`/agents/${selectedAgent.id}/sessions`).then((s) => {
@@ -42,6 +54,21 @@ export function ChatPage() {
       api.get<SessionMessage[]>(`/agents/${selectedAgent.id}/sessions/${selectedSession}/messages`).then(setMessages)
     }
   }, [selectedAgent, selectedSession])
+
+  // Real-time: merge new messages from WebSocket into current view
+  const { realtimeMessages } = useMonitorStore()
+  useEffect(() => {
+    if (!selectedAgent || !selectedSession) return
+    const newMsgs = realtimeMessages.filter(
+      (m) => m.agentId === selectedAgent.id && m.sessionId === selectedSession
+    )
+    if (newMsgs.length === 0) return
+    setMessages((prev) => {
+      const existingIds = new Set(prev.map((m) => m.id))
+      const unique = newMsgs.filter((m) => !existingIds.has(m.id))
+      return unique.length > 0 ? [...prev, ...unique] : prev
+    })
+  }, [realtimeMessages, selectedAgent, selectedSession])
 
   useEffect(() => {
     if (scrollRef.current) {

@@ -18,6 +18,25 @@ class Settings(BaseSettings):
     )
     cors_origin: str = Field(default="http://localhost:5173", alias="CORS_ORIGIN")
 
+    # OpenClaw Webhook integration
+    openclaw_webhook_url: str = Field(
+        default="http://localhost:3578",
+        alias="OPENCLAW_WEBHOOK_URL",
+        description="Base URL of the OpenClaw runtime Webhook server",
+    )
+    openclaw_webhook_timeout: int = Field(
+        default=5,
+        alias="OPENCLAW_WEBHOOK_TIMEOUT",
+        description="Timeout in seconds for Webhook HTTP calls",
+    )
+
+    # OpenClaw Gateway WebSocket (control plane)
+    openclaw_gateway_url: str = Field(
+        default="ws://localhost:18789",
+        alias="OPENCLAW_GATEWAY_URL",
+        description="WebSocket URL of the OpenClaw Gateway control plane",
+    )
+
     @property
     def db_path(self) -> str:
         return os.environ.get(

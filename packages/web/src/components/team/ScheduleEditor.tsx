@@ -1,9 +1,9 @@
-import { useState } from 'react'
-import { Calendar, RotateCcw, Clock, Settings2, GripVertical } from 'lucide-react'
+import { useState, useCallback } from 'react'
+import { Calendar, RotateCcw, Clock, Settings2, GripVertical, Check, Loader2, AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
-import type { TeamSchedule, ScheduleMode, ScheduleEntry } from '@/types'
+import type { TeamSchedule, ScheduleMode, ScheduleEntry, ScheduleSyncResult } from '@/types'
 
 interface ScheduleEditorProps {
   schedule?: TeamSchedule
@@ -18,9 +18,52 @@ const MODE_CONFIG: Record<ScheduleMode, { icon: typeof RotateCcw; label: string;
   'custom': { icon: Settings2, label: '自定义', desc: '自定义分配规则', color: 'cyber-violet' },
 }
 
+type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
+
 export function ScheduleEditor({ schedule, teamId, members }: ScheduleEditorProps) {
   const [mode, setMode] = useState<ScheduleMode>(schedule?.type || 'round-robin')
   const [entries, setEntries] = useState<ScheduleEntry[]>(schedule?.entries || members.map((m, i) => ({ agentId: m.agentId, order: i + 1 })))
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
+  const [syncResult, setSyncResult] = useState<ScheduleSyncResult | null>(null)
+  const [errorMsg, setErrorMsg] = useState<string>('')
+
+  const handleSave = useCallback(async () => {
+    setSaveStatus('saving')
+    setErrorMsg('')
+
+    const payload: TeamSchedule = {
+      type: mode,
+      mode: mode,
+      entries,
+    }
+
+    try {
+      const res = await fetch(`/api/teams/${teamId}/schedule`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}))
+        throw new Error(errData.detail || `HTTP ${res.status}`)
+      }
+
+      const data = await res.json()
+      const result: ScheduleSyncResult | undefined = data.scheduleSyncResult
+      if (result) {
+        setSyncResult(result)
+      }
+
+      setSaveStatus('saved')
+      // Reset status after 3 seconds
+      setTimeout(() => setSaveStatus('idle'), 3000)
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : '保存失败')
+      setSaveStatus('error')
+      setTimeout(() => setSaveStatus('idle'), 5000)
+    }
+  }, [mode, entries, teamId])
 
   return (
     <div className="space-y-4">
@@ -29,9 +72,38 @@ export function ScheduleEditor({ schedule, teamId, members }: ScheduleEditorProp
           <Calendar className="w-4 h-4 text-cyber-violet" />
           排班表配置
         </h3>
-        <Button size="sm" className="bg-cyber-violet/20 text-cyber-lavender border border-cyber-violet/30 hover:bg-cyber-violet/30">
-          保存排班
-        </Button>
+        <div className="flex items-center gap-2">
+          {/* Sync status indicator */}
+          {syncResult?.synced && syncResult.syncedAt && (
+            <span className="text-[10px] text-cyber-green/60">
+              已同步 · {syncResult.jobCount ?? 0} 个调度任务
+            </span>
+          )}
+          {syncResult?.syncError && (
+            <span className="text-[10px] text-cyber-amber/60 flex items-center gap-1">
+              <AlertTriangle className="w-3 h-3" />
+              同步异常
+            </span>
+          )}
+          <Button
+            size="sm"
+            onClick={handleSave}
+            disabled={saveStatus === 'saving'}
+            className={cn(
+              'border transition-all',
+              saveStatus === 'saved'
+                ? 'bg-cyber-green/20 text-cyber-green border-cyber-green/30'
+                : saveStatus === 'error'
+                ? 'bg-red-500/20 text-red-400 border-red-500/30'
+                : 'bg-cyber-violet/20 text-cyber-lavender border-cyber-violet/30 hover:bg-cyber-violet/30'
+            )}
+          >
+            {saveStatus === 'saving' && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}
+            {saveStatus === 'saved' && <Check className="w-3.5 h-3.5 mr-1.5" />}
+            {saveStatus === 'error' && <AlertTriangle className="w-3.5 h-3.5 mr-1.5" />}
+            {saveStatus === 'saving' ? '保存中...' : saveStatus === 'saved' ? '已保存' : saveStatus === 'error' ? errorMsg : '保存排班'}
+          </Button>
+        </div>
       </div>
 
       {/* Mode switcher */}

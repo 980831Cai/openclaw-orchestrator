@@ -20,6 +20,27 @@ export interface TeamSchedule {
   mode: ScheduleMode
   entries: ScheduleEntry[]
   interval?: number
+  /** ISO timestamp of last successful sync to OpenClaw runtime */
+  syncedAt?: string
+  /** Next scheduled trigger time (for time-based/custom modes) */
+  nextTriggerAt?: string
+}
+
+/** Result returned by PUT /api/teams/:id/schedule */
+export interface ScheduleSyncResult {
+  saved: boolean
+  synced: boolean
+  mode?: string
+  jobCount?: number
+  agentCount?: number
+  syncedAt?: string
+  syncError?: string
+  agents?: Array<{
+    agentId: string
+    startTime?: string
+    endTime?: string
+    startCron?: string
+  }>
 }
 
 export interface TeamMember {

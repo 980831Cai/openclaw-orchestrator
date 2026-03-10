@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import uuid
 from typing import Any, Optional
 
 from openclaw_orchestrator.database.db import get_db
 from openclaw_orchestrator.services.file_manager import file_manager
+
+logger = logging.getLogger(__name__)
 
 TEAM_MD_TEMPLATE = """# {name}
 
@@ -177,14 +180,30 @@ class TeamService:
         db.commit()
         self._update_agent_to_agent_config(team_id)
 
-    def update_schedule(self, team_id: str, schedule: dict[str, Any]) -> None:
-        """Update team schedule configuration."""
+    def update_schedule(self, team_id: str, schedule: dict[str, Any]) -> dict[str, Any]:
+        """Update team schedule configuration and sync to OpenClaw runtime.
+
+        Returns a dict with sync status information.
+        """
         db = get_db()
         db.execute(
             "UPDATE teams SET schedule_config = ? WHERE id = ?",
             (json.dumps(schedule), team_id),
         )
         db.commit()
+
+        # Sync schedule to OpenClaw runtime (cron/jobs.json, heartbeat, etc.)
+        sync_result: dict[str, Any] = {"saved": True, "synced": False}
+        try:
+            from openclaw_orchestrator.services.schedule_executor import schedule_executor
+            sync_result = schedule_executor.sync_schedule(team_id, schedule)
+            sync_result["saved"] = True
+            logger.info("Schedule for team %s synced: %s", team_id, sync_result)
+        except Exception as exc:
+            logger.error("Failed to sync schedule for team %s: %s", team_id, exc)
+            sync_result["syncError"] = str(exc)
+
+        return sync_result
 
     def get_team_md(self, team_id: str) -> str:
         """Get team.md content."""

@@ -17,9 +17,12 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
+import re
+
 from openclaw_orchestrator.database.db import get_db
 from openclaw_orchestrator.websocket.ws_handler import broadcast
 from openclaw_orchestrator.services.notification_service import notification_service
+from openclaw_orchestrator.services.openclaw_bridge import openclaw_bridge
 
 
 class WorkflowEngine:
@@ -531,11 +534,27 @@ class WorkflowEngine:
         upstream_artifacts: list[dict[str, Any]],
         node_artifacts: dict[str, list[dict[str, Any]]],
     ) -> None:
-        """Execute a task node with retry support."""
+        """Execute a task node by invoking an Agent via OpenClaw Webhook.
+
+        1. Constructs a task prompt including upstream artifact info
+        2. Sends to Agent via openclaw_bridge.invoke_agent()
+        3. Waits for Agent response (with timeout + retry)
+        4. Records the response as node artifact for downstream nodes
+        """
         label = node.get("label", node_id)
         agent_id = node.get("agentId", "unknown")
+        task_prompt = node.get("task", "")
         max_retries = node.get("maxRetries", 0)
         retry_delay = node.get("retryDelayMs", 2000) / 1000.0
+        timeout_seconds = node.get("timeoutSeconds", 120)
+
+        # Read the agent's configured model from openclaw.json
+        agent_model: str | None = None
+        try:
+            from openclaw_orchestrator.services.agent_service import agent_service
+            agent_model = agent_service._get_agent_model(agent_id)
+        except Exception:
+            pass  # Best-effort, will use default model if unavailable
 
         # Log upstream artifacts
         if upstream_artifacts:
@@ -552,7 +571,7 @@ class WorkflowEngine:
         self._append_log(execution_id, {
             "timestamp": datetime.utcnow().isoformat(),
             "nodeId": node_id,
-            "message": f"执行任务节点: {label} (Agent: {agent_id})",
+            "message": f"🚀 执行任务节点: {label} (Agent: {agent_id})",
             "level": "info",
         })
 
@@ -567,13 +586,36 @@ class WorkflowEngine:
             "timestamp": datetime.utcnow().isoformat(),
         })
 
-        # Retry loop
+        # Build the full task prompt with context
+        full_prompt = self._build_task_prompt(
+            label, task_prompt, upstream_artifacts, execution_id, node_id
+        )
+
+        # Retry loop — invoke Agent via OpenClaw bridge
         attempt = 0
+        result: dict[str, Any] = {"success": False, "content": ""}
         while attempt <= max_retries:
             try:
-                # Simulate task execution (TODO: replace with real agent invocation)
-                await asyncio.sleep(2)
-                break  # Success
+                result = await openclaw_bridge.invoke_agent(
+                    agent_id=agent_id,
+                    message=full_prompt,
+                    session_id=f"wf-{execution_id[:8]}",
+                    timeout_seconds=timeout_seconds,
+                    correlation_id=f"{execution_id[:8]}-{node_id}",
+                    model=agent_model,
+                )
+
+                if result["success"]:
+                    self._append_log(execution_id, {
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "nodeId": node_id,
+                        "message": f"🤖 Agent {agent_id} 响应 ({result.get('elapsed', '?')}s): {result['content'][:120]}...",
+                        "level": "info",
+                    })
+                    break  # Success
+                else:
+                    raise TimeoutError(result.get("content", "No response"))
+
             except Exception as err:
                 attempt += 1
                 if attempt > max_retries:
@@ -583,7 +625,16 @@ class WorkflowEngine:
                         "message": f"💥 节点执行失败（已重试 {max_retries} 次）: {err}",
                         "level": "error",
                     })
-                    raise
+
+                    notification_service.create_notification(
+                        type="workflow_error",
+                        title=f"节点失败: {label}",
+                        message=f"Agent {agent_id} 在 {max_retries + 1} 次尝试后仍未响应: {err}",
+                        execution_id=execution_id,
+                        node_id=node_id,
+                    )
+                    # Don't raise — mark node as failed but continue workflow
+                    break
                 self._append_log(execution_id, {
                     "timestamp": datetime.utcnow().isoformat(),
                     "nodeId": node_id,
@@ -592,25 +643,61 @@ class WorkflowEngine:
                 })
                 await asyncio.sleep(retry_delay)
 
-        # Record produced artifacts (empty in simulation mode)
-        node_artifacts[node_id] = []
+        # Record the Agent's response as an artifact for downstream consumption
+        response_artifact = {
+            "nodeId": node_id,
+            "agentId": agent_id,
+            "content": result.get("content", ""),
+            "success": result.get("success", False),
+            "elapsed": result.get("elapsed"),
+            "filename": f"response-{node_id}-{agent_id}.txt",
+            "type": "agent_response",
+        }
+        node_artifacts[node_id] = [response_artifact]
 
+        artifact_count = 1 if result.get("success") else 0
         self._append_log(execution_id, {
             "timestamp": datetime.utcnow().isoformat(),
             "nodeId": node_id,
-            "message": f"📤 节点执行完成，产出产物 0 个",
+            "message": f"📤 节点执行完成，产出产物 {artifact_count} 个",
             "level": "info",
         })
 
         notification_service.create_notification(
             type="node_completed",
             title=f"节点完成: {label}",
-            message=f"任务节点 {label} 执行完成",
+            message=f"任务节点 {label} 执行完成 (Agent: {agent_id})",
             execution_id=execution_id,
             node_id=node_id,
         )
 
         return None
+
+    @staticmethod
+    def _build_task_prompt(
+        label: str,
+        task_prompt: str,
+        upstream_artifacts: list[dict[str, Any]],
+        execution_id: str,
+        node_id: str,
+    ) -> str:
+        """Build a full task prompt including context from upstream nodes."""
+        parts = [f"## 任务: {label}"]
+
+        if task_prompt:
+            parts.append(f"\n{task_prompt}")
+
+        parts.append(f"\n[工作流执行 ID: {execution_id[:8]}, 节点: {node_id}]")
+
+        if upstream_artifacts:
+            parts.append("\n### 上游节点产出：")
+            for art in upstream_artifacts:
+                agent = art.get("agentId", "unknown")
+                content = art.get("content", "")
+                preview = content[:300] if content else "(空)"
+                parts.append(f"\n**{agent}** 的输出:\n{preview}")
+
+        return "\n".join(parts)
 
     # ── Condition node ──
 
@@ -637,21 +724,155 @@ class WorkflowEngine:
         # Pass through upstream artifacts
         node_artifacts[node_id] = upstream_artifacts
 
-        # Simple condition evaluation:
-        # In simulation mode, use "default" branch.
-        # When real evaluation is implemented, parse `expression` against context.
-        branch_key = "default"
+        # Collect upstream Agent output text for condition evaluation
+        upstream_text = ""
+        for art in upstream_artifacts:
+            content = art.get("content", "")
+            if content:
+                upstream_text += content + "\n"
+        upstream_text = upstream_text.strip()
+
+        branch_key = self._evaluate_condition(expression, upstream_text, branches)
 
         if branches:
             target_label = branches.get(branch_key, "未知")
             self._append_log(execution_id, {
                 "timestamp": datetime.utcnow().isoformat(),
                 "nodeId": node_id,
-                "message": f"📋 条件分支选择: {branch_key} → {target_label}",
+                "message": f"📋 条件分支选择: {branch_key} → {target_label}"
+                           + (f" (上游输出 {len(upstream_text)} 字符)" if upstream_text else " (无上游输出，走默认)"),
                 "level": "info",
             })
 
         return branch_key
+
+    @staticmethod
+    def _evaluate_condition(
+        expression: str,
+        upstream_text: str,
+        branches: dict[str, str],
+    ) -> str:
+        """Evaluate a condition expression against upstream Agent output.
+
+        Supported expression formats:
+        - ``contains:keyword``      — case-insensitive substring match
+        - ``regex:pattern``         — regex search (re.IGNORECASE)
+        - ``json:path=value``       — simple top-level JSON key comparison
+        - ``expr1 || expr2``        — OR: first match wins
+        - ``expr1 && expr2``        — AND: all must match
+        - plain text                — treated as ``contains:text``
+
+        Each sub-expression is tested against *upstream_text*.  The first
+        **branch key** whose expression matches wins.  If nothing matches,
+        ``"default"`` is returned as safe fallback.
+
+        Branch keys are expected in the format produced by the front-end
+        ConditionNode editor — e.g. ``"true"``, ``"false"``, ``"approved"``,
+        ``"rejected"``, or arbitrary user-defined labels.
+        """
+        if not expression or not upstream_text:
+            return "default"
+
+        # The expression field may encode a *single* condition that maps to
+        # the "true" branch (with an implicit "false" otherwise), or multiple
+        # branch-specific expressions separated by ``;;``.
+        #
+        # Format A — single expression:
+        #   ``contains:approved``  →  match → "true", else "false" (or "default")
+        #
+        # Format B — multi-branch:
+        #   ``approved=contains:approved ;; rejected=contains:rejected``
+        #   Each segment is ``branchKey=expr``.
+
+        if ";;" in expression:
+            # ── Format B: multi-branch expressions ──
+            segments = [s.strip() for s in expression.split(";;") if s.strip()]
+            for segment in segments:
+                if "=" in segment:
+                    branch_candidate, sub_expr = segment.split("=", 1)
+                    branch_candidate = branch_candidate.strip()
+                    sub_expr = sub_expr.strip()
+                    if WorkflowEngine._match_single_expr(sub_expr, upstream_text):
+                        if branch_candidate in branches or branch_candidate in ("true", "false"):
+                            return branch_candidate
+            return "default"
+
+        # ── Format A: single expression → true/false ──
+        if WorkflowEngine._match_single_expr(expression, upstream_text):
+            # Prefer "true" branch, fall back to first non-default branch
+            if "true" in branches:
+                return "true"
+            non_default = [k for k in branches if k != "default"]
+            return non_default[0] if non_default else "default"
+        else:
+            if "false" in branches:
+                return "false"
+            return "default"
+
+    @staticmethod
+    def _match_single_expr(expr: str, text: str) -> bool:
+        """Test one atomic expression against text.
+
+        Supports:
+        - ``contains:keyword``
+        - ``regex:pattern``
+        - ``json:key=value``
+        - ``&&`` (AND) / ``||`` (OR) combinators
+        - bare text (implicit contains)
+        """
+        expr = expr.strip()
+        if not expr:
+            return False
+
+        # ── OR combinator ──
+        if "||" in expr:
+            return any(
+                WorkflowEngine._match_single_expr(part, text)
+                for part in expr.split("||")
+            )
+
+        # ── AND combinator ──
+        if "&&" in expr:
+            return all(
+                WorkflowEngine._match_single_expr(part, text)
+                for part in expr.split("&&")
+            )
+
+        # ── contains:keyword ──
+        if expr.lower().startswith("contains:"):
+            keyword = expr[len("contains:"):].strip()
+            return keyword.lower() in text.lower()
+
+        # ── regex:pattern ──
+        if expr.lower().startswith("regex:"):
+            pattern = expr[len("regex:"):].strip()
+            try:
+                return bool(re.search(pattern, text, re.IGNORECASE))
+            except re.error:
+                return False
+
+        # ── json:key=value ──
+        if expr.lower().startswith("json:"):
+            json_expr = expr[len("json:"):].strip()
+            if "=" in json_expr:
+                key, expected = json_expr.split("=", 1)
+                key = key.strip()
+                expected = expected.strip()
+                try:
+                    # Try to parse the upstream text as JSON
+                    # Agent output may contain non-JSON preamble, so try
+                    # to find a JSON object in the text.
+                    json_match = re.search(r'\{[^{}]*\}', text, re.DOTALL)
+                    if json_match:
+                        data = json.loads(json_match.group())
+                        actual = str(data.get(key, ""))
+                        return actual.lower() == expected.lower()
+                except (json.JSONDecodeError, AttributeError):
+                    pass
+            return False
+
+        # ── Bare text → implicit contains ──
+        return expr.lower() in text.lower()
 
     # ── Parallel node ──
 

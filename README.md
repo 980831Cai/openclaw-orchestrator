@@ -1,8 +1,8 @@
 # 🐾 OpenClaw Orchestrator
 
-**通用多 Agent 可视化编排插件** — 为 [OpenClaw](https://github.com/openclaw) 平台提供工作流可视化设计、执行与监控能力。
+**多 Agent 可视化编排管理平台** — 基于 [OpenClaw](https://github.com/openclaw) 生态构建，为多 Agent 协作场景提供工作流设计、实时调度、通信监控与全链路可视化能力。
 
-> 不局限于 SDLC 场景，支持数据分析、内容创作、自动化运维、翻译流水线等任意多 Agent 协作工作流。
+> 不局限于 SDLC 场景。数据分析、内容创作、自动化运维、翻译流水线——任何需要多个 AI Agent 分工协作的场景均可编排。
 
 ![Python](https://img.shields.io/badge/Python-≥3.10-blue?logo=python)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green?logo=fastapi)
@@ -11,36 +11,79 @@
 
 ---
 
-## ✨ 功能特性
+## 🎯 平台定位
 
-### 🔄 工作流引擎
+OpenClaw Orchestrator 是 OpenClaw 生态中的**上层编排管理层**。OpenClaw 提供了 Agent 运行时、Gateway 网关和会话管理，而 Orchestrator 在此之上构建可视化编排与团队协作能力：
 
-- **有向图执行模型** — 基于 `current_node_id` 指针在工作流 DAG 上逐节点推进，天然支持分支、汇合、回跳等复杂拓扑
-- **丰富的节点类型** — Task（任务执行）、Condition（条件分支）、Parallel（并行执行）、Approval（人工审批）
-- **条件分支与回跳** — ConditionNode 根据运行时表达式动态选择下游分支，分支目标可指向上游节点，实现循环与回溯流程
-- **人工审批卡点** — ApprovalNode 在执行到达时自动暂停，等待人工审批通过后继续推进后续节点
-- **失败自动重试** — 任务节点支持配置 `maxRetries` 和 `retryDelayMs`，执行失败时按策略自动重试
-- **迭代次数守卫** — 通过 `maxIterations` 限制全局遍历次数，防止回跳分支导致的无限循环
-- **执行上下文持久化** — 将节点产出和运行状态序列化为 `context_json` 写入数据库，支持服务重启后无缝恢复暂停中的工作流
+```
+┌─────────────────────────────────────────────────────┐
+│            OpenClaw Orchestrator（本项目）             │
+│    可视化编排 · 团队管理 · 实时监控 · 排班调度          │
+├─────────────────────────────────────────────────────┤
+│               OpenClaw Gateway 网关                   │
+│    WebSocket 控制面 · JSON-RPC 2.0 · 事件广播         │
+├─────────────────────────────────────────────────────┤
+│             OpenClaw Agent 运行时                     │
+│    Agent 执行 · 会话管理 · 工具调用 · A2A 通信         │
+└─────────────────────────────────────────────────────┘
+```
 
-### 👥 Agent 与 Team 管理
+---
 
-- **Agent 全生命周期管理** — 身份配置、灵魂设定（人格/风格）、行为规则、技能挂载
-- **Team 组建与协作** — 灵活的成员角色分配、排班调度、团队共享知识库
-- **Task 分配与制品管理** — 任务创建/分配/状态跟踪、制品附件的上传与版本管理
+## ✨ 核心能力
 
-### 🔔 通知系统
+### 🔌 深度接入 OpenClaw 生态
 
-- **WebSocket 实时推送** — 工作流状态变更、审批请求等事件即时送达前端
-- **浏览器原生通知** — 通过 Notification API 在桌面弹出提醒，确保关键事件不遗漏
-- **通知中心面板** — 铃铛图标 + 未读 badge + Popover 下拉列表，集中查阅所有通知
-- **快捷审批操作** — 直接在通知面板内完成审批通过/驳回，无需跳转页面
+**Gateway 实时通道**
+- 通过 WebSocket 直连 OpenClaw Gateway（`ws://localhost:18789`），使用 JSON-RPC 2.0 协议实现毫秒级双向通信
+- 实时订阅 Agent 消息、状态变化、Agent-to-Agent 通信、工具调用等 7 类事件
+- 支持通过 Gateway RPC 主动查询 Agent 状态、会话列表，以及远程中断 Agent 执行
+- 自动重连（指数退避 2s→30s），Gateway 不可用时无缝降级到文件监控
 
-### 📊 监控面板
+**统一配置共享**
+- 直接读写 OpenClaw 的 `~/.openclaw/openclaw.json`，与运行时共享模型配置和 API Key
+- 支持 OpenClaw 三种 API Key 格式：明文字符串、`${ENV_VAR}` 环境变量引用、SecretRef 安全对象
+- Agent 模型选择使用 OpenClaw 标准的 `provider/model-id` 格式（如 `anthropic/claude-sonnet-4-5`）
 
-- **Agent 实时状态** — 追踪每个 Agent 的在线状态与当前活动
-- **通信事件流** — 实时展示 Agent 之间的消息交互日志
-- **工作流执行历史** — 记录每次工作流执行的完整节点轨迹与耗时
+**三层触发降级**
+- 发送指令到 Agent 时自动选择通道：Gateway RPC → Webhook HTTP → JSONL 文件直写
+- 每一层有独立的失败检测和降级逻辑，确保在任何环境下指令都能送达
+
+**双源事件去重**
+- Gateway 实时推送 + 文件系统 JSONL 监控双通道并行，消息通过 ID 去重，既保证低延迟又保证不丢消息
+
+### 🔄 可视化工作流引擎
+
+- **有向图执行模型** — 基于节点指针在工作流 DAG 上逐节点推进，天然支持分支、汇合、回跳
+- **四种节点类型** — Task（任务执行）、Condition（条件分支）、Parallel（并行执行）、Approval（人工审批）
+- **条件表达式引擎** — 支持 `contains`/`regex`/`json` 三种匹配 + `||`/`&&` 组合 + 回跳上游节点
+- **人工审批卡点** — 执行到审批节点自动暂停，审批通过后从断点继续
+- **上下文穿透** — 上游节点产物自动注入下游 Task 的 prompt，Agent 间形成信息传递链
+- **断点续跑** — 执行上下文持久化到数据库，服务重启后可无缝恢复暂停中的工作流
+
+### 📡 Agent 实时通信
+
+- **实时消息流** — 选中 Agent 后自动接收 Gateway 推送的新消息，无需手动刷新
+- **A2A 通信检测** — 自动识别 OpenClaw 乒乓模式下的跨 Agent 消息
+- **通信连线可视化** — 工作室场景中 Agent 间的通信以数据驱动的 SVG 连线呈现，线宽反映通信频率
+- **工位一键导航** — 点击工作室中任意 Agent 工位直接跳转到通信频道
+
+### 👥 团队与排班
+
+- **Team 组建** — 灵活的成员角色分配，支持多 Agent 组成协作团队
+- **四种排班模式** — 轮询 / 优先级 / 时间段 / 自定义规则
+- **排班同步** — 配置直接写入 OpenClaw Cron 系统（`~/.openclaw/cron/jobs.json`），由运行时执行
+- **心跳感知** — 读取 Agent `HEARTBEAT.md`，结合排班和活动时间综合判断在线状态
+
+### 🤖 Agent 独立模型配置
+
+- 每个 Agent 可独立选择 AI 模型，内置 Claude/GPT/Gemini/DeepSeek 等 14+ 预定义模型
+- API Key 在平台内配置，自动写入 `openclaw.json`，无需手动编辑配置文件
+
+### 🔔 通知与审批
+
+- WebSocket 实时推送 + 浏览器桌面通知
+- 通知中心面板支持在通知内直接完成审批操作
 
 ---
 
@@ -48,367 +91,142 @@
 
 ```
 openclaw-orchestrator/
-├── server/                          # Python 后端
-│   ├── pyproject.toml               # 包配置（hatchling）
+├── server/                          # Python/FastAPI 后端
 │   └── openclaw_orchestrator/
-│       ├── app.py                   # FastAPI 入口（API + WebSocket + 静态前端）
-│       ├── cli.py                   # CLI：openclaw-orchestrator serve
-│       ├── config.py                # Pydantic Settings 配置
-│       ├── database/
-│       │   ├── db.py                # SQLite 连接（WAL 模式）
-│       │   └── init_db.py           # 建表 + 迁移
+│       ├── app.py                   # 入口（API + WebSocket + 静态前端）
 │       ├── services/
+│       │   ├── gateway_connector.py # Gateway WebSocket 连接器
+│       │   ├── openclaw_bridge.py   # OpenClaw 桥接层（Webhook/Cron/Heartbeat/JSONL）
 │       │   ├── workflow_engine.py   # 工作流图遍历引擎
-│       │   ├── notification_service.py
-│       │   ├── agent_service.py
-│       │   ├── team_service.py
-│       │   ├── task_service.py
-│       │   ├── chat_service.py
-│       │   ├── knowledge_service.py
-│       │   ├── session_watcher.py
-│       │   └── file_manager.py
-│       ├── routes/                  # FastAPI 路由
-│       │   ├── agent_routes.py
-│       │   ├── team_routes.py
-│       │   ├── task_routes.py
-│       │   ├── workflow_routes.py
-│       │   ├── approval_routes.py
-│       │   ├── notification_routes.py
-│       │   ├── chat_routes.py
-│       │   └── knowledge_routes.py
-│       ├── websocket/
-│       │   └── ws_handler.py        # WebSocket 连接管理 + broadcast
-│       ├── utils/
-│       │   ├── markdown_parser.py
-│       │   └── path_validator.py
-│       └── static/                  # 前端构建输出（生产模式）
+│       │   ├── schedule_executor.py # 排班调度器
+│       │   ├── session_watcher.py   # JSONL 文件监控（双源之一）
+│       │   └── ...                  # agent/team/task/chat/knowledge 等服务
+│       ├── routes/                  # RESTful API
+│       └── websocket/               # WebSocket 事件广播
 │
 ├── packages/web/                    # React 前端
-│   ├── src/
-│   │   ├── pages/                   # 页面组件
-│   │   │   ├── DashboardPage.tsx
-│   │   │   ├── TeamListPage.tsx
-│   │   │   ├── AgentListPage.tsx
-│   │   │   ├── ChatPage.tsx
-│   │   │   ├── MonitorPage.tsx
-│   │   │   └── WorkflowEditorPage.tsx
-│   │   ├── components/
-│   │   │   ├── workflow/            # 工作流节点组件
-│   │   │   │   ├── TaskNode.tsx
-│   │   │   │   ├── ConditionNode.tsx
-│   │   │   │   └── ApprovalNode.tsx
-│   │   │   ├── notification/
-│   │   │   │   └── NotificationCenter.tsx
-│   │   │   ├── agent/               # Agent 配置表单
-│   │   │   ├── team/                # Team 管理组件
-│   │   │   ├── scene/               # 3D 场景组件
-│   │   │   ├── layout/              # 布局（Sidebar 等）
-│   │   │   └── ui/                  # shadcn/ui 基础组件
-│   │   ├── stores/                  # Zustand 状态管理
-│   │   ├── hooks/                   # 自定义 Hooks
-│   │   ├── types/                   # TypeScript 类型定义
-│   │   └── lib/                     # 工具函数
-│   └── package.json
+│   └── src/
+│       ├── pages/                   # 页面：Dashboard/Chat/Monitor/Workflow...
+│       ├── components/scene/        # 工作室可视化场景
+│       └── stores/                  # Zustand 状态管理
 │
-├── scripts/
-│   ├── build_frontend.sh            # 构建前端 → 复制到 static/
-│   ├── build_and_publish.sh         # 构建 wheel + 发布 PyPI
-│   ├── deploy.sh                    # 服务器一键部署
-│   └── dev.sh                       # 开发模式启动脚本
-│
-├── Dockerfile                       # 多阶段构建镜像
-├── docker-compose.yml               # Docker Compose 一键启动
-└── package.json                     # 根配置（开发脚本）
+├── scripts/                         # 构建/部署脚本
+├── Dockerfile                       # 多阶段构建
+└── docker-compose.yml               # 一键启动
 ```
 
-### 单端口部署
-
-生产模式下，前端构建产物托管在 FastAPI 的 `static/` 目录，**API + WebSocket + 前端 UI 全部通过同一个端口（默认 3721）提供服务**，无需 Nginx 反代。
+**单端口部署**：API + WebSocket + 前端 UI 全部通过同一端口（默认 3721），无需 Nginx 反代。
 
 ---
 
 ## 🚀 快速开始
 
-### 方式一：pip 安装（推荐）
+### pip 安装（推荐）
 
 ```bash
 pip install openclaw-orchestrator
 openclaw-orchestrator serve
 ```
 
-访问 **http://localhost:3721** 即可使用。
+访问 **http://localhost:3721**。
 
-### 方式二：Docker
+### Docker
 
 ```bash
-docker run -d \
-  --name openclaw-orchestrator \
-  -p 3721:3721 \
-  -v ~/.openclaw:/root/.openclaw \
+docker run -d --name openclaw-orchestrator \
+  -p 3721:3721 -v ~/.openclaw:/root/.openclaw \
   980831cai/openclaw-orchestrator
 ```
 
-### 方式三：Docker Compose
+### Docker Compose
 
 ```bash
 git clone https://github.com/980831Cai/openclaw-orchestrator.git
-cd openclaw-orchestrator
-docker compose up -d
+cd openclaw-orchestrator && docker compose up -d
 ```
 
-### 方式四：源码安装
+### 源码安装
 
 ```bash
 git clone https://github.com/980831Cai/openclaw-orchestrator.git
 cd openclaw-orchestrator
-
-# 构建前端（需要 Node.js 18+ 和 pnpm）
-bash scripts/build_frontend.sh
-
-# 安装后端
-cd server && pip install -e . && cd ..
-
-# 启动
-openclaw-orchestrator serve
+bash scripts/build_frontend.sh          # 构建前端（需要 Node.js 18+ / pnpm）
+cd server && pip install -e . && cd ..  # 安装后端
+openclaw-orchestrator serve             # 启动
 ```
 
 ### 服务器一键部署
 
-在 Linux 服务器上（如腾讯云轻量、CVM）：
-
 ```bash
-git clone https://github.com/980831Cai/openclaw-orchestrator.git
-cd openclaw-orchestrator
 sudo bash scripts/deploy.sh
+# 自动完成：环境检测 → 依赖安装 → 前端构建 → systemd 注册 → 开机自启
 ```
 
-脚本自动完成：环境检测 → 依赖安装 → 前端构建 → systemd 服务注册 → 开机自启
-
-> ⚠️ 外网访问请确保云服务器安全组放行 **TCP 3721** 端口
-
----
-
-## 🛠️ 开发
-
-### 方式一：使用脚本（推荐）
-
-```bash
-bash scripts/dev.sh
-```
-
-自动启动：
-- 🐍 Python 后端：`http://localhost:3721`（热重载）
-- ⚡ Vite 前端：`http://localhost:5173`（HMR）
-
-### 方式二：使用 pnpm
-
-```bash
-# 安装前端依赖
-pnpm install
-
-# 安装后端依赖
-cd server && pip install -e ".[dev]" && cd ..
-
-# 同时启动前后端
-pnpm dev
-```
-
-### 方式三：分别启动
-
-```bash
-# 终端 1 — 后端
-cd server
-python -m openclaw_orchestrator serve --reload
-
-# 终端 2 — 前端
-cd packages/web
-pnpm dev
-```
+> ⚠️ 外网访问请确保安全组放行 **TCP 3721** 端口
 
 ---
 
 ## ⚙️ 配置
 
-通过环境变量或 CLI 参数配置：
+| 环境变量 | 默认值 | 说明 |
+|---------|--------|------|
+| `PORT` | `3721` | 服务端口 |
+| `OPENCLAW_HOME` | `~/.openclaw` | OpenClaw 主目录 |
+| `OPENCLAW_GATEWAY_URL` | `ws://localhost:18789` | Gateway WebSocket 地址 |
+| `OPENCLAW_WEBHOOK_URL` | `http://localhost:3578` | Webhook HTTP 地址 |
+| `CORS_ORIGIN` | `http://localhost:5173` | CORS 允许源 |
+| `DB_PATH` | `$OPENCLAW_HOME/orchestrator.sqlite` | 数据库路径 |
 
-| 环境变量 | CLI 参数 | 默认值 | 说明 |
-|---------|---------|--------|------|
-| `PORT` | `--port` | `3721` | 服务端口 |
-| `OPENCLAW_HOME` | `--openclaw-home` | `~/.openclaw` | OpenClaw 主目录 |
-| `CORS_ORIGIN` | — | `http://localhost:5173` | CORS 允许的源 |
-| `DB_PATH` | — | `$OPENCLAW_HOME/orchestrator.sqlite` | 数据库路径 |
+---
+
+## 🛠️ 开发
 
 ```bash
-# 示例：自定义端口和数据目录
-openclaw-orchestrator serve --port 8080 --openclaw-home /data/openclaw
+bash scripts/dev.sh
+# 🐍 Python 后端：http://localhost:3721（热重载）
+# ⚡ Vite 前端：http://localhost:5173（HMR）
+```
+
+或分别启动：
+
+```bash
+# 终端 1 — 后端
+cd server && pip install -e ".[dev]" && python -m openclaw_orchestrator serve --reload
+
+# 终端 2 — 前端
+cd packages/web && pnpm install && pnpm dev
 ```
 
 ---
 
-## 📡 API 参考
+## 📡 API
 
-所有 API 端点均以 `/api` 为前缀。
+所有端点以 `/api` 为前缀。WebSocket 端点：`ws://localhost:3721/ws`
 
-### 健康检查
+| 模块 | 端点示例 | 说明 |
+|------|---------|------|
+| 健康检查 | `GET /api/health` | 返回 Gateway 连接状态、活跃 Agent 数等 |
+| Agent | `GET/POST/PUT/DELETE /api/agents/:id` | Agent CRUD + 技能管理 |
+| Team | `GET/POST/PUT/DELETE /api/teams/:id` | Team CRUD + 成员管理 |
+| Task | `POST /api/teams/:tid/tasks` | 任务创建/分配/制品管理 |
+| 工作流 | `POST /api/workflows/:id/execute` | 工作流 CRUD + 执行/停止 |
+| 审批 | `POST /api/approvals/:id/approve` | 审批通过/驳回 |
+| 通知 | `GET /api/notifications` | 通知列表/未读数/标记已读 |
+| Chat | `POST /api/agents/:id/sessions/:sid/send` | 发送消息/获取会话 |
+| 知识库 | `POST /api/agents/:id/knowledge/search` | Agent/Team 知识 CRUD + 搜索 |
+| 设置 | `GET/PUT /api/settings/providers` | AI 模型 Provider API Key 管理 |
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/health` | 服务健康状态 |
-
-### Agent 管理
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/agents` | 获取 Agent 列表 |
-| `POST` | `/api/agents` | 创建 Agent |
-| `GET` | `/api/agents/:id` | 获取 Agent 详情 |
-| `PUT` | `/api/agents/:id` | 更新 Agent |
-| `DELETE` | `/api/agents/:id` | 删除 Agent |
-| `GET` | `/api/agents/:id/skills` | 获取 Agent 技能 |
-| `PUT` | `/api/agents/:id/skills` | 更新 Agent 技能 |
-
-### Team 管理
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/teams` | 获取 Team 列表 |
-| `POST` | `/api/teams` | 创建 Team |
-| `GET` | `/api/teams/:id` | 获取 Team 详情 |
-| `PUT` | `/api/teams/:id` | 更新 Team |
-| `DELETE` | `/api/teams/:id` | 删除 Team |
-| `POST` | `/api/teams/:id/members` | 添加团队成员 |
-
-### Task 管理
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `POST` | `/api/teams/:teamId/tasks` | 创建任务 |
-| `GET` | `/api/teams/:teamId/tasks` | 获取团队任务列表 |
-| `GET` | `/api/tasks/:id` | 获取任务详情 |
-| `PUT` | `/api/tasks/:id/status` | 更新任务状态 |
-| `GET` | `/api/tasks/:id/content` | 获取任务内容 |
-| `POST` | `/api/tasks/:id/artifacts` | 创建制品 |
-| `GET` | `/api/tasks/:id/artifacts` | 获取制品列表 |
-| `GET` | `/api/tasks/:id/artifacts/:filename/content` | 获取制品内容 |
-| `DELETE` | `/api/tasks/:id/artifacts/:filename` | 删除制品 |
-
-### 工作流
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/workflows` | 获取工作流列表 |
-| `POST` | `/api/workflows` | 创建工作流 |
-| `GET` | `/api/workflows/:id` | 获取工作流详情 |
-| `PUT` | `/api/workflows/:id` | 更新工作流 |
-| `DELETE` | `/api/workflows/:id` | 删除工作流 |
-| `POST` | `/api/workflows/:id/execute` | 执行工作流 |
-| `POST` | `/api/workflows/:id/stop` | 停止执行 |
-| `GET` | `/api/workflows/:id/executions` | 获取执行历史 |
-| `GET` | `/api/executions/:id` | 获取执行详情 |
-
-### 审批
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/approvals` | 获取审批列表 |
-| `GET` | `/api/approvals/pending` | 获取待处理审批 |
-| `POST` | `/api/approvals/:id/approve` | 通过审批 |
-| `POST` | `/api/approvals/:id/reject` | 驳回审批 |
-
-### 通知
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/notifications` | 获取通知列表 |
-| `GET` | `/api/notifications/unread-count` | 获取未读数量 |
-| `PUT` | `/api/notifications/:id/read` | 标记单条已读 |
-| `PUT` | `/api/notifications/read-all` | 标记全部已读 |
-
-### 知识库
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/agents/:id/knowledge` | 获取 Agent 知识条目 |
-| `POST` | `/api/agents/:id/knowledge` | 添加 Agent 知识 |
-| `DELETE` | `/api/agents/:id/knowledge/:entryId` | 删除 Agent 知识 |
-| `POST` | `/api/agents/:id/knowledge/search` | 搜索 Agent 知识 |
-| `GET` | `/api/agents/:id/knowledge/stats` | Agent 知识统计 |
-| `GET` | `/api/teams/:id/knowledge` | 获取 Team 知识条目 |
-| `POST` | `/api/teams/:id/knowledge` | 添加 Team 知识 |
-| `DELETE` | `/api/teams/:id/knowledge/:entryId` | 删除 Team 知识 |
-| `POST` | `/api/teams/:id/knowledge/search` | 搜索 Team 知识 |
-| `GET` | `/api/teams/:id/knowledge/stats` | Team 知识统计 |
-
-### Chat / 监控
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/agents/:id/sessions` | 获取会话列表 |
-| `GET` | `/api/agents/:id/sessions/:sid/messages` | 获取会话消息 |
-| `POST` | `/api/agents/:id/sessions/:sid/send` | 发送消息 |
-| `GET` | `/api/monitor/statuses` | 获取 Agent 状态 |
-
-### WebSocket
-
-```
-ws://localhost:3721/ws
-```
-
-事件类型：
-- `agent_status` — Agent 状态变更
-- `communication` — Agent 间通信事件
-- `workflow_update` — 工作流执行状态更新
-- `notification` — 新通知推送
-- `approval_update` — 审批状态变更
-
----
-
-## 🗃️ 数据库
-
-使用 SQLite（WAL 模式），数据表包括：
-
-| 表名 | 说明 |
-|------|------|
-| `teams` | 团队信息 |
-| `team_members` | 团队成员关系 |
-| `tasks` | 任务 |
-| `workflows` | 工作流定义 |
-| `workflow_executions` | 工作流执行记录 |
-| `knowledge_entries` | 知识库条目 |
-| `approvals` | 审批记录 |
-| `notifications` | 通知 |
-
-数据库文件默认位于 `~/.openclaw/orchestrator.sqlite`。
+WebSocket 事件：`agent_status` · `communication` · `new_message` · `gateway_status` · `tool_call` · `notification` · `approval_update` · `workflow_update`
 
 ---
 
 ## 🧰 技术栈
 
-### 后端
-
-| 技术 | 用途 |
-|------|------|
-| [FastAPI](https://fastapi.tiangolo.com/) | Web 框架 |
-| [Uvicorn](https://www.uvicorn.org/) | ASGI 服务器 |
-| [Pydantic](https://docs.pydantic.dev/) | 数据验证 + Settings |
-| SQLite (stdlib) | 嵌入式数据库 |
-| WebSocket | 实时推送 |
-| [watchfiles](https://github.com/samuelcolvin/watchfiles) | 文件监听 |
-| [python-frontmatter](https://github.com/eyeseast/python-frontmatter) | Markdown 解析 |
-
-### 前端
-
-| 技术 | 用途 |
-|------|------|
-| [React 18](https://react.dev/) | UI 框架 |
-| [Vite](https://vitejs.dev/) | 构建工具 |
-| [TypeScript](https://www.typescriptlang.org/) | 类型安全 |
-| [Tailwind CSS](https://tailwindcss.com/) | 样式 |
-| [shadcn/ui](https://ui.shadcn.com/) | 组件库 |
-| [React Flow](https://reactflow.dev/) | 工作流画布 |
-| [Zustand](https://github.com/pmndrs/zustand) | 状态管理 |
-| [Recharts](https://recharts.org/) | 图表 |
-| [Lucide](https://lucide.dev/) | 图标 |
+| 层 | 技术 |
+|----|------|
+| 后端 | FastAPI · Uvicorn · Pydantic · SQLite(WAL) · websockets · watchfiles · httpx |
+| 前端 | React 18 · Vite · TypeScript · Tailwind CSS · shadcn/ui · React Flow · Zustand |
+| 部署 | Docker · systemd · hatch wheel（pip install 一键安装） |
 
 ---
 

@@ -114,6 +114,29 @@ def init_database() -> None:
     # 兼容性升级：为已有的 workflow_executions 表添加 context_json 列
     _migrate_add_column(db, "workflow_executions", "context_json", "TEXT DEFAULT NULL")
 
+    # 为 tasks 表添加 assigned_agent_id 列（排班分配的 Agent）
+    _migrate_add_column(db, "tasks", "assigned_agent_id", "TEXT DEFAULT NULL")
+
+    # 调度任务状态表（记录排班调度的执行历史）
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS schedule_jobs (
+            id TEXT PRIMARY KEY,
+            team_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            cron_expression TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            last_triggered_at TEXT,
+            next_trigger_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_schedule_jobs_team ON schedule_jobs(team_id);
+        CREATE INDEX IF NOT EXISTS idx_schedule_jobs_agent ON schedule_jobs(agent_id);
+        CREATE INDEX IF NOT EXISTS idx_schedule_jobs_status ON schedule_jobs(status);
+    """)
+
     print("📦 Database initialized successfully")
 
 

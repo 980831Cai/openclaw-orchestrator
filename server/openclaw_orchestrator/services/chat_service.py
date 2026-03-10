@@ -1,15 +1,19 @@
 """Chat / session service.
 
 Reads agent session JSONL files and provides message history.
+Sends user messages via OpenClaw Webhook integration.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any
 
 from openclaw_orchestrator.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class ChatService:
@@ -113,11 +117,42 @@ class ChatService:
     async def send_message(
         self, agent_id: str, session_id: str, content: str
     ) -> dict[str, Any]:
-        """Send a message to an agent (placeholder for future OpenClaw integration)."""
-        print(
-            f"📨 Sending message to {agent_id}/{session_id}: {content[:50]}..."
-        )
-        return {"success": True, "message": "Message queued for delivery"}
+        """Send a message to an agent via OpenClaw Webhook.
+
+        The message is sent through the bridge which:
+        1. Tries Webhook ``/hooks/agent`` first (fire-and-forget).
+        2. Falls back to writing directly to the session JSONL file.
+
+        In both cases the session_watcher will pick up the Agent's reply
+        and broadcast it over WebSocket automatically.
+        """
+        from openclaw_orchestrator.services.openclaw_bridge import openclaw_bridge
+
+        # Read the agent's configured model
+        agent_model: str | None = None
+        try:
+            from openclaw_orchestrator.services.agent_service import agent_service
+            agent_model = agent_service._get_agent_model(agent_id)
+        except Exception:
+            pass
+
+        logger.info("📨 Sending message to %s/%s (model=%s): %s...", agent_id, session_id, agent_model or "default", content[:80])
+
+        try:
+            result = await openclaw_bridge.send_agent_message(
+                agent_id=agent_id,
+                message=content,
+                session_id=session_id,
+                model=agent_model,
+            )
+            return {
+                "success": True,
+                "message": "Message delivered via Webhook" if result.get("webhook") else "Message written to session file",
+                "method": "webhook" if result.get("webhook") else "file",
+            }
+        except Exception as exc:
+            logger.error("Failed to send message to %s: %s", agent_id, exc)
+            return {"success": False, "message": f"Delivery failed: {exc}"}
 
 
 # Singleton instance

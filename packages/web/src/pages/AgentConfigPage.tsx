@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Sparkles, Brain, ScrollText, Zap, BookOpen } from 'lucide-react'
+import { ArrowLeft, Sparkles, Brain, ScrollText, Zap, BookOpen, Cpu } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { AgentAvatar } from '@/components/avatar/AgentAvatar'
@@ -9,6 +9,7 @@ import { SoulForm } from '@/components/agent/SoulForm'
 import { RulesForm } from '@/components/agent/RulesForm'
 import { SkillsSelector } from '@/components/agent/SkillsSelector'
 import { KnowledgeManager } from '@/components/agent/KnowledgeManager'
+import { ModelSelector } from '@/components/agent/ModelSelector'
 import { useAgents } from '@/hooks/use-agents'
 import { useAgentStore } from '@/stores/agent-store'
 
@@ -18,6 +19,12 @@ export function AgentConfigPage() {
   const { fetchAgent, updateAgent } = useAgents()
   const { selectedAgent } = useAgentStore()
   const [activeTab, setActiveTab] = useState('identity')
+
+  /** Update the model for the current agent */
+  const handleModelChange = useCallback(async (modelId: string) => {
+    if (!selectedAgent) return
+    await updateAgent(selectedAgent.id, { model: modelId })
+  }, [selectedAgent, updateAgent])
 
   useEffect(() => {
     if (id) fetchAgent(id)
@@ -60,12 +67,12 @@ export function AgentConfigPage() {
           <div>
             <h1 className="text-3xl font-bold text-white">{selectedAgent.name}</h1>
             <p className="text-white/40 mt-1">{selectedAgent.identity.vibe || 'AI Assistant'}</p>
-            <div className="flex gap-2 mt-3">
-              {selectedAgent.model && (
-                <span className="text-xs px-3 py-1 rounded-full bg-cyber-purple/20 text-cyber-lavender border border-cyber-purple/30">
-                  {selectedAgent.model}
-                </span>
-              )}
+            <div className="flex items-center gap-2 mt-3 relative">
+              <ModelSelector
+                currentModel={selectedAgent.model}
+                onSelect={handleModelChange}
+                compact
+              />
               <span className="text-xs px-3 py-1 rounded-full bg-cyber-green/20 text-cyber-green border border-cyber-green/30">
                 在线
               </span>
@@ -84,6 +91,9 @@ export function AgentConfigPage() {
         <TabsList className="bg-cyber-surface/50 border border-white/5 p-1 h-auto">
           <TabsTrigger value="identity" className="data-[state=active]:bg-cyber-purple/20 data-[state=active]:text-white text-white/50 gap-2">
             <Sparkles className="h-4 w-4" /> 身份
+          </TabsTrigger>
+          <TabsTrigger value="model" className="data-[state=active]:bg-cyber-purple/20 data-[state=active]:text-white text-white/50 gap-2">
+            <Cpu className="h-4 w-4" /> 模型
           </TabsTrigger>
           <TabsTrigger value="soul" className="data-[state=active]:bg-cyber-purple/20 data-[state=active]:text-white text-white/50 gap-2">
             <Brain className="h-4 w-4" /> 灵魂
@@ -104,6 +114,15 @@ export function AgentConfigPage() {
             identity={selectedAgent.identity}
             onSave={(identity) => updateAgent(selectedAgent.id, { identity })}
           />
+        </TabsContent>
+
+        <TabsContent value="model">
+          <div className="glass rounded-2xl p-6">
+            <ModelSelector
+              currentModel={selectedAgent.model}
+              onSelect={handleModelChange}
+            />
+          </div>
         </TabsContent>
 
         <TabsContent value="soul">

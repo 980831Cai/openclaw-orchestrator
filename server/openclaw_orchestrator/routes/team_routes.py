@@ -92,8 +92,11 @@ def remove_member(team_id: str, agent_id: str):
 @router.put("/teams/{team_id}/schedule")
 def update_schedule(team_id: str, schedule: dict[str, Any]):
     try:
-        team_service.update_schedule(team_id, schedule)
-        return team_service.get_team(team_id)
+        sync_result = team_service.update_schedule(team_id, schedule)
+        team = team_service.get_team(team_id)
+        # Merge sync metadata into team response
+        team["scheduleSyncResult"] = sync_result
+        return team
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

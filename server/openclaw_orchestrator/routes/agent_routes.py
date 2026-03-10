@@ -18,6 +18,7 @@ class UpdateAgentRequest(BaseModel):
     soul: Optional[dict[str, Any]] = None
     rules: Optional[dict[str, Any]] = None
     skills: Optional[list[str]] = None
+    model: Optional[str] = None
 
 
 class UpdateSkillsRequest(BaseModel):

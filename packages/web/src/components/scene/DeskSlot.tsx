@@ -8,9 +8,10 @@ interface DeskSlotProps {
   isHovered: boolean
   onHover: (hovered: boolean) => void
   onAddMember?: () => void
+  onViewAgent?: (agentId: string) => void
 }
 
-export function DeskSlot({ member, color, isHovered, onHover, onAddMember }: DeskSlotProps) {
+export function DeskSlot({ member, color, isHovered, onHover, onAddMember, onViewAgent }: DeskSlotProps) {
   if (!member) {
     return (
       <div className="relative group">
@@ -43,6 +44,7 @@ export function DeskSlot({ member, color, isHovered, onHover, onAddMember }: Des
           'glass rounded-xl p-4 flex flex-col items-center gap-2 min-h-[100px] transition-all duration-300 cursor-pointer',
           isHovered && 'scale-105 glow-purple border-cyber-purple/40'
         )}
+        onClick={() => onViewAgent?.(member.agentId)}
       >
         {/* Agent avatar */}
         <AgentAvatar
@@ -71,6 +73,7 @@ export function DeskSlot({ member, color, isHovered, onHover, onAddMember }: Des
             <p className="text-white text-xs font-semibold">{member.agentId}</p>
             <p className="text-cyber-lavender text-[10px]">角色: {member.role || 'member'}</p>
             <p className="text-white/30 text-[10px]">加入顺序: #{member.joinOrder}</p>
+            <p className="text-cyber-purple text-[10px] mt-1">点击查看工作空间 →</p>
           </div>
           <div className="absolute left-1/2 -translate-x-1/2 bottom-0 translate-y-full w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-white/10" />
         </div>

@@ -144,6 +144,9 @@ class AgentService:
         if "skills" in updates and updates["skills"] is not None:
             self._write_skills(agent_id, updates["skills"])
 
+        if "model" in updates and updates["model"] is not None:
+            self._set_agent_model(agent_id, updates["model"])
+
         return self.get_agent(agent_id)
 
     def delete_agent(self, agent_id: str) -> None:
@@ -198,22 +201,93 @@ class AgentService:
         file_manager.write_json(file_path, {"skills": skills})
 
     def _get_agent_model(self, agent_id: str) -> Optional[str]:
+        """Read the agent's model from openclaw.json → agents.list[].model.primary.
+
+        Returns the model in ``provider/model-id`` format (e.g. ``anthropic/claude-sonnet-4-5``),
+        or falls back to ``agents.defaults.model.primary`` if no per-agent override.
+        """
         config_path = "openclaw.json"
         if not file_manager.file_exists(config_path):
             return None
         oc_config = file_manager.read_json(config_path)
-        agents = oc_config.get("agents", {}).get("list", [])
-        for agent in agents:
+
+        # Per-agent model override
+        agents_list = oc_config.get("agents", {}).get("list", [])
+        for agent in agents_list:
             if agent.get("name") == agent_id or agent.get("id") == agent_id:
-                return agent.get("model")
+                model_conf = agent.get("model")
+                if isinstance(model_conf, dict):
+                    return model_conf.get("primary")
+                elif isinstance(model_conf, str):
+                    # Legacy: plain string (not standard but be tolerant)
+                    return model_conf
+
+        # Fall back to agents.defaults.model.primary
+        defaults = oc_config.get("agents", {}).get("defaults", {})
+        default_model = defaults.get("model")
+        if isinstance(default_model, dict):
+            return default_model.get("primary")
+        elif isinstance(default_model, str):
+            return default_model
+
         return None
 
+    def _set_agent_model(self, agent_id: str, model: str) -> None:
+        """Write model selection to openclaw.json → agents.list[].model.primary.
+
+        Uses the OpenClaw canonical structure:
+        ``{ "agents": { "list": [{ "id": "xxx", "model": { "primary": "provider/model-id" } }] } }``
+        """
+        config_path = "openclaw.json"
+
+        if not file_manager.file_exists(config_path):
+            file_manager.write_json(
+                config_path,
+                {
+                    "agents": {
+                        "list": [
+                            {
+                                "id": agent_id,
+                                "model": {"primary": model},
+                            }
+                        ]
+                    }
+                },
+            )
+            return
+
+        oc_config = file_manager.read_json(config_path)
+        if "agents" not in oc_config:
+            oc_config["agents"] = {}
+        if "list" not in oc_config["agents"]:
+            oc_config["agents"]["list"] = []
+
+        # Find existing agent entry or create one
+        found = False
+        for agent in oc_config["agents"]["list"]:
+            if agent.get("name") == agent_id or agent.get("id") == agent_id:
+                # Ensure model is a dict with primary key
+                if not isinstance(agent.get("model"), dict):
+                    agent["model"] = {}
+                agent["model"]["primary"] = model
+                found = True
+                break
+
+        if not found:
+            oc_config["agents"]["list"].append({
+                "id": agent_id,
+                "model": {"primary": model},
+            })
+
+        file_manager.write_json(config_path, oc_config)
+
     def _update_openclaw_config(self, agent_id: str, action: str) -> None:
+        """Add or remove an agent entry from openclaw.json → agents.list."""
         config_path = "openclaw.json"
         if not file_manager.file_exists(config_path):
             if action == "add":
                 file_manager.write_json(
-                    config_path, {"agents": {"list": [{"name": agent_id}]}}
+                    config_path, {"agents": {"list": [{"id": agent_id}]}}
                 )
             return
 
@@ -223,15 +297,16 @@ class AgentService:
         if "list" not in oc_config["agents"]:
             oc_config["agents"]["list"] = []
 
+        def _matches(a: dict) -> bool:
+            return a.get("id") == agent_id or a.get("name") == agent_id
+
         if action == "add":
-            exists = any(
-                a.get("name") == agent_id for a in oc_config["agents"]["list"]
-            )
+            exists = any(_matches(a) for a in oc_config["agents"]["list"])
             if not exists:
-                oc_config["agents"]["list"].append({"name": agent_id})
+                oc_config["agents"]["list"].append({"id": agent_id})
         else:
             oc_config["agents"]["list"] = [
-                a for a in oc_config["agents"]["list"] if a.get("name") != agent_id
+                a for a in oc_config["agents"]["list"] if not _matches(a)
             ]
 
         file_manager.write_json(config_path, oc_config)
