@@ -34,6 +34,10 @@ packages/web/.vite/
 # ─── CodeBuddy ───
 .codebuddy/
 
+# ─── Build artifacts ───
+server/openclaw_orchestrator/static/*
+!server/openclaw_orchestrator/static/.gitkeep
+
 # ─── Environment ───
 .env
 .env.local

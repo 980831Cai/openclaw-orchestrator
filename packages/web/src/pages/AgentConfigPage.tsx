@@ -188,7 +188,7 @@ export function AgentConfigPage() {
                 </div>
                 <div className="flex items-center gap-1.5 text-white/20 text-[10px]">
                   <ScrollText className="w-3 h-3" />
-                  <span>{selectedAgent.rules?.length || 0} 条规范</span>
+                  <span>{Object.values(selectedAgent.rules || {}).filter(Boolean).length || 0} 条规范</span>
                 </div>
                 <div className="flex items-center gap-1.5 text-white/20 text-[10px]">
                   <Zap className="w-3 h-3" />

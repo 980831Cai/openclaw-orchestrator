@@ -63,4 +63,3 @@ settings = Settings()
 
 # Constants matching shared/constants
 DEFAULT_SERVER_PORT = 3721
-DEFAULT_WS_PORT = 3722

@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   orchestrator:
     build: .
@@ -11,6 +9,12 @@ services:
     environment:
       - PORT=3721
       - OPENCLAW_HOME=/root/.openclaw
+      # Gateway 连接配置（容器内 localhost 不是宿主机）
+      # macOS/Windows: 使用 host.docker.internal
+      # Linux: 使用 --network host 或宿主机 IP
+      - OPENCLAW_GATEWAY_URL=ws://host.docker.internal:18789
+      # 远程连接时设置 Gateway Token（本地连接自动放行）
+      # - OPENCLAW_GATEWAY_TOKEN=your-token-here
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3721/api/health')"]
