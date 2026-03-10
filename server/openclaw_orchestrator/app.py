@@ -25,6 +25,7 @@ from openclaw_orchestrator.routes.task_routes import router as task_router
 from openclaw_orchestrator.routes.team_routes import router as team_router
 from openclaw_orchestrator.routes.workflow_routes import router as workflow_router
 from openclaw_orchestrator.routes.settings_routes import router as settings_router
+from openclaw_orchestrator.routes.meeting_routes import router as meeting_router
 from openclaw_orchestrator.websocket.ws_handler import handle_ws_connection
 
 
@@ -103,6 +104,7 @@ app.include_router(chat_router, prefix="/api")
 app.include_router(notification_router, prefix="/api")
 app.include_router(workflow_router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
+app.include_router(meeting_router, prefix="/api")
 
 
 # ─── Health check ───

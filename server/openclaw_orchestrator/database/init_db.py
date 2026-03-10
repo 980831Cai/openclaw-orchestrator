@@ -137,6 +137,33 @@ def init_database() -> None:
         CREATE INDEX IF NOT EXISTS idx_schedule_jobs_status ON schedule_jobs(status);
     """)
 
+    # 为 teams 表添加 lead_agent_id 列（Team Lead 角色）
+    _migrate_add_column(db, "teams", "lead_agent_id", "TEXT DEFAULT NULL")
+
+    # 会议表
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS meetings (
+            id TEXT PRIMARY KEY,
+            team_id TEXT NOT NULL,
+            meeting_type TEXT NOT NULL,
+            topic TEXT NOT NULL,
+            topic_description TEXT DEFAULT '',
+            lead_agent_id TEXT NOT NULL,
+            participants TEXT NOT NULL DEFAULT '[]',
+            status TEXT DEFAULT 'preparing',
+            file_path TEXT,
+            summary TEXT,
+            max_rounds INTEGER DEFAULT 1,
+            current_round INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            concluded_at TEXT,
+            FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_meetings_team ON meetings(team_id);
+        CREATE INDEX IF NOT EXISTS idx_meetings_status ON meetings(status);
+    """)
+
     print("📦 Database initialized successfully")
 
 

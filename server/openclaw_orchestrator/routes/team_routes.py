@@ -28,6 +28,10 @@ class AddMemberRequest(BaseModel):
     role: str = "member"
 
 
+class SetLeadRequest(BaseModel):
+    agentId: str
+
+
 class UpdateContentRequest(BaseModel):
     content: str
 
@@ -87,6 +91,17 @@ def remove_member(team_id: str, agent_id: str):
         return team_service.get_team(team_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.put("/teams/{team_id}/lead")
+def set_team_lead(team_id: str, req: SetLeadRequest):
+    """Set a specific agent as Team Lead."""
+    if not req.agentId:
+        raise HTTPException(status_code=400, detail="agentId is required")
+    try:
+        return team_service.set_lead(team_id, req.agentId)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.put("/teams/{team_id}/schedule")

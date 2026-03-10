@@ -194,6 +194,14 @@ function StatCard({ icon, label, value, valueColor }: {
 
 /** Agent card in the plaza */
 function AgentPlazaCard({ agent, delay, onClick }: { agent: AgentListItem; delay: number; onClick: () => void }) {
+  const statusConfig: Record<string, { color: string; label: string }> = {
+    busy: { color: '#22C55E', label: '执行中' },
+    idle: { color: '#3B82F6', label: '空闲' },
+    error: { color: '#EF4444', label: '异常' },
+    offline: { color: '#6B7280', label: '离线' },
+  }
+  const cfg = statusConfig[agent.status] || statusConfig.idle
+
   return (
     <button
       onClick={onClick}
@@ -206,11 +214,31 @@ function AgentPlazaCard({ agent, delay, onClick }: { agent: AgentListItem; delay
         status={agent.status}
         size="md"
       />
+      {/* Status bar under avatar */}
+      <div
+        className={cn(
+          'h-[3px] rounded-full transition-all duration-500',
+          agent.status === 'busy' ? 'w-8 animate-pulse' : 'w-5',
+        )}
+        style={{
+          backgroundColor: cfg.color,
+          boxShadow: agent.status === 'busy' ? `0 0 8px ${cfg.color}80` : 'none',
+        }}
+      />
       <span className="text-white/50 text-[10px] truncate max-w-full group-hover:text-white/80 transition-colors">
         {agent.name}
       </span>
-      {agent.teamIds.length > 0 && (
-        <span className="text-cyber-purple/30 text-[8px]">{agent.teamIds.length} 团队</span>
+      <span className="text-[9px] flex items-center gap-1" style={{ color: `${cfg.color}CC` }}>
+        <span
+          className={cn('w-1.5 h-1.5 rounded-full inline-block', agent.status === 'busy' && 'animate-pulse')}
+          style={{ backgroundColor: cfg.color }}
+        />
+        {cfg.label}
+      </span>
+      {agent.currentTask && agent.status === 'busy' && (
+        <span className="text-[8px] text-cyber-green/60 truncate max-w-full px-1">
+          {agent.currentTask.length > 20 ? `${agent.currentTask.slice(0, 20)}...` : agent.currentTask}
+        </span>
       )}
     </button>
   )

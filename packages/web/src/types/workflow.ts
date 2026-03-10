@@ -2,7 +2,9 @@
 // Migrated from @openclaw/shared to local types
 // Enhanced with ApprovalNode and waiting_approval status
 
-export type WorkflowNodeType = 'task' | 'condition' | 'join' | 'parallel' | 'approval'
+import type { MeetingType } from './team'
+
+export type WorkflowNodeType = 'task' | 'condition' | 'join' | 'parallel' | 'approval' | 'meeting' | 'debate'
 export type WorkflowJoinMode = 'and' | 'or' | 'xor'
 
 export interface TaskNodeData {
@@ -11,6 +13,10 @@ export interface TaskNodeData {
   agentId: string
   task: string
   timeoutSeconds: number
+  requireResponse?: boolean
+  requireArtifacts?: boolean
+  minOutputLength?: number
+  successPattern?: string
   position?: { x: number; y: number }
   maxRetries?: number
   retryDelayMs?: number
@@ -53,17 +59,58 @@ export interface ApprovalNodeData {
   position?: { x: number; y: number }
 }
 
+export interface MeetingNodeData {
+  type: 'meeting'
+  label: string
+  meetingType: Exclude<MeetingType, 'debate'>
+  topic: string
+  topicDescription?: string
+  participants: string[]
+  teamId?: string
+  leadAgentId?: string
+  position?: { x: number; y: number }
+}
+
+export interface DebateNodeData {
+  type: 'debate'
+  label: string
+  topic: string
+  topicDescription?: string
+  participants: string[]
+  teamId?: string
+  judgeAgentId?: string
+  maxRounds: number
+  position?: { x: number; y: number }
+}
+
 export type WorkflowNodeData =
   | TaskNodeData
   | ConditionNodeData
   | JoinNodeData
   | ParallelNodeData
   | ApprovalNodeData
+  | MeetingNodeData
+  | DebateNodeData
 
 export interface WorkflowEdge {
   from: string
   to: string
   condition?: string
+}
+
+export interface WorkflowScheduleWindow {
+  start: string
+  end: string
+  timezone?: string
+}
+
+export interface WorkflowSchedule {
+  enabled: boolean
+  cron: string
+  timezone: string
+  window?: WorkflowScheduleWindow | null
+  activeFrom?: string | null
+  activeUntil?: string | null
 }
 
 export interface WorkflowDefinition {
@@ -73,6 +120,7 @@ export interface WorkflowDefinition {
   nodes: Record<string, WorkflowNodeData>
   edges: WorkflowEdge[]
   maxIterations?: number
+  schedule?: WorkflowSchedule | null
 }
 
 export type WorkflowExecutionStatus =

@@ -135,6 +135,14 @@ export function AgentListPage() {
 }
 
 function AgentCard({ agent, index, onClick }: { agent: AgentListItem; index: number; onClick: () => void }) {
+  const statusConfig: Record<string, { color: string; label: string; glow: string }> = {
+    busy: { color: '#22C55E', label: '执行中', glow: '0 0 8px rgba(34,197,94,0.5)' },
+    idle: { color: '#3B82F6', label: '空闲', glow: 'none' },
+    error: { color: '#EF4444', label: '异常', glow: '0 0 8px rgba(239,68,68,0.5)' },
+    offline: { color: '#6B7280', label: '离线', glow: 'none' },
+  }
+  const cfg = statusConfig[agent.status] || statusConfig.idle
+
   return (
     <button
       onClick={onClick}
@@ -151,9 +159,29 @@ function AgentCard({ agent, index, onClick }: { agent: AgentListItem; index: num
         size="lg"
       />
 
+      {/* Status indicator bar */}
+      <div
+        className={cn(
+          'h-[3px] rounded-full transition-all duration-500',
+          agent.status === 'busy' ? 'w-12 animate-pulse' : 'w-7',
+        )}
+        style={{
+          backgroundColor: cfg.color,
+          boxShadow: cfg.glow,
+        }}
+      />
+
       <div className="text-center">
         <p className="text-white/90 font-semibold text-sm">{agent.name}</p>
-        <p className="text-white/25 text-xs mt-0.5 capitalize">{agent.status}</p>
+        <div className="flex items-center justify-center gap-1 mt-0.5">
+          <span
+            className={cn('w-1.5 h-1.5 rounded-full inline-block', agent.status === 'busy' && 'animate-pulse')}
+            style={{ backgroundColor: cfg.color }}
+          />
+          <span className="text-[10px]" style={{ color: `${cfg.color}CC` }}>
+            {cfg.label}
+          </span>
+        </div>
       </div>
 
       {agent.model && (
@@ -170,16 +198,44 @@ function AgentCard({ agent, index, onClick }: { agent: AgentListItem; index: num
 }
 
 function AgentListRow({ agent, index, onClick }: { agent: AgentListItem; index: number; onClick: () => void }) {
+  const statusConfig: Record<string, { color: string; label: string }> = {
+    busy: { color: '#22C55E', label: '执行中' },
+    idle: { color: '#3B82F6', label: '空闲' },
+    error: { color: '#EF4444', label: '异常' },
+    offline: { color: '#6B7280', label: '离线' },
+  }
+  const cfg = statusConfig[agent.status] || statusConfig.idle
+
   return (
     <button
       onClick={onClick}
       className="w-full cartoon-card p-3 flex items-center gap-4 cursor-pointer text-left animate-fade-in"
       style={{ animationDelay: `${index * 30}ms` }}
     >
-      <AgentAvatar emoji={agent.emoji} theme={agent.theme} status={agent.status} size="sm" />
+      <div className="flex flex-col items-center gap-1">
+        <AgentAvatar emoji={agent.emoji} theme={agent.theme} status={agent.status} size="sm" />
+        <div
+          className={cn(
+            'h-[2px] rounded-full transition-all',
+            agent.status === 'busy' ? 'w-6 animate-pulse' : 'w-4',
+          )}
+          style={{ backgroundColor: cfg.color }}
+        />
+      </div>
       <div className="flex-1 min-w-0">
         <p className="text-white/90 text-sm font-medium truncate">{agent.name}</p>
-        <p className="text-white/20 text-[10px]">{agent.status}</p>
+        <div className="flex items-center gap-1 mt-0.5">
+          <span
+            className={cn('w-1.5 h-1.5 rounded-full inline-block', agent.status === 'busy' && 'animate-pulse')}
+            style={{ backgroundColor: cfg.color }}
+          />
+          <span className="text-[10px]" style={{ color: `${cfg.color}CC` }}>{cfg.label}</span>
+          {agent.currentTask && agent.status === 'busy' && (
+            <span className="text-[9px] text-cyber-green/50 ml-1 truncate max-w-[200px]">
+              · {agent.currentTask}
+            </span>
+          )}
+        </div>
       </div>
       {agent.model && (
         <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyber-purple/10 text-cyber-lavender/50 border border-cyber-purple/15">

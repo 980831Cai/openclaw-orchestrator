@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Users, Calendar, FileText, BookOpen, ClipboardList, GitBranch } from 'lucide-react'
+import { ArrowLeft, Users, Calendar, FileText, BookOpen, ClipboardList, GitBranch, MessageSquare } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { StudioScene } from '@/components/scene/StudioScene'
@@ -9,6 +9,7 @@ import { ScheduleEditor } from '@/components/team/ScheduleEditor'
 import { TaskBoard } from '@/components/team/TaskBoard'
 import { TeamWorkflowEditor } from '@/components/team/TeamWorkflowEditor'
 import { SharedFileEditor } from '@/components/team/SharedFileEditor'
+import { MeetingPanel } from '@/components/team/MeetingPanel'
 import { KnowledgeManager } from '@/components/agent/KnowledgeManager'
 import { useTeams } from '@/hooks/use-teams'
 import { useTeamStore } from '@/stores/team-store'
@@ -84,6 +85,9 @@ export function TeamDetailPage() {
             <TabsTrigger value="tasks" className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-cyber-purple data-[state=active]:text-white text-white/40 rounded-none gap-2 py-3">
               <ClipboardList className="h-4 w-4" /> 任务看板
             </TabsTrigger>
+            <TabsTrigger value="meetings" className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-cyber-purple data-[state=active]:text-white text-white/40 rounded-none gap-2 py-3">
+              <MessageSquare className="h-4 w-4" /> 会议
+            </TabsTrigger>
             <TabsTrigger value="workflows" className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-cyber-amber data-[state=active]:text-white text-white/40 rounded-none gap-2 py-3">
               <GitBranch className="h-4 w-4" /> 战术桌
             </TabsTrigger>
@@ -97,13 +101,16 @@ export function TeamDetailPage() {
 
           <div className={cn('p-6 overflow-y-auto', activeTab === 'workflows' ? 'max-h-[60vh]' : 'max-h-[40vh]')}>
             <TabsContent value="members" className="mt-0">
-              <MemberManager teamId={selectedTeam.id} members={selectedTeam.members} onMembersChange={refreshTeam} />
+              <MemberManager teamId={selectedTeam.id} members={selectedTeam.members} leadAgentId={selectedTeam.leadAgentId} onMembersChange={refreshTeam} />
             </TabsContent>
             <TabsContent value="schedule" className="mt-0">
               <ScheduleEditor schedule={selectedTeam.schedule} teamId={selectedTeam.id} members={selectedTeam.members} />
             </TabsContent>
             <TabsContent value="tasks" className="mt-0">
               <TaskBoard teamId={selectedTeam.id} />
+            </TabsContent>
+            <TabsContent value="meetings" className="mt-0">
+              <MeetingPanel teamId={selectedTeam.id} members={selectedTeam.members} leadAgentId={selectedTeam.leadAgentId} />
             </TabsContent>
             <TabsContent value="workflows" className="mt-0">
               <TeamWorkflowEditor teamId={selectedTeam.id} />
