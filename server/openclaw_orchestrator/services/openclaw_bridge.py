@@ -1,10 +1,21 @@
 """OpenClaw Bridge — unified integration layer for OpenClaw runtime.
 
 Provides four core capabilities:
-1. Webhook invocation: Send tasks/messages to agents via HTTP /hooks/agent
+1. Agent invocation: Trigger agents via Gateway sessions.spawn / sessions.send,
+   falling back to Webhook POST /hooks/agent, then JSONL direct write
 2. Cron configuration: Write scheduled jobs to ~/.openclaw/cron/jobs.json
 3. Heartbeat status: Read agent HEARTBEAT.md to check liveness
 4. JSONL response polling: Wait for agent responses by watching session files
+
+Three-layer degradation for agent invocation:
+  ① Gateway RPC (sessions.spawn / sessions.send) — lowest latency
+  ② Webhook HTTP (POST /hooks/agent) — if Gateway unavailable
+  ③ JSONL file direct write — ultimate fallback, always works
+
+IMPORTANT: OpenClaw Gateway is a communication bus, NOT an execution engine.
+It does NOT support 'agent.invoke'. The correct RPC methods are:
+  - sessions.spawn: Create session + send first message (triggers Agent)
+  - sessions.send: Send message to existing session
 
 All file paths are relative to OPENCLAW_HOME (default: ~/.openclaw).
 """
@@ -92,12 +103,13 @@ class OpenClawBridge:
         correlation_id: Optional[str] = None,
         model: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Invoke an agent via Webhook and wait for response.
+        """Invoke an agent and wait for response (three-layer degradation).
 
         This is the primary method for workflow task node execution.
-        1. Sends a task message via POST /hooks/agent
-        2. Polls the agent's JSONL session directory for the response
-        3. Returns the agent's response content
+        1. Try Gateway sessions.spawn (creates session + triggers agent)
+        2. Fall back to Webhook POST /hooks/agent
+        3. Fall back to JSONL direct write
+        4. Poll the agent's session JSONL for the response
 
         Args:
             agent_id: Target agent identifier.
@@ -114,51 +126,48 @@ class OpenClawBridge:
         session_id = session_id or f"orchestrator-{correlation_id}"
         start_time = datetime.utcnow()
 
-        # ── Try Gateway RPC first (lowest latency, direct control plane) ──
+        # ── Try Gateway sessions.spawn first (create session + trigger Agent) ──
+        # NOTE: OpenClaw Gateway is a communication bus, not an execution engine.
+        # It does NOT support "agent.invoke". The correct RPC method is:
+        #   - sessions.spawn: Create a new session and send the first message
+        #   - sessions.send: Send a message to an existing session
+        # After spawning, we still poll JSONL for the response since Gateway
+        # only triggers the Agent — it doesn't wait for the response.
+        gateway_spawned = False
         try:
             from openclaw_orchestrator.services.gateway_connector import gateway_connector
             if gateway_connector.connected:
-                rpc_params: dict[str, Any] = {
+                spawn_params: dict[str, Any] = {
                     "agentId": agent_id,
-                    "message": message,
                     "sessionId": session_id,
-                    "correlationId": correlation_id,
-                    "source": "orchestrator",
+                    "message": message,
+                    "metadata": {
+                        "source": "orchestrator",
+                        "correlationId": correlation_id,
+                    },
                 }
                 if model:
-                    rpc_params["model"] = model
-                result = await gateway_connector.call_rpc(
-                    "agent.invoke", rpc_params, timeout=float(timeout_seconds)
+                    spawn_params["model"] = model
+                await gateway_connector.call_rpc(
+                    "sessions.spawn", spawn_params, timeout=10.0
                 )
-                elapsed = (datetime.utcnow() - start_time).total_seconds()
-                # Gateway returned a direct response
-                content = ""
-                if isinstance(result, dict):
-                    content = result.get("content", "") or json.dumps(result)
-                elif isinstance(result, str):
-                    content = result
-                if content:
-                    return {
-                        "success": True,
-                        "content": content,
-                        "sessionId": session_id,
-                        "correlationId": correlation_id,
-                        "elapsed": round(elapsed, 2),
-                        "channel": "gateway",
-                    }
-        except Exception:
-            pass  # Gateway unavailable or RPC failed — fall back to Webhook+JSONL
+                gateway_spawned = True
+                print(f"🔌 Gateway sessions.spawn → {agent_id}/{session_id}")
+        except Exception as e:
+            print(f"⚠️ Gateway sessions.spawn failed for {agent_id}: {e}")
+            # Fall through to Webhook+JSONL fallback
 
         # Record the current file offset BEFORE sending, so we only read new content
         session_file = self._agent_session_path(agent_id, session_id)
         pre_offset = self._get_file_size(session_file)
 
-        # Try Webhook first
-        webhook_ok = await self._send_webhook(agent_id, message, session_id, correlation_id, model=model)
+        if not gateway_spawned:
+            # Gateway unavailable — try Webhook, then JSONL direct write
+            webhook_ok = await self._send_webhook(agent_id, message, session_id, correlation_id, model=model)
 
-        if not webhook_ok:
-            # Fallback: write directly to JSONL (manual trigger)
-            self._write_user_message(agent_id, session_id, message, correlation_id)
+            if not webhook_ok:
+                # Fallback: write directly to JSONL (manual trigger)
+                self._write_user_message(agent_id, session_id, message, correlation_id)
 
         # Poll for response
         response = await self._poll_for_response(
@@ -174,6 +183,7 @@ class OpenClawBridge:
                 "sessionId": session_id,
                 "correlationId": correlation_id,
                 "elapsed": round(elapsed, 2),
+                "channel": "gateway" if gateway_spawned else "webhook+jsonl",
             }
 
         return {
@@ -201,26 +211,29 @@ class OpenClawBridge:
         """
         correlation_id = str(uuid.uuid4())[:8]
 
-        # ── Try Gateway RPC first ──
+        # ── Try Gateway sessions.send first ──
         try:
             from openclaw_orchestrator.services.gateway_connector import gateway_connector
             if gateway_connector.connected:
-                await gateway_connector.call_rpc("agent.sendMessage", {
+                await gateway_connector.call_rpc("sessions.send", {
                     "agentId": agent_id,
                     "sessionId": session_id,
                     "message": content,
-                    "correlationId": correlation_id,
-                    "source": "orchestrator",
+                    "metadata": {
+                        "source": "orchestrator",
+                        "correlationId": correlation_id,
+                    },
                     **({"model": model} if model else {}),
                 }, timeout=5.0)
                 return {
                     "success": True,
-                    "message": "Message sent to agent via Gateway",
+                    "message": "Message sent to agent via Gateway (sessions.send)",
                     "correlationId": correlation_id,
                     "channel": "gateway",
                 }
-        except Exception:
-            pass  # Fall back to Webhook
+        except Exception as e:
+            print(f"⚠️ Gateway sessions.send failed for {agent_id}: {e}")
+            # Fall back to Webhook
 
         webhook_ok = await self._send_webhook(agent_id, content, session_id, correlation_id, model=model)
 

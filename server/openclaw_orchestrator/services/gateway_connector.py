@@ -600,6 +600,83 @@ class GatewayConnector:
             logger.warning("Failed to interrupt agent %s: %s", agent_id, e)
             return False
 
+    async def spawn_session(
+        self,
+        agent_id: str,
+        session_id: str,
+        message: str,
+        model: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Spawn a new session and send the first message to an agent.
+
+        This is the correct way to invoke an agent via Gateway.
+        Gateway does NOT support 'agent.invoke' — it is a communication bus,
+        not an execution engine. Use sessions.spawn instead.
+
+        Args:
+            agent_id: Target agent ID.
+            session_id: Session identifier to create.
+            message: First message content.
+            model: Optional model override.
+            metadata: Optional metadata dict.
+
+        Returns:
+            Gateway RPC result dict.
+
+        Raises:
+            GatewayNotConnectedError: If not connected.
+            GatewayRPCError: If Gateway returns error.
+        """
+        params: dict[str, Any] = {
+            "agentId": agent_id,
+            "sessionId": session_id,
+            "message": message,
+        }
+        if model:
+            params["model"] = model
+        if metadata:
+            params["metadata"] = metadata
+
+        result = await self.call_rpc("sessions.spawn", params, timeout=10.0)
+        return result or {}
+
+    async def send_to_session(
+        self,
+        agent_id: str,
+        session_id: str,
+        message: str,
+        model: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Send a message to an existing agent session.
+
+        Use sessions.send (not agent.sendMessage) — this is the correct
+        Gateway RPC method for sending messages.
+
+        Args:
+            agent_id: Target agent ID.
+            session_id: Existing session identifier.
+            message: Message content.
+            model: Optional model override.
+            metadata: Optional metadata dict.
+
+        Returns:
+            Gateway RPC result dict.
+        """
+        params: dict[str, Any] = {
+            "agentId": agent_id,
+            "sessionId": session_id,
+            "message": message,
+        }
+        if model:
+            params["model"] = model
+        if metadata:
+            params["metadata"] = metadata
+
+        result = await self.call_rpc("sessions.send", params, timeout=5.0)
+        return result or {}
+
     # ════════════════════════════════════════════════════════════
     # Event handler registration
     # ════════════════════════════════════════════════════════════
