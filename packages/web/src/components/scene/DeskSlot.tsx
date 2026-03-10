@@ -7,20 +7,24 @@ interface DeskSlotProps {
   color: string
   isHovered: boolean
   onHover: (hovered: boolean) => void
+  onAddMember?: () => void
 }
 
-export function DeskSlot({ member, color, isHovered, onHover }: DeskSlotProps) {
+export function DeskSlot({ member, color, isHovered, onHover, onAddMember }: DeskSlotProps) {
   if (!member) {
     return (
       <div className="relative group">
-        <div className="glass rounded-xl p-4 border-dashed border-white/10 flex flex-col items-center justify-center min-h-[100px] transition-all duration-300 hover:border-cyber-purple/30 cursor-pointer">
+        <div
+          className="glass rounded-xl p-4 border-dashed border-white/10 flex flex-col items-center justify-center min-h-[100px] transition-all duration-300 hover:border-cyber-purple/30 cursor-pointer"
+          onClick={onAddMember}
+        >
           <div className="w-10 h-10 rounded-xl border-2 border-dashed border-white/10 flex items-center justify-center text-white/15 group-hover:border-cyber-purple/30 group-hover:text-cyber-lavender/40 transition-colors">
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
             </svg>
           </div>
           <span className="text-white/15 text-[10px] mt-2 group-hover:text-white/30 transition-colors">
-            空工位
+            点击邀请
           </span>
         </div>
       </div>

@@ -1,17 +1,19 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Users, Calendar, FileText, BookOpen, ClipboardList } from 'lucide-react'
+import { ArrowLeft, Users, Calendar, FileText, BookOpen, ClipboardList, GitBranch } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { StudioScene } from '@/components/scene/StudioScene'
 import { MemberManager } from '@/components/team/MemberManager'
 import { ScheduleEditor } from '@/components/team/ScheduleEditor'
 import { TaskBoard } from '@/components/team/TaskBoard'
+import { TeamWorkflowEditor } from '@/components/team/TeamWorkflowEditor'
 import { SharedFileEditor } from '@/components/team/SharedFileEditor'
 import { KnowledgeManager } from '@/components/agent/KnowledgeManager'
 import { useTeams } from '@/hooks/use-teams'
 import { useTeamStore } from '@/stores/team-store'
 import { api } from '@/lib/api'
+import { cn } from '@/lib/utils'
 
 export function TeamDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -61,7 +63,7 @@ export function TeamDetailPage() {
 
       {/* Studio Scene (60% height) */}
       <div className="flex-1 min-h-[400px] max-h-[60vh] relative overflow-hidden">
-        <StudioScene team={selectedTeam} teamMd={teamMd} />
+        <StudioScene team={selectedTeam} teamMd={teamMd} onAddMember={() => setActiveTab('members')} />
       </div>
 
       {/* Bottom control panel (40%) */}
@@ -77,6 +79,9 @@ export function TeamDetailPage() {
             <TabsTrigger value="tasks" className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-cyber-purple data-[state=active]:text-white text-white/40 rounded-none gap-2 py-3">
               <ClipboardList className="h-4 w-4" /> 任务看板
             </TabsTrigger>
+            <TabsTrigger value="workflows" className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-cyber-amber data-[state=active]:text-white text-white/40 rounded-none gap-2 py-3">
+              <GitBranch className="h-4 w-4" /> 战术桌
+            </TabsTrigger>
             <TabsTrigger value="memory" className="data-[state=active]:bg-transparent data-[state=active]:border-b-2 data-[state=active]:border-cyber-purple data-[state=active]:text-white text-white/40 rounded-none gap-2 py-3">
               <FileText className="h-4 w-4" /> 团队记忆
             </TabsTrigger>
@@ -85,7 +90,7 @@ export function TeamDetailPage() {
             </TabsTrigger>
           </TabsList>
 
-          <div className="p-6 max-h-[40vh] overflow-y-auto">
+          <div className={cn('p-6 overflow-y-auto', activeTab === 'workflows' ? 'max-h-[60vh]' : 'max-h-[40vh]')}>
             <TabsContent value="members" className="mt-0">
               <MemberManager teamId={selectedTeam.id} members={selectedTeam.members} onMembersChange={refreshTeam} />
             </TabsContent>
@@ -94,6 +99,9 @@ export function TeamDetailPage() {
             </TabsContent>
             <TabsContent value="tasks" className="mt-0">
               <TaskBoard teamId={selectedTeam.id} />
+            </TabsContent>
+            <TabsContent value="workflows" className="mt-0">
+              <TeamWorkflowEditor teamId={selectedTeam.id} />
             </TabsContent>
             <TabsContent value="memory" className="mt-0">
               <SharedFileEditor content={teamMd} teamId={selectedTeam.id} onUpdate={setTeamMd} />

@@ -10,6 +10,7 @@ import type { Team, TeamMember } from '@/types'
 interface StudioSceneProps {
   team: Team
   teamMd: string
+  onAddMember?: () => void
 }
 
 const MEMBER_COLORS = [
@@ -17,7 +18,7 @@ const MEMBER_COLORS = [
   '#F59E0B', '#22C55E', '#EF4444', '#3B82F6',
 ]
 
-export function StudioScene({ team, teamMd }: StudioSceneProps) {
+export function StudioScene({ team, teamMd, onAddMember }: StudioSceneProps) {
   const [hoveredDesk, setHoveredDesk] = useState<string | null>(null)
   const members = team.members || []
   const maxDesks = Math.max(members.length, 4)
@@ -28,10 +29,10 @@ export function StudioScene({ team, teamMd }: StudioSceneProps) {
 
   return (
     <div className="relative w-full h-full bg-gradient-to-b from-cyber-bg via-cyber-surface/50 to-cyber-bg overflow-hidden">
-      {/* Grid floor */}
-      <div className="absolute inset-0 cyber-grid opacity-40" />
+      {/* Grid floor — 纯装饰，不阻挡点击 */}
+      <div className="absolute inset-0 cyber-grid opacity-40 pointer-events-none" />
 
-      {/* Ambient particles */}
+      {/* Ambient particles — 纯装饰，不阻挡点击 */}
       <div className="absolute inset-0 pointer-events-none">
         {[...Array(8)].map((_, i) => (
           <div
@@ -48,7 +49,7 @@ export function StudioScene({ team, teamMd }: StudioSceneProps) {
       </div>
 
       {/* Room label */}
-      <div className="absolute top-4 left-6 z-10">
+      <div className="absolute top-4 left-6 z-10 pointer-events-none">
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full bg-cyber-green animate-pulse" />
           <span className="text-white/60 text-xs font-mono tracking-widest uppercase">
@@ -57,8 +58,8 @@ export function StudioScene({ team, teamMd }: StudioSceneProps) {
         </div>
       </div>
 
-      {/* Main scene layout */}
-      <div className="relative w-full h-full flex items-center justify-center p-8 pt-12">
+      {/* Main scene layout — 所有交互元素在这里，z-20 确保在装饰层之上 */}
+      <div className="relative w-full h-full flex items-center justify-center p-8 pt-12 z-20">
         {/* Room container with isometric feel */}
         <div className="relative w-full max-w-5xl h-full flex flex-col">
 
@@ -79,6 +80,7 @@ export function StudioScene({ team, teamMd }: StudioSceneProps) {
                   color={MEMBER_COLORS[i % MEMBER_COLORS.length]}
                   isHovered={hoveredDesk === (member?.agentId || `left-${i}`)}
                   onHover={(h) => setHoveredDesk(h ? (member?.agentId || `left-${i}`) : null)}
+                  onAddMember={onAddMember}
                 />
               ))}
             </div>
@@ -99,6 +101,7 @@ export function StudioScene({ team, teamMd }: StudioSceneProps) {
                     color={MEMBER_COLORS[idx % MEMBER_COLORS.length]}
                     isHovered={hoveredDesk === (member?.agentId || `right-${i}`)}
                     onHover={(h) => setHoveredDesk(h ? (member?.agentId || `right-${i}`) : null)}
+                    onAddMember={onAddMember}
                   />
                 )
               })}
@@ -112,9 +115,9 @@ export function StudioScene({ team, teamMd }: StudioSceneProps) {
         </div>
       </div>
 
-      {/* Communication beams between agents */}
+      {/* Communication beams between agents — 纯装饰 */}
       {members.length >= 2 && (
-        <svg className="absolute inset-0 w-full h-full pointer-events-none z-0" style={{ mixBlendMode: 'screen' }}>
+        <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ mixBlendMode: 'screen', zIndex: 0 }}>
           <defs>
             <linearGradient id="beam-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
               <stop offset="0%" stopColor="#6366F1" stopOpacity="0" />
@@ -125,8 +128,8 @@ export function StudioScene({ team, teamMd }: StudioSceneProps) {
         </svg>
       )}
 
-      {/* Bottom gradient fade */}
-      <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-cyber-bg to-transparent pointer-events-none" />
+      {/* Bottom gradient fade — 纯装饰 */}
+      <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-cyber-bg to-transparent pointer-events-none z-0" />
     </div>
   )
 }

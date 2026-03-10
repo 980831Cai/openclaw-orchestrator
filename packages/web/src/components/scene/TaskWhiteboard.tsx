@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
 import { ClipboardList, Plus } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import type { TaskListItem } from '@/types'
@@ -22,6 +25,8 @@ const STATUS_DOT: Record<string, string> = {
 
 export function TaskWhiteboard({ teamId }: TaskWhiteboardProps) {
   const [tasks, setTasks] = useState<TaskListItem[]>([])
+  const [createOpen, setCreateOpen] = useState(false)
+  const [newTitle, setNewTitle] = useState('')
 
   useEffect(() => {
     api.get<TaskListItem[]>(`/teams/${teamId}/tasks`).then(setTasks)
@@ -29,13 +34,22 @@ export function TaskWhiteboard({ teamId }: TaskWhiteboardProps) {
 
   const activeTasks = tasks.filter((t) => t.status === 'active')
 
+  const handleCreate = async () => {
+    if (!newTitle.trim()) return
+    await api.post(`/teams/${teamId}/tasks`, { title: newTitle.trim(), description: '' })
+    const updated = await api.get<TaskListItem[]>(`/teams/${teamId}/tasks`)
+    setTasks(updated)
+    setNewTitle('')
+    setCreateOpen(false)
+  }
+
   return (
-    <div className="relative group cursor-pointer">
+    <div className="relative">
       {/* Whiteboard frame */}
       <div className={cn(
         'w-64 rounded-xl overflow-hidden transition-all duration-300',
         'bg-cyber-panel/60 border border-white/10',
-        'group-hover:border-cyber-amber/30 group-hover:scale-[1.02]'
+        'hover:border-cyber-amber/30 hover:scale-[1.02]'
       )}>
         {/* Header */}
         <div className="flex items-center justify-between px-3 py-2 border-b border-white/5">
@@ -81,12 +95,36 @@ export function TaskWhiteboard({ teamId }: TaskWhiteboardProps) {
           )}
         </div>
 
-        {/* New task button */}
+        {/* New task button with dialog */}
         <div className="px-2 pb-2">
-          <button className="w-full flex items-center justify-center gap-1 py-1 rounded-md border border-dashed border-white/10 text-white/20 text-[10px] hover:border-cyber-amber/30 hover:text-cyber-amber/60 transition-colors cursor-pointer">
-            <Plus className="w-3 h-3" />
-            新任务
-          </button>
+          <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+            <DialogTrigger asChild>
+              <button className="w-full flex items-center justify-center gap-1 py-1 rounded-md border border-dashed border-white/10 text-white/20 text-[10px] hover:border-cyber-amber/30 hover:text-cyber-amber/60 transition-colors cursor-pointer">
+                <Plus className="w-3 h-3" />
+                新任务
+              </button>
+            </DialogTrigger>
+            <DialogContent className="bg-cyber-surface border-white/10">
+              <DialogHeader><DialogTitle className="text-white">快速创建任务</DialogTitle></DialogHeader>
+              <div className="space-y-4 pt-4">
+                <Input
+                  value={newTitle}
+                  onChange={(e) => setNewTitle(e.target.value)}
+                  placeholder="任务标题"
+                  className="bg-cyber-bg border-white/10 text-white"
+                  onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
+                  autoFocus
+                />
+                <Button
+                  onClick={handleCreate}
+                  className="w-full bg-gradient-to-r from-cyber-amber/80 to-cyber-amber"
+                  disabled={!newTitle.trim()}
+                >
+                  创建
+                </Button>
+              </div>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
     </div>
