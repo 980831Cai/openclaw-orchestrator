@@ -12,7 +12,7 @@ import ReactFlow, {
   type Node,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
-import { GitBranch, Loader2, Merge, Play, Plus, Save, Square, Split, UserCheck, Zap, MessageSquare, Swords } from 'lucide-react'
+import { GitBranch, Loader2, Merge, MessageSquare, Play, Plus, Save, Square, Split, Swords, Trash2, UserCheck, Zap } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { EmptyState } from '@/components/brand/EmptyState'
@@ -29,7 +29,7 @@ import { JoinNodeComponent } from '@/components/workflow/JoinNode'
 import { MeetingNodeComponent } from '@/components/workflow/MeetingNode'
 import { DebateNodeComponent } from '@/components/workflow/DebateNode'
 import { MEETING_TYPE_LABELS } from '@/types'
-import type { WorkflowDefinition, WorkflowExecution, WorkflowNodeData, WorkflowEdge, AgentListItem, MeetingType } from '@/types'
+import type { WorkflowDefinition, WorkflowExecution, WorkflowNodeData, WorkflowEdge, WorkflowSchedule, AgentListItem, MeetingType } from '@/types'
 
 const nodeTypes = {
   task: TaskNodeComponent,
@@ -41,36 +41,139 @@ const nodeTypes = {
   debate: DebateNodeComponent,
 }
 
+const EDGE_STYLE = { stroke: '#6366F1', strokeWidth: 2 }
+
+const DEFAULT_WORKFLOW_TIMEZONE =
+  typeof Intl !== 'undefined' ? Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai' : 'Asia/Shanghai'
+
+function normalizeConditionHandle(value?: string | null): 'yes' | 'no' | undefined {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (normalized === 'yes' || normalized === 'true') return 'yes'
+  if (normalized === 'no' || normalized === 'false') return 'no'
+  return undefined
+}
+
+function resolveConditionBranchTarget(nodeData: WorkflowNodeData | undefined, targetId: string): 'yes' | 'no' | undefined {
+  if (!nodeData || nodeData.type !== 'condition') return undefined
+  const branches = nodeData.branches || {}
+  if (branches.yes === targetId || branches.true === targetId) return 'yes'
+  if (branches.no === targetId || branches.false === targetId) return 'no'
+  if (!branches.yes && !branches.no && !branches.true && !branches.false && branches.default === targetId) return 'yes'
+  return undefined
+}
+
+function normalizeNodeData(data: WorkflowNodeData): WorkflowNodeData {
+  if (data.type === 'condition') {
+    const branches = data.branches || {}
+    const hasExplicitBranch = Boolean(branches.yes || branches.no || branches.true || branches.false)
+
+    if (!hasExplicitBranch && branches.default) {
+      return {
+        ...data,
+        expression: !data.expression || data.expression === 'default' ? 'true' : data.expression,
+        branches: { yes: branches.default },
+      }
+    }
+  }
+
+  return data
+}
+
+function createDefaultSchedule(): WorkflowSchedule {
+  return {
+    enabled: false,
+    cron: '',
+    timezone: DEFAULT_WORKFLOW_TIMEZONE,
+    window: null,
+    activeFrom: null,
+    activeUntil: null,
+  }
+}
+
+function normalizeSchedule(schedule?: WorkflowSchedule | null): WorkflowSchedule {
+  return {
+    ...createDefaultSchedule(),
+    ...(schedule || {}),
+    timezone: schedule?.timezone || DEFAULT_WORKFLOW_TIMEZONE,
+    window: schedule?.window
+      ? {
+          start: schedule.window.start || '',
+          end: schedule.window.end || '',
+          timezone: schedule.window.timezone || schedule.timezone || DEFAULT_WORKFLOW_TIMEZONE,
+        }
+      : null,
+  }
+}
+
+function toDateTimeLocalValue(value?: string | null): string {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
+  return local.toISOString().slice(0, 16)
+}
+
+function fromDateTimeLocalValue(value: string): string | null {
+  if (!value.trim()) return null
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? null : date.toISOString()
+}
+
 function toFlowNodes(workflow: WorkflowDefinition): Node[] {
-  return Object.entries(workflow.nodes).map(([id, data], index) => ({
-    id,
-    type: data.type === 'parallel' ? 'join' : data.type,
-    position: data.position ?? { x: 120 + index * 40, y: 120 + index * 30 },
-    data: data.type === 'parallel'
-      ? { ...data, type: 'join', label: data.label || '汇合节点', joinMode: data.joinMode || 'and' }
-      : data,
-  }))
+  return Object.entries(workflow.nodes).map(([id, rawData], index) => {
+    const data = normalizeNodeData(rawData)
+    return {
+      id,
+      type: data.type === 'parallel' ? 'join' : data.type,
+      position: data.position ?? { x: 120 + index * 40, y: 120 + index * 30 },
+      data: data.type === 'parallel'
+        ? { ...data, type: 'join', label: data.label || '汇合节点', joinMode: data.joinMode || 'and' }
+        : data,
+    }
+  })
 }
 
 function toFlowEdges(workflow: WorkflowDefinition): Edge[] {
-  return workflow.edges.map((edge, index) => ({
-    id: `${edge.from}-${edge.to}-${index}`,
-    source: edge.from,
-    target: edge.to,
-    label: edge.condition,
-    sourceHandle: edge.condition && edge.condition !== 'default' ? edge.condition : undefined,
-  }))
+  return workflow.edges.map((edge, index) => {
+    const sourceNode = workflow.nodes[edge.from]
+    const normalizedHandle =
+      resolveConditionBranchTarget(sourceNode, edge.to)
+      ?? normalizeConditionHandle(edge.condition)
+
+    return {
+      id: `${edge.from}-${edge.to}-${index}`,
+      source: edge.from,
+      target: edge.to,
+      label: normalizedHandle ?? (edge.condition && edge.condition !== 'default' ? edge.condition : undefined),
+      sourceHandle: normalizedHandle,
+      style: EDGE_STYLE,
+      reconnectable: 'source',
+    }
+  })
 }
 
-function serializeNodes(nodes: Node[]): Record<string, WorkflowNodeData> {
+function serializeNodes(nodes: Node[], edges: Edge[]): Record<string, WorkflowNodeData> {
   return Object.fromEntries(
-    nodes.map((node) => [
-      node.id,
-      {
+    nodes.map((node) => {
+      const data = {
         ...(node.data as WorkflowNodeData),
         position: node.position,
-      },
-    ])
+      } as WorkflowNodeData
+
+      if (data.type === 'condition') {
+        const branches = edges
+          .filter((edge) => edge.source === node.id)
+          .reduce<Record<string, string>>((acc, edge) => {
+            const handle = String(edge.sourceHandle || edge.label || '').toLowerCase()
+            if (handle === 'yes' || handle === 'true') acc.yes = edge.target
+            if (handle === 'no' || handle === 'false') acc.no = edge.target
+            return acc
+          }, {})
+        ;(data as any).branches = branches
+      }
+
+      return [node.id, data]
+    })
   )
 }
 
@@ -78,8 +181,53 @@ function serializeEdges(edges: Edge[]): WorkflowEdge[] {
   return edges.map((edge) => ({
     from: edge.source,
     to: edge.target,
-    condition: typeof edge.label === 'string' ? edge.label : edge.sourceHandle || undefined,
+    condition: normalizeConditionHandle(
+      typeof edge.sourceHandle === 'string'
+        ? edge.sourceHandle
+        : typeof edge.label === 'string'
+          ? edge.label
+          : undefined
+    ),
   }))
+}
+
+function buildEdge(connection: Connection): Edge {
+  if (!connection.source || !connection.target) {
+    throw new Error('Invalid edge connection')
+  }
+
+  const normalizedHandle = normalizeConditionHandle(connection.sourceHandle)
+
+  return {
+    id: `edge-${connection.source}-${normalizedHandle || connection.sourceHandle || 'default'}-${connection.target}-${connection.targetHandle || 'default'}-${Date.now()}`,
+    source: connection.source,
+    target: connection.target,
+    sourceHandle: normalizedHandle ?? connection.sourceHandle ?? null,
+    targetHandle: connection.targetHandle ?? null,
+    label: normalizedHandle ?? undefined,
+    style: EDGE_STYLE,
+    reconnectable: 'source',
+  }
+}
+
+function upsertConnectedEdge(current: Edge[], connection: Connection, nodes: Node[], replaceEdgeId?: string): Edge[] {
+  if (!connection.source || !connection.target) return current
+
+  const nextEdge = buildEdge(connection)
+  const sourceNode = nodes.find((node) => node.id === connection.source)
+  const sourceType = (sourceNode?.data as WorkflowNodeData | undefined)?.type
+  const branchHandle = normalizeConditionHandle(nextEdge.sourceHandle ? String(nextEdge.sourceHandle) : undefined)
+
+  let nextEdges = current.filter((edge) => edge.id !== replaceEdgeId)
+
+  if (sourceType === 'condition' && branchHandle) {
+    nextEdges = nextEdges.filter((edge) => {
+      if (edge.source !== connection.source) return true
+      return normalizeConditionHandle(String(edge.sourceHandle || edge.label || '')) !== branchHandle
+    })
+  }
+
+  return addEdge(replaceEdgeId ? { ...nextEdge, id: replaceEdgeId } : nextEdge, nextEdges)
 }
 
 export function WorkflowEditorPage() {
@@ -94,7 +242,9 @@ export function WorkflowEditorPage() {
   const [newTeamId, setNewTeamId] = useState('default')
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [agents, setAgents] = useState<AgentListItem[]>([])
+  const [schedule, setSchedule] = useState<WorkflowSchedule>(createDefaultSchedule())
   const selectedWorkflowId = selected?.id ?? null
+  const [edgeReconnectSuccessful, setEdgeReconnectSuccessful] = useState(true)
 
   const selectedNode = useMemo(() => nodes.find((node) => node.id === selectedNodeId) ?? null, [nodes, selectedNodeId])
   const selectedNodeUpstreamOptions = useMemo(() => {
@@ -111,10 +261,72 @@ export function WorkflowEditorPage() {
     })
   }, [edges, nodes, selectedNodeId])
 
+  const executionDecorations = useMemo(() => {
+    const failedNodeIds = new Set<string>()
+    const successfulNodeIds = new Set<string>()
+
+    if (execution) {
+      for (const log of execution.logs) {
+        if (!log.nodeId || log.nodeId.startsWith('__')) continue
+        if (log.level === 'error') {
+          failedNodeIds.add(log.nodeId)
+          successfulNodeIds.delete(log.nodeId)
+        } else if (!failedNodeIds.has(log.nodeId)) {
+          successfulNodeIds.add(log.nodeId)
+        }
+      }
+    }
+
+    return {
+      nodes: nodes.map((node) => {
+        const executionState =
+          execution?.currentNodeId === node.id && execution.status === 'running'
+            ? 'running'
+            : failedNodeIds.has(node.id)
+              ? 'failed'
+              : successfulNodeIds.has(node.id)
+                ? 'success'
+                : 'idle'
+
+        return {
+          ...node,
+          data: {
+            ...(node.data as WorkflowNodeData),
+            executionState,
+          },
+        }
+      }),
+      edges: edges.map((edge) => {
+        const sourceState =
+          execution?.currentNodeId === edge.source && execution.status === 'running'
+            ? 'running'
+            : failedNodeIds.has(edge.source)
+              ? 'failed'
+              : successfulNodeIds.has(edge.source)
+                ? 'success'
+                : 'idle'
+
+        return {
+          ...edge,
+          animated: sourceState === 'running',
+          style:
+            sourceState === 'running'
+              ? { ...EDGE_STYLE, stroke: '#f59e0b', strokeDasharray: '6 4' }
+              : sourceState === 'failed'
+                ? { ...EDGE_STYLE, stroke: '#ef4444' }
+                : sourceState === 'success'
+                  ? { ...EDGE_STYLE, stroke: '#22c55e' }
+                  : EDGE_STYLE,
+        }
+      }),
+    }
+  }, [edges, execution, nodes])
+
   const loadWorkflow = useCallback((workflow: WorkflowDefinition) => {
     setSelected(workflow)
     setNodes(toFlowNodes(workflow))
     setEdges(toFlowEdges(workflow))
+    setSchedule(normalizeSchedule(workflow.schedule))
     setSelectedNodeId(null)
     setExecution(null)
   }, [setEdges, setNodes])
@@ -131,6 +343,7 @@ export function WorkflowEditorPage() {
           setSelected(next)
           setNodes(toFlowNodes(next))
           setEdges(toFlowEdges(next))
+          setSchedule(normalizeSchedule(next.schedule))
           setSelectedNodeId((current) => (current && next.nodes[current] ? current : null))
         }
       }
@@ -178,19 +391,59 @@ export function WorkflowEditorPage() {
   }, [execution, refreshExecution])
 
   const onConnect = useCallback((connection: Connection) => {
-    setEdges((current) => addEdge({ ...connection, label: connection.sourceHandle ?? undefined }, current))
-  }, [setEdges])
+    setEdges((current) => upsertConnectedEdge(current, connection, nodes))
+  }, [nodes, setEdges])
+
+  const handleEdgeUpdateStart = useCallback(() => {
+    setEdgeReconnectSuccessful(false)
+  }, [])
+
+  const handleEdgeUpdate = useCallback((oldEdge: Edge, newConnection: Connection) => {
+    if (!newConnection.source || !newConnection.target) return
+
+    setEdgeReconnectSuccessful(true)
+    setEdges((current) => upsertConnectedEdge(current, newConnection, nodes, oldEdge.id))
+  }, [nodes, setEdges])
+
+  const handleEdgeUpdateEnd = useCallback((_: unknown, edge: Edge) => {
+    if (edgeReconnectSuccessful) return
+    setEdges((current) => current.filter((item) => item.id !== edge.id))
+  }, [edgeReconnectSuccessful, setEdges])
 
   const handleSave = async () => {
     if (!selected) return
+    const nextSchedule =
+      schedule.enabled && schedule.cron.trim()
+        ? {
+            ...schedule,
+            cron: schedule.cron.trim(),
+            timezone: schedule.timezone.trim() || DEFAULT_WORKFLOW_TIMEZONE,
+            window:
+              schedule.window?.start && schedule.window?.end
+                ? {
+                    start: schedule.window.start,
+                    end: schedule.window.end,
+                    timezone: schedule.window.timezone?.trim() || schedule.timezone.trim() || DEFAULT_WORKFLOW_TIMEZONE,
+                  }
+                : null,
+          }
+        : null
+
+    if (schedule.enabled && !schedule.cron.trim()) {
+      toast({ title: '保存失败', description: '开启定时执行后必须填写 Cron 表达式', variant: 'destructive' })
+      return
+    }
+
     setSaving(true)
     try {
       const updated = await api.put<WorkflowDefinition>(`/workflows/${selected.id}`, {
         name: selected.name,
-        nodes: serializeNodes(nodes),
+        nodes: serializeNodes(nodes, edges),
         edges: serializeEdges(edges),
+        schedule: nextSchedule,
       })
       setSelected(updated)
+      setSchedule(normalizeSchedule(updated.schedule))
       setWorkflows((current) => current.map((workflow) => (workflow.id === updated.id ? updated : workflow)))
       toast({ title: '工作流已保存' })
     } catch (error) {
@@ -244,7 +497,7 @@ export function WorkflowEditorPage() {
   const addNode = (type: WorkflowNodeData['type']) => {
     const nodeId = `${type}-${Date.now()}`
     const baseData: Record<WorkflowNodeData['type'], WorkflowNodeData> = {
-      task: { type: 'task', label: '任务节点', agentId: '', task: '', timeoutSeconds: 60, position: { x: 240, y: 120 } },
+      task: { type: 'task', label: '任务节点', agentId: '', task: '', timeoutSeconds: 60, requireResponse: true, requireArtifacts: false, minOutputLength: 1, successPattern: '', position: { x: 240, y: 120 } },
       condition: { type: 'condition', label: '条件节点', expression: 'true', branches: { yes: '', no: '' }, position: { x: 240, y: 120 } },
       approval: { type: 'approval', label: '审批节点', title: '请确认', description: '', approver: 'web-user', timeoutMinutes: 30, onTimeout: 'reject', position: { x: 240, y: 120 } },
       join: { type: 'join', label: '汇合节点', joinMode: 'and', waitForAll: true, position: { x: 240, y: 120 } },
@@ -281,12 +534,76 @@ export function WorkflowEditorPage() {
     )
   }
 
-  const updateConditionBranch = (branchKey: string, value: string) => {
-    if (!selectedNode || (selectedNode.data as WorkflowNodeData).type !== 'condition') return
-    const currentBranches = { ...(((selectedNode.data as any).branches || {}) as Record<string, string>) }
-    currentBranches[branchKey] = value
-    updateSelectedNode({ branches: currentBranches } as Partial<WorkflowNodeData>)
-  }
+  const handleDeleteSelectedNode = useCallback(() => {
+    if (!selectedNode) return
+    setNodes((current) => current.filter((node) => node.id !== selectedNode.id))
+    setEdges((current) =>
+      current.filter((edge) => edge.source !== selectedNode.id && edge.target !== selectedNode.id)
+    )
+    setSelectedNodeId(null)
+  }, [selectedNode, setEdges, setNodes])
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      const tagName = target?.tagName?.toLowerCase()
+      const isEditable =
+        target?.isContentEditable || tagName === 'input' || tagName === 'textarea' || tagName === 'select'
+
+      if (isEditable) return
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return
+      if (!selectedNode) return
+
+      event.preventDefault()
+      setNodes((current) => current.filter((node) => node.id !== selectedNode.id))
+      setEdges((current) =>
+        current.filter((edge) => edge.source !== selectedNode.id && edge.target !== selectedNode.id)
+      )
+      setSelectedNodeId(null)
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [selectedNode, setEdges, setNodes])
+
+  const selectedConditionConnections = useMemo(() => {
+    if (!selectedNode || (selectedNode.data as WorkflowNodeData).type !== 'condition') return { yes: null, no: null }
+    const resolveTarget = (handleId: 'yes' | 'no') => {
+      const selectedNodeData = selectedNode.data as Extract<WorkflowNodeData, { type: 'condition' }>
+      const edge = edges.find((item) => item.source === selectedNode.id && normalizeConditionHandle(
+        typeof item.sourceHandle === 'string'
+          ? item.sourceHandle
+          : typeof item.label === 'string'
+            ? item.label
+            : undefined
+      ) === handleId)
+      const fallbackTargetId = handleId === 'yes'
+        ? (selectedNodeData.branches?.yes || selectedNodeData.branches?.true || '')
+        : (selectedNodeData.branches?.no || selectedNodeData.branches?.false || '')
+      const targetId = edge?.target || fallbackTargetId
+      if (!targetId) return null
+      const targetNode = nodes.find((node) => node.id === targetId)
+      const targetData = targetNode?.data as WorkflowNodeData | undefined
+      return {
+        id: targetId,
+        label: targetData?.label || targetId,
+        agentId: (targetData as any)?.agentId || '',
+      }
+    }
+    return { yes: resolveTarget('yes'), no: resolveTarget('no') }
+  }, [edges, nodes, selectedNode])
+
+  useEffect(() => {
+    if (!selectedNode) return
+    const selectedData = selectedNode.data as WorkflowNodeData
+    if ((selectedData.type !== 'join' && selectedData.type !== 'parallel') || selectedData.joinMode !== 'xor') return
+
+    const preferredSourceNodeId = (selectedData as any).preferredSourceNodeId || ''
+    if (!preferredSourceNodeId) return
+    if (selectedNodeUpstreamOptions.some((option) => option.id === preferredSourceNodeId)) return
+
+    updateSelectedNode({ preferredSourceNodeId: selectedNodeUpstreamOptions[0]?.id || '' } as Partial<WorkflowNodeData>)
+  }, [selectedNode, selectedNodeUpstreamOptions])
 
   return (
     <div className="min-h-screen flex">
@@ -379,13 +696,19 @@ export function WorkflowEditorPage() {
           <div className="flex h-full">
             <div className="flex-1 h-full relative">
               <ReactFlow
-                nodes={nodes}
-                edges={edges}
+                nodes={executionDecorations.nodes}
+                edges={executionDecorations.edges}
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onConnect={onConnect}
+                onEdgeUpdateStart={handleEdgeUpdateStart}
+                onEdgeUpdate={handleEdgeUpdate}
+                onEdgeUpdateEnd={handleEdgeUpdateEnd}
                 onNodeClick={(_, node) => setSelectedNodeId(node.id)}
+                onPaneClick={() => setSelectedNodeId(null)}
                 nodeTypes={nodeTypes}
+                defaultEdgeOptions={{ style: EDGE_STYLE, reconnectable: 'source' }}
+                edgesUpdatable
                 fitView
                 className="bg-cyber-bg"
               >
@@ -491,9 +814,20 @@ export function WorkflowEditorPage() {
               <div className="p-4 space-y-4">
                 {selectedNode ? (
                   <>
-                    <div className="space-y-2">
-                      <Label className="text-xs text-white/60">节点名称</Label>
-                      <Input value={(selectedNode.data as WorkflowNodeData).label || ''} onChange={(event) => updateSelectedNode({ label: event.target.value } as Partial<WorkflowNodeData>)} placeholder="节点名称" className="bg-cyber-bg border-white/10 text-white" />
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex-1 space-y-2">
+                        <Label className="text-xs text-white/60">节点名称</Label>
+                        <Input value={(selectedNode.data as WorkflowNodeData).label || ''} onChange={(event) => updateSelectedNode({ label: event.target.value } as Partial<WorkflowNodeData>)} placeholder="节点名称" className="bg-cyber-bg border-white/10 text-white" />
+                      </div>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="destructive"
+                        className="mt-6 h-9 w-9"
+                        onClick={handleDeleteSelectedNode}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
                     </div>
                     {(selectedNode.data as WorkflowNodeData).type === 'task' ? (
                       <>
@@ -527,6 +861,24 @@ export function WorkflowEditorPage() {
                           <Label className="text-xs text-white/60">超时时间（秒）</Label>
                           <Input type="number" min={1} value={(selectedNode.data as any).timeoutSeconds ?? 60} onChange={(event) => updateSelectedNode({ timeoutSeconds: Number(event.target.value || 60) } as Partial<WorkflowNodeData>)} placeholder="timeoutSeconds" className="bg-cyber-bg border-white/10 text-white" />
                         </div>
+                        <div className="grid grid-cols-2 gap-3 rounded-lg border border-white/5 bg-cyber-bg/30 p-3">
+                          <label className="flex items-center gap-2 text-xs text-white/70">
+                            <input type="checkbox" checked={(selectedNode.data as any).requireResponse ?? true} onChange={(event) => updateSelectedNode({ requireResponse: event.target.checked } as Partial<WorkflowNodeData>)} />
+                            要求有文本输出
+                          </label>
+                          <label className="flex items-center gap-2 text-xs text-white/70">
+                            <input type="checkbox" checked={(selectedNode.data as any).requireArtifacts ?? false} onChange={(event) => updateSelectedNode({ requireArtifacts: event.target.checked } as Partial<WorkflowNodeData>)} />
+                            要求有产物
+                          </label>
+                          <div className="space-y-2">
+                            <Label className="text-[11px] text-white/45">最小输出长度</Label>
+                            <Input type="number" min={0} value={(selectedNode.data as any).minOutputLength ?? 1} onChange={(event) => updateSelectedNode({ minOutputLength: Number(event.target.value || 0) } as Partial<WorkflowNodeData>)} placeholder="1" className="bg-cyber-bg border-white/10 text-white" />
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-[11px] text-white/45">成功关键字</Label>
+                            <Input value={(selectedNode.data as any).successPattern || ''} onChange={(event) => updateSelectedNode({ successPattern: event.target.value } as Partial<WorkflowNodeData>)} placeholder="例如：DONE" className="bg-cyber-bg border-white/10 text-white" />
+                          </div>
+                        </div>
                       </>
                     ) : null}
                     {(selectedNode.data as WorkflowNodeData).type === 'condition' ? (
@@ -538,23 +890,63 @@ export function WorkflowEditorPage() {
                         <div className="space-y-3 rounded-lg border border-white/5 bg-cyber-bg/30 p-3">
                           <Label className="text-xs text-white/60">条件分支</Label>
                           <div className="space-y-2">
-                            <Label className="text-[11px] text-white/45">yes 分支目标节点 ID</Label>
-                            <Input value={(selectedNode.data as any).branches?.yes || ''} onChange={(event) => updateConditionBranch('yes', event.target.value)} placeholder="命中 yes 时跳到哪个节点" className="bg-cyber-bg border-white/10 text-white" />
+                            <Label className="text-[11px] text-white/45">命中分支</Label>
+                            <div className="rounded-lg border border-white/10 bg-cyber-bg px-3 py-2 text-sm text-white/80">
+                              {selectedConditionConnections.yes ? `${selectedConditionConnections.yes.label}${selectedConditionConnections.yes.agentId ? ` · ${selectedConditionConnections.yes.agentId}` : ''}` : '未连接'}
+                            </div>
                           </div>
                           <div className="space-y-2">
-                            <Label className="text-[11px] text-white/45">no 分支目标节点 ID</Label>
-                            <Input value={(selectedNode.data as any).branches?.no || ''} onChange={(event) => updateConditionBranch('no', event.target.value)} placeholder="命中 no 时跳到哪个节点" className="bg-cyber-bg border-white/10 text-white" />
-                          </div>
-                          <div className="space-y-2">
-                            <Label className="text-[11px] text-white/45">default 分支目标节点 ID</Label>
-                            <Input value={(selectedNode.data as any).branches?.default || ''} onChange={(event) => updateConditionBranch('default', event.target.value)} placeholder="表达式失败或未命中时走这里" className="bg-cyber-bg border-white/10 text-white" />
+                            <Label className="text-[11px] text-white/45">未命中分支</Label>
+                            <div className="rounded-lg border border-white/10 bg-cyber-bg px-3 py-2 text-sm text-white/80">
+                              {selectedConditionConnections.no ? `${selectedConditionConnections.no.label}${selectedConditionConnections.no.agentId ? ` · ${selectedConditionConnections.no.agentId}` : ''}` : '未连接'}
+                            </div>
                           </div>
                         </div>
-                        <p className="text-xs text-white/40">边上的标签或 source handle 会作为分支条件保存。</p>
+                        <p className="text-xs text-white/40">条件分支完全由连线决定：绿色 yes 口是命中，红色 no 口是未命中，这里只读展示。</p>
                       </>
                     ) : null}
                     {(selectedNode.data as WorkflowNodeData).type === 'approval' ? (
                       <>
+                        <div className="space-y-2">
+                          <Label className="text-xs text-white/60">审批处理人</Label>
+                          <Select
+                            value={(() => {
+                              const approver = String((selectedNode.data as any).approver || 'web-user')
+                              if (approver === 'web-user') return 'web-user'
+                              const matchedAgent = agents.find((agent) => approver === agent.id || approver === `agent:${agent.id}`)
+                              return matchedAgent ? `agent:${matchedAgent.id}` : '__manual__'
+                            })()}
+                            onValueChange={(value) => updateSelectedNode({ approver: value === '__manual__' ? '' : value } as Partial<WorkflowNodeData>)}
+                          >
+                            <SelectTrigger className="bg-cyber-bg border-white/10 text-white">
+                              <SelectValue placeholder="选择审批处理人" />
+                            </SelectTrigger>
+                            <SelectContent className="bg-cyber-panel border-white/10 text-white">
+                              <SelectItem value="web-user">人工审批（控制台）</SelectItem>
+                              {agents.map((agent) => (
+                                <SelectItem key={agent.id} value={`agent:${agent.id}`}>
+                                  Agent 审批：{agent.name || agent.id} ({agent.id})
+                                </SelectItem>
+                              ))}
+                              <SelectItem value="__manual__">手动输入</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        {(() => {
+                          const approver = String((selectedNode.data as any).approver || 'web-user')
+                          const matchedAgent = agents.some((agent) => approver === agent.id || approver === `agent:${agent.id}`)
+                          return approver !== 'web-user' && !matchedAgent
+                        })() ? (
+                          <div className="space-y-2">
+                            <Label className="text-xs text-white/60">手动填写审批处理人</Label>
+                            <Input
+                              value={(selectedNode.data as any).approver || ''}
+                              onChange={(event) => updateSelectedNode({ approver: event.target.value } as Partial<WorkflowNodeData>)}
+                              placeholder="例如：agent:reviewer-1"
+                              className="bg-cyber-bg border-white/10 text-white"
+                            />
+                          </div>
+                        ) : null}
                         <div className="space-y-2">
                           <Label className="text-xs text-white/60">审批标题</Label>
                           <Input value={(selectedNode.data as any).title || ''} onChange={(event) => updateSelectedNode({ title: event.target.value } as Partial<WorkflowNodeData>)} placeholder="审批标题" className="bg-cyber-bg border-white/10 text-white" />
@@ -567,6 +959,7 @@ export function WorkflowEditorPage() {
                           <Label className="text-xs text-white/60">超时时间（分钟）</Label>
                           <Input type="number" min={1} value={(selectedNode.data as any).timeoutMinutes ?? 30} onChange={(event) => updateSelectedNode({ timeoutMinutes: Number(event.target.value || 30) } as Partial<WorkflowNodeData>)} placeholder="timeoutMinutes" className="bg-cyber-bg border-white/10 text-white" />
                         </div>
+                        <p className="text-xs text-white/40">选择 `agent:xxx` 后，后端会尝试让该 Agent 自动返回批准 / 驳回 JSON；解析失败时保留人工审批。</p>
                       </>
                     ) : null}
                     {((selectedNode.data as WorkflowNodeData).type === 'join' || (selectedNode.data as WorkflowNodeData).type === 'parallel') ? (
@@ -619,8 +1012,8 @@ export function WorkflowEditorPage() {
                               <SelectValue placeholder="选择会议类型" />
                             </SelectTrigger>
                             <SelectContent className="bg-cyber-panel border-white/10 text-white">
-                              {(['standup', 'kickoff', 'review', 'brainstorm', 'decision', 'retro'] as MeetingType[]).map((t) => (
-                                <SelectItem key={t} value={t}>{MEETING_TYPE_LABELS[t]}</SelectItem>
+                              {(['standup', 'kickoff', 'review', 'brainstorm', 'decision', 'retro'] as MeetingType[]).map((type) => (
+                                <SelectItem key={type} value={type}>{MEETING_TYPE_LABELS[type]}</SelectItem>
                               ))}
                             </SelectContent>
                           </Select>
@@ -630,35 +1023,42 @@ export function WorkflowEditorPage() {
                           <Input value={(selectedNode.data as any).topic || ''} onChange={(event) => updateSelectedNode({ topic: event.target.value } as Partial<WorkflowNodeData>)} placeholder="会议要讨论的主题" className="bg-cyber-bg border-white/10 text-white" />
                         </div>
                         <div className="space-y-2">
-                          <Label className="text-xs text-white/60">议题描述（可选）</Label>
-                          <textarea value={(selectedNode.data as any).topicDescription || ''} onChange={(event) => updateSelectedNode({ topicDescription: event.target.value } as Partial<WorkflowNodeData>)} placeholder="提供更多背景信息..." className="w-full min-h-20 rounded-lg border border-white/10 bg-cyber-bg px-3 py-2 text-sm text-white outline-none resize-y" />
+                          <Label className="text-xs text-white/60">议题描述</Label>
+                          <textarea value={(selectedNode.data as any).topicDescription || ''} onChange={(event) => updateSelectedNode({ topicDescription: event.target.value } as Partial<WorkflowNodeData>)} placeholder="补充背景、目标和上下文" className="w-full min-h-20 rounded-lg border border-white/10 bg-cyber-bg px-3 py-2 text-sm text-white outline-none resize-y" />
                         </div>
                         <div className="space-y-2">
                           <Label className="text-xs text-white/60">参与者 Agent ID（逗号分隔）</Label>
-                          <Input value={((selectedNode.data as any).participants || []).join(', ')} onChange={(event) => updateSelectedNode({ participants: event.target.value.split(',').map((s: string) => s.trim()).filter(Boolean) } as Partial<WorkflowNodeData>)} placeholder="agent-1, agent-2, agent-3" className="bg-cyber-bg border-white/10 text-white" />
-                          {agents.length > 0 && (
-                            <div className="flex flex-wrap gap-1 mt-1">
+                          <Input value={((selectedNode.data as any).participants || []).join(', ')} onChange={(event) => updateSelectedNode({ participants: event.target.value.split(',').map((item: string) => item.trim()).filter(Boolean) } as Partial<WorkflowNodeData>)} placeholder="agent-1, agent-2, agent-3" className="bg-cyber-bg border-white/10 text-white" />
+                          {agents.length > 0 ? (
+                            <div className="flex flex-wrap gap-1">
                               {agents.map((agent) => {
                                 const participants: string[] = (selectedNode.data as any).participants || []
-                                const isIn = participants.includes(agent.id)
+                                const isSelected = participants.includes(agent.id)
                                 return (
-                                  <button key={agent.id} onClick={() => {
-                                    const currentParticipants: string[] = [...((selectedNode.data as any).participants || [])]
-                                    if (isIn) {
-                                      updateSelectedNode({ participants: currentParticipants.filter((p: string) => p !== agent.id) } as Partial<WorkflowNodeData>)
-                                    } else {
-                                      updateSelectedNode({ participants: [...currentParticipants, agent.id] } as Partial<WorkflowNodeData>)
-                                    }
-                                  }} className={cn('text-[10px] px-1.5 py-0.5 rounded border cursor-pointer transition-all', isIn ? 'bg-purple-400/15 text-purple-300 border-purple-400/30' : 'bg-white/5 text-white/40 border-white/10 hover:border-white/20')}>
+                                  <button
+                                    key={agent.id}
+                                    type="button"
+                                    onClick={() => updateSelectedNode({
+                                      participants: isSelected
+                                        ? participants.filter((item) => item !== agent.id)
+                                        : [...participants, agent.id],
+                                    } as Partial<WorkflowNodeData>)}
+                                    className={cn(
+                                      'rounded border px-1.5 py-0.5 text-[10px] transition-all',
+                                      isSelected
+                                        ? 'border-purple-400/30 bg-purple-400/15 text-purple-200'
+                                        : 'border-white/10 bg-white/5 text-white/45 hover:border-white/20'
+                                    )}
+                                  >
                                     {agent.name || agent.id}
                                   </button>
                                 )
                               })}
                             </div>
-                          )}
+                          ) : null}
                         </div>
                         <div className="space-y-2">
-                          <Label className="text-xs text-white/60">主持人 Agent ID（可选，默认 Team Lead）</Label>
+                          <Label className="text-xs text-white/60">主持人 Agent</Label>
                           <Select value={(selectedNode.data as any).leadAgentId || '__auto__'} onValueChange={(value) => updateSelectedNode({ leadAgentId: value === '__auto__' ? undefined : value } as Partial<WorkflowNodeData>)}>
                             <SelectTrigger className="bg-cyber-bg border-white/10 text-white">
                               <SelectValue placeholder="自动（Team Lead）" />
@@ -672,61 +1072,57 @@ export function WorkflowEditorPage() {
                           </Select>
                         </div>
                         <div className="space-y-2">
-                          <Label className="text-xs text-white/60">Team ID（可选，自动推断）</Label>
-                          <Input value={(selectedNode.data as any).teamId || ''} onChange={(event) => updateSelectedNode({ teamId: event.target.value } as Partial<WorkflowNodeData>)} placeholder="留空则使用工作流所属团队" className="bg-cyber-bg border-white/10 text-white" />
+                          <Label className="text-xs text-white/60">Team ID（可选）</Label>
+                          <Input value={(selectedNode.data as any).teamId || ''} onChange={(event) => updateSelectedNode({ teamId: event.target.value } as Partial<WorkflowNodeData>)} placeholder="留空则沿用工作流 Team" className="bg-cyber-bg border-white/10 text-white" />
                         </div>
-                        <p className="text-xs text-white/40">会议节点会创建并执行一场 Agent 会议，会议结论将作为节点产物传递给下游。</p>
                       </>
                     ) : null}
                     {(selectedNode.data as WorkflowNodeData).type === 'debate' ? (
                       <>
                         <div className="space-y-2">
                           <Label className="text-xs text-white/60">辩题</Label>
-                          <Input value={(selectedNode.data as any).topic || ''} onChange={(event) => updateSelectedNode({ topic: event.target.value } as Partial<WorkflowNodeData>)} placeholder="辩论的核心问题" className="bg-cyber-bg border-white/10 text-white" />
+                          <Input value={(selectedNode.data as any).topic || ''} onChange={(event) => updateSelectedNode({ topic: event.target.value } as Partial<WorkflowNodeData>)} placeholder="需要辩论的问题" className="bg-cyber-bg border-white/10 text-white" />
                         </div>
                         <div className="space-y-2">
-                          <Label className="text-xs text-white/60">辩题描述（可选）</Label>
-                          <textarea value={(selectedNode.data as any).topicDescription || ''} onChange={(event) => updateSelectedNode({ topicDescription: event.target.value } as Partial<WorkflowNodeData>)} placeholder="提供辩论的背景和具体要求..." className="w-full min-h-20 rounded-lg border border-white/10 bg-cyber-bg px-3 py-2 text-sm text-white outline-none resize-y" />
+                          <Label className="text-xs text-white/60">辩题描述</Label>
+                          <textarea value={(selectedNode.data as any).topicDescription || ''} onChange={(event) => updateSelectedNode({ topicDescription: event.target.value } as Partial<WorkflowNodeData>)} placeholder="补充背景、规则和判断标准" className="w-full min-h-20 rounded-lg border border-white/10 bg-cyber-bg px-3 py-2 text-sm text-white outline-none resize-y" />
                         </div>
-                        <div className="space-y-2">
-                          <Label className="text-xs text-white/60">辩手（恰好 2 个 Agent ID）</Label>
-                          <div className="grid grid-cols-2 gap-2">
-                            <div>
-                              <Label className="text-[10px] text-orange-300/60 mb-1">正方</Label>
-                              <Select value={((selectedNode.data as any).participants || [])[0] || '__none__'} onValueChange={(value) => {
-                                const participants: string[] = [...((selectedNode.data as any).participants || ['', ''])]
-                                participants[0] = value === '__none__' ? '' : value
-                                updateSelectedNode({ participants } as Partial<WorkflowNodeData>)
-                              }}>
-                                <SelectTrigger className="bg-cyber-bg border-white/10 text-white">
-                                  <SelectValue placeholder="选择 Agent" />
-                                </SelectTrigger>
-                                <SelectContent className="bg-cyber-panel border-white/10 text-white">
-                                  <SelectItem value="__none__">未选择</SelectItem>
-                                  {agents.map((agent) => (
-                                    <SelectItem key={agent.id} value={agent.id}>{agent.name || agent.id}</SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </div>
-                            <div>
-                              <Label className="text-[10px] text-orange-300/60 mb-1">反方</Label>
-                              <Select value={((selectedNode.data as any).participants || ['', ''])[1] || '__none__'} onValueChange={(value) => {
-                                const participants: string[] = [...((selectedNode.data as any).participants || ['', ''])]
-                                participants[1] = value === '__none__' ? '' : value
-                                updateSelectedNode({ participants } as Partial<WorkflowNodeData>)
-                              }}>
-                                <SelectTrigger className="bg-cyber-bg border-white/10 text-white">
-                                  <SelectValue placeholder="选择 Agent" />
-                                </SelectTrigger>
-                                <SelectContent className="bg-cyber-panel border-white/10 text-white">
-                                  <SelectItem value="__none__">未选择</SelectItem>
-                                  {agents.map((agent) => (
-                                    <SelectItem key={agent.id} value={agent.id}>{agent.name || agent.id}</SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-2">
+                            <Label className="text-xs text-white/60">正方 Agent</Label>
+                            <Select value={((selectedNode.data as any).participants || [])[0] || '__none__'} onValueChange={(value) => {
+                              const participants = [...((selectedNode.data as any).participants || ['', ''])]
+                              participants[0] = value === '__none__' ? '' : value
+                              updateSelectedNode({ participants } as Partial<WorkflowNodeData>)
+                            }}>
+                              <SelectTrigger className="bg-cyber-bg border-white/10 text-white">
+                                <SelectValue placeholder="选择 Agent" />
+                              </SelectTrigger>
+                              <SelectContent className="bg-cyber-panel border-white/10 text-white">
+                                <SelectItem value="__none__">未选择</SelectItem>
+                                {agents.map((agent) => (
+                                  <SelectItem key={agent.id} value={agent.id}>{agent.name || agent.id}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-xs text-white/60">反方 Agent</Label>
+                            <Select value={((selectedNode.data as any).participants || ['', ''])[1] || '__none__'} onValueChange={(value) => {
+                              const participants = [...((selectedNode.data as any).participants || ['', ''])]
+                              participants[1] = value === '__none__' ? '' : value
+                              updateSelectedNode({ participants } as Partial<WorkflowNodeData>)
+                            }}>
+                              <SelectTrigger className="bg-cyber-bg border-white/10 text-white">
+                                <SelectValue placeholder="选择 Agent" />
+                              </SelectTrigger>
+                              <SelectContent className="bg-cyber-panel border-white/10 text-white">
+                                <SelectItem value="__none__">未选择</SelectItem>
+                                {agents.map((agent) => (
+                                  <SelectItem key={agent.id} value={agent.id}>{agent.name || agent.id}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
                           </div>
                         </div>
                         <div className="space-y-2">
@@ -736,14 +1132,14 @@ export function WorkflowEditorPage() {
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent className="bg-cyber-panel border-white/10 text-white">
-                              {[2, 3, 4, 5].map((n) => (
-                                <SelectItem key={n} value={String(n)}>{n} 轮</SelectItem>
+                              {[2, 3, 4, 5].map((round) => (
+                                <SelectItem key={round} value={String(round)}>{round} 轮</SelectItem>
                               ))}
                             </SelectContent>
                           </Select>
                         </div>
                         <div className="space-y-2">
-                          <Label className="text-xs text-white/60">裁判 Agent ID（可选，默认 Team Lead）</Label>
+                          <Label className="text-xs text-white/60">裁判 Agent</Label>
                           <Select value={(selectedNode.data as any).judgeAgentId || '__auto__'} onValueChange={(value) => updateSelectedNode({ judgeAgentId: value === '__auto__' ? undefined : value } as Partial<WorkflowNodeData>)}>
                             <SelectTrigger className="bg-cyber-bg border-white/10 text-white">
                               <SelectValue placeholder="自动（Team Lead）" />
@@ -758,15 +1154,137 @@ export function WorkflowEditorPage() {
                         </div>
                         <div className="space-y-2">
                           <Label className="text-xs text-white/60">Team ID（可选）</Label>
-                          <Input value={(selectedNode.data as any).teamId || ''} onChange={(event) => updateSelectedNode({ teamId: event.target.value } as Partial<WorkflowNodeData>)} placeholder="留空则使用工作流所属团队" className="bg-cyber-bg border-white/10 text-white" />
+                          <Input value={(selectedNode.data as any).teamId || ''} onChange={(event) => updateSelectedNode({ teamId: event.target.value } as Partial<WorkflowNodeData>)} placeholder="留空则沿用工作流 Team" className="bg-cyber-bg border-white/10 text-white" />
                         </div>
-                        <p className="text-xs text-white/40">辩论节点让两个 Agent 就特定话题进行多轮对抗，裁判 Agent 最终评判胜方，辩论结论作为节点产物传递。</p>
                       </>
                     ) : null}
                   </>
                 ) : (
                   <p className="text-sm text-white/35">点击画布中的节点后可编辑其字段。</p>
                 )}
+              </div>
+
+              <div className="p-4 border-t border-white/5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-white font-semibold text-sm">定时执行</h3>
+                  <label className="flex items-center gap-2 text-xs text-white/60">
+                    <input
+                      type="checkbox"
+                      checked={schedule.enabled}
+                      onChange={(event) => setSchedule((current) => ({ ...current, enabled: event.target.checked }))}
+                    />
+                    启用
+                  </label>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs text-white/60">Cron 表达式</Label>
+                  <Input
+                    value={schedule.cron}
+                    onChange={(event) => setSchedule((current) => ({ ...current, cron: event.target.value }))}
+                    placeholder="例如：*/15 * * * *"
+                    className="bg-cyber-bg border-white/10 text-white"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs text-white/60">时区</Label>
+                  <Input
+                    value={schedule.timezone}
+                    onChange={(event) => setSchedule((current) => ({ ...current, timezone: event.target.value }))}
+                    placeholder="例如：Asia/Shanghai"
+                    className="bg-cyber-bg border-white/10 text-white"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <Label className="text-xs text-white/60">生效开始</Label>
+                    <Input
+                      type="datetime-local"
+                      value={toDateTimeLocalValue(schedule.activeFrom)}
+                      onChange={(event) => setSchedule((current) => ({ ...current, activeFrom: fromDateTimeLocalValue(event.target.value) }))}
+                      className="bg-cyber-bg border-white/10 text-white"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-xs text-white/60">生效截止</Label>
+                    <Input
+                      type="datetime-local"
+                      value={toDateTimeLocalValue(schedule.activeUntil)}
+                      onChange={(event) => setSchedule((current) => ({ ...current, activeUntil: fromDateTimeLocalValue(event.target.value) }))}
+                      className="bg-cyber-bg border-white/10 text-white"
+                    />
+                  </div>
+                </div>
+                <div className="rounded-lg border border-white/5 bg-cyber-bg/30 p-3 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs text-white/60">每日时间段限制</Label>
+                    <label className="flex items-center gap-2 text-[11px] text-white/50">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(schedule.window)}
+                        onChange={(event) =>
+                          setSchedule((current) => ({
+                            ...current,
+                            window: event.target.checked
+                              ? { start: '09:00', end: '18:00', timezone: current.timezone || DEFAULT_WORKFLOW_TIMEZONE }
+                              : null,
+                          }))
+                        }
+                      />
+                      启用时间段
+                    </label>
+                  </div>
+                  {schedule.window ? (
+                    <>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-2">
+                          <Label className="text-[11px] text-white/45">开始时间</Label>
+                          <Input
+                            type="time"
+                            value={schedule.window.start}
+                            onChange={(event) =>
+                              setSchedule((current) => ({
+                                ...current,
+                                window: current.window ? { ...current.window, start: event.target.value } : null,
+                              }))
+                            }
+                            className="bg-cyber-bg border-white/10 text-white"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-[11px] text-white/45">结束时间</Label>
+                          <Input
+                            type="time"
+                            value={schedule.window.end}
+                            onChange={(event) =>
+                              setSchedule((current) => ({
+                                ...current,
+                                window: current.window ? { ...current.window, end: event.target.value } : null,
+                              }))
+                            }
+                            className="bg-cyber-bg border-white/10 text-white"
+                          />
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <Label className="text-[11px] text-white/45">时间段时区</Label>
+                        <Input
+                          value={schedule.window.timezone || schedule.timezone}
+                          onChange={(event) =>
+                            setSchedule((current) => ({
+                              ...current,
+                              window: current.window ? { ...current.window, timezone: event.target.value } : null,
+                            }))
+                          }
+                          placeholder="例如：Asia/Shanghai"
+                          className="bg-cyber-bg border-white/10 text-white"
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-xs text-white/40">关闭后仅按 Cron 触发，不限制每天的可执行时段。</p>
+                  )}
+                </div>
+                <p className="text-xs text-white/40">启用后由后端调度器轮询执行；若当前已有运行中的流程，会跳过该次触发。</p>
               </div>
 
               <div className="p-4 border-t border-white/5 space-y-3">

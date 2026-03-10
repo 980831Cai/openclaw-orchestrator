@@ -65,8 +65,8 @@ def _run_server(args: argparse.Namespace) -> None:
     port = args.port or settings.port
     host = args.host
 
-    print(f"🚀 OpenClaw Orchestrator server starting on http://{host}:{port}")
-    print(f"📁 OpenClaw home: {settings.openclaw_home}")
+    print(f"OpenClaw Orchestrator server starting on http://{host}:{port}")
+    print(f"OpenClaw home: {settings.openclaw_home}")
 
     uvicorn.run(
         "openclaw_orchestrator.app:app",
