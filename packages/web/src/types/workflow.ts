@@ -1,8 +1,9 @@
 // Workflow-related type definitions
 // Migrated from @openclaw/shared to local types
-// Enhanced with: ApprovalNode, retry fields, waiting_approval status
+// Enhanced with ApprovalNode and waiting_approval status
 
-export type WorkflowNodeType = 'task' | 'condition' | 'parallel' | 'approval'
+export type WorkflowNodeType = 'task' | 'condition' | 'join' | 'parallel' | 'approval'
+export type WorkflowJoinMode = 'and' | 'or' | 'xor'
 
 export interface TaskNodeData {
   type: 'task'
@@ -11,21 +12,33 @@ export interface TaskNodeData {
   task: string
   timeoutSeconds: number
   position?: { x: number; y: number }
-  maxRetries?: number      // 最大重试次数，默认 0
-  retryDelayMs?: number    // 重试间隔毫秒，默认 2000
+  maxRetries?: number
+  retryDelayMs?: number
 }
 
 export interface ConditionNodeData {
   type: 'condition'
   label: string
   expression: string
-  branches: Record<string, string>  // key → target node id (supports backtracking)
+  branches: Record<string, string>
+  position?: { x: number; y: number }
+}
+
+export interface JoinNodeData {
+  type: 'join'
+  label: string
+  waitForAll?: boolean
+  joinMode?: WorkflowJoinMode
+  preferredSourceNodeId?: string
   position?: { x: number; y: number }
 }
 
 export interface ParallelNodeData {
   type: 'parallel'
   label: string
+  waitForAll?: boolean
+  joinMode?: WorkflowJoinMode
+  preferredSourceNodeId?: string
   position?: { x: number; y: number }
 }
 
@@ -34,15 +47,16 @@ export interface ApprovalNodeData {
   label: string
   title: string
   description: string
-  approver: string           // v1: 当前 Web 用户
+  approver: string
   timeoutMinutes: number
-  onTimeout: 'reject'        // v1 超时一律 reject
+  onTimeout: 'reject'
   position?: { x: number; y: number }
 }
 
 export type WorkflowNodeData =
   | TaskNodeData
   | ConditionNodeData
+  | JoinNodeData
   | ParallelNodeData
   | ApprovalNodeData
 
@@ -58,7 +72,7 @@ export interface WorkflowDefinition {
   teamId: string
   nodes: Record<string, WorkflowNodeData>
   edges: WorkflowEdge[]
-  maxIterations?: number    // 防无限循环，默认 100
+  maxIterations?: number
 }
 
 export type WorkflowExecutionStatus =
@@ -85,8 +99,6 @@ export interface WorkflowLog {
   message: string
   level: 'info' | 'warn' | 'error'
 }
-
-// ─── Approval types ───
 
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected'
 

@@ -4,6 +4,8 @@
 
 export interface SessionMessage {
   id?: string
+  sessionId?: string
+  agentId?: string
   role: 'user' | 'assistant' | 'system'
   content: string
   timestamp?: string
