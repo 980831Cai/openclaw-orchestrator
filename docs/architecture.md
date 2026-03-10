@@ -1,649 +1,374 @@
 # OpenClaw Orchestrator 技术架构设计文档
 
-> **版本**：v0.1.0  
-> **最后更新**：2026-03-10  
-> **项目定位**：基于 OpenClaw 生态的多 Agent 可视化编排管理平台
+> **版本**：v1.0.0 | **最后更新**：2026-03-10
 
 ---
 
-## 目录
+## 1. 设计背景与目标
 
-1. [系统概述](#1-系统概述)
-2. [整体架构](#2-整体架构)
-3. [后端架构](#3-后端架构)
-4. [前端架构](#4-前端架构)
-5. [与 OpenClaw 的集成架构](#5-与-openclaw-的集成架构)
-6. [数据架构](#6-数据架构)
-7. [通信架构](#7-通信架构)
-8. [工作流引擎](#8-工作流引擎)
-9. [部署架构](#9-部署架构)
-10. [目录结构](#10-目录结构)
+### 1.1 为什么需要 Orchestrator
 
----
+OpenClaw 是一个开源的多 Agent 运行时平台，提供 Agent 执行环境、Gateway 实时网关（WebSocket + JSON-RPC 2.0）、JSONL 会话系统、Agent-to-Agent 乒乓通信以及 Cron/Heartbeat 调度。
 
-## 1. 系统概述
+但 OpenClaw 本身是**运行时引擎**，缺少上层编排管理能力：
 
-### 1.1 项目定位
+| 缺口 | 痛点 |
+|------|------|
+| 无可视化编排 | 多 Agent 任务依赖、分支逻辑只能手动管理 |
+| 无团队管理 | Agent 分组、排班、轮值没有统一抽象 |
+| 无实时监控 | Agent 状态、通信链路缺乏统一视图 |
+| 无人机协同 | 需人类审批的场景没有卡点机制 |
+| 配置分散 | 模型选择、API Key 需直接编辑配置文件 |
 
-OpenClaw Orchestrator 是 OpenClaw 生态的**上层编排管理平台**，为多 Agent 协作场景提供可视化工作流设计、团队排班调度、实时通信监控与 Agent 全生命周期管理能力。
+**定位：在 OpenClaw 运行时之上，构建可视化的编排管理层。**
 
-### 1.2 核心问题域
+### 1.2 设计原则
 
-| 问题 | 解决方案 |
-|------|---------|
-| 多 Agent 任务如何编排 | 可视化 DAG 工作流引擎 + 4 种节点类型 |
-| Agent 状态如何实时感知 | Gateway WebSocket 直连 + JSONL 文件监控双源 |
-| 团队如何调度 Agent | 4 种排班模式 + OpenClaw Cron 同步 |
-| 模型和 Key 如何管理 | 直接读写 openclaw.json，与运行时共享 |
-| 如何与 OpenClaw 联动 | 三层触发降级：Gateway RPC → Webhook → JSONL |
-
-### 1.3 技术选型
-
-| 层 | 技术 | 选型理由 |
-|----|------|---------|
-| 后端框架 | FastAPI | 原生 async、WebSocket 支持、自动 API 文档 |
-| ASGI 服务器 | Uvicorn | 高性能、热重载 |
-| 数据库 | SQLite (WAL) | 本地单用户服务，零运维 |
-| 配置管理 | Pydantic Settings | 类型安全、环境变量自动绑定 |
-| Gateway 连接 | websockets | Python 原生 WebSocket 客户端 |
-| HTTP 客户端 | httpx | async 支持、连接池 |
-| 文件监控 | watchfiles (Rust) | 跨平台、低 CPU 占用 |
-| 前端框架 | React 18 + TypeScript | 生态成熟、类型安全 |
-| 构建工具 | Vite | 快速 HMR、Tree-shaking |
-| 状态管理 | Zustand | 轻量、无 boilerplate |
-| 工作流画布 | React Flow | 专业 DAG 编辑器 |
-| UI 组件 | shadcn/ui + Radix | 可定制、无障碍 |
-| 样式 | Tailwind CSS | 原子化 CSS、暗色主题 |
-| 打包分发 | hatch (wheel) | `pip install` 一键安装 |
+| 原则 | 含义 |
+|------|------|
+| **寄生式架构** | 不替代 OpenClaw，附着其上。Agent 执行仍由 OpenClaw 完成，Orchestrator 只做编排决策 |
+| **零配置可用** | 安装即用，自动发现本机 OpenClaw 环境 |
+| **优雅降级** | OpenClaw 任何组件不可用时系统仍工作，功能减少但不宕机 |
+| **单端口部署** | 前端 + API + WebSocket 统一端口，无需反向代理 |
+| **配置共享** | 直接读写 OpenClaw 的 `openclaw.json`，不维护独立副本 |
 
 ---
 
-## 2. 整体架构
+## 2. 系统架构总览
 
-### 2.1 三层架构全景
+### 2.1 三层架构定位
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     用户浏览器                            │
-│  React SPA · WebSocket Client · REST API Client         │
-└───────────────────────┬─────────────────────────────────┘
-                        │ HTTP :3721 / WS :3721/ws
-┌───────────────────────▼─────────────────────────────────┐
-│              OpenClaw Orchestrator 后端                   │
-│                                                          │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐               │
-│  │ FastAPI  │  │ WebSocket│  │  Static  │               │
-│  │  Routes  │  │  Handler │  │  Files   │               │
-│  └────┬─────┘  └────┬─────┘  └──────────┘               │
-│       │              │                                    │
-│  ┌────▼──────────────▼──────────────────────────────┐    │
-│  │              Services Layer                       │    │
-│  │ workflow_engine · agent_service · team_service     │    │
-│  │ chat_service · schedule_executor · provider_keys   │    │
-│  │ notification_service · knowledge_service           │    │
-│  └────────┬──────────────────┬───────────────────┘    │
-│           │                  │                         │
-│  ┌────────▼────────┐  ┌─────▼────────────────┐        │
-│  │   SQLite (WAL)  │  │  OpenClaw 集成层      │        │
-│  │  orchestrator   │  │ gateway_connector     │        │
-│  │    .sqlite      │  │ openclaw_bridge       │        │
-│  └─────────────────┘  │ session_watcher       │        │
-│                        └──┬──────┬──────┬─────┘        │
-└───────────────────────────┼──────┼──────┼──────────────┘
-                            │      │      │
-                   ┌────────▼──┐ ┌─▼───┐ ┌▼──────────┐
-                   │  Gateway  │ │Webhook│ │  ~/.openclaw │
-                   │ ws://18789│ │:3578 │ │   (文件系统)  │
-                   └─────┬─────┘ └──┬──┘ └─────┬──────┘
-                         │          │          │
-                   ┌─────▼──────────▼──────────▼──────┐
-                   │      OpenClaw Agent 运行时         │
-                   │   Agent 执行 · 会话 · A2A 通信     │
-                   └──────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│              OpenClaw Orchestrator（本项目）                  │
+│   可视化编排 · 团队排班 · 实时监控 · 通知审批 · 模型管理     │
+├─────────────────────────────────────────────────────────────┤
+│                   OpenClaw 集成适配层                         │
+│   Gateway 连接 · Webhook 调用 · 文件系统读写 · 配置共享      │
+├──────────────┬─────────────────┬────────────────────────────┤
+│  Gateway     │   Webhook       │    ~/.openclaw/ 文件系统    │
+│  ws://18789  │   :3578         │    JSONL · Cron · Heartbeat │
+├──────────────┴─────────────────┴────────────────────────────┤
+│                  OpenClaw Agent 运行时                        │
+│          Agent 执行 · 会话管理 · 工具调用 · A2A 通信         │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-### 2.2 单端口部署模型
+Orchestrator 不直接管理 Agent 执行过程，只负责"什么时候、让哪个 Agent、做什么任务"。即使 Orchestrator 停机，正在运行的 Agent 不受影响。
 
-生产模式下，前端构建产物打包进 Python wheel 的 `static/` 目录，由 FastAPI 的 `StaticFiles` 直接托管。**API + WebSocket + 前端 UI 统一通过 `:3721` 端口服务**，无需 Nginx 或反向代理。
+### 2.2 前后端分层
+
+```
+浏览器 ───────────────────────────────────────────────────
+  工作流编辑器 · 实时监控 · 工作室场景 · 通知中心
+  状态管理：Agent / Team / Workflow / Monitor 四个 Store
+  REST API ↕ WebSocket 双向事件 · 统一端口 :3721
+
+后端 ─────────────────────────────────────────────────────
+  API 路由层 → 业务服务层 ─┬→ OpenClaw 集成层（三通道）
+                          └→ 本地数据层（SQLite WAL）
+```
 
 ---
 
-## 3. 后端架构
+## 3. 与 OpenClaw 的集成设计
 
-### 3.1 应用生命周期
+这是整个架构最核心的部分——如何"寄生"在 OpenClaw 之上工作。
+
+### 3.1 三通道接入
 
 ```
-app.py lifespan()
-    │
-    ├── Startup ─────────────────────────────────────
-    │   ├── os.makedirs(openclaw_home)      # 确保目录
-    │   ├── init_database()                  # 建表 + 迁移
-    │   ├── session_watcher.start()          # JSONL 文件监控
-    │   ├── schedule_executor.start()        # 加载排班配置
-    │   ├── openclaw_bridge.check_connectivity()  # 测试 Webhook
-    │   └── gateway_connector.start()        # 连接 Gateway
-    │
-    ├── yield (服务运行中)
-    │
-    └── Shutdown ────────────────────────────────────
-        ├── gateway_connector.stop()         # 断开 Gateway
-        ├── schedule_executor.stop()         # 停止排班
-        ├── session_watcher.stop()           # 停止监控
-        ├── openclaw_bridge.close()          # 关闭 HTTP 客户端
-        └── close_db()                       # 关闭数据库
+                        Orchestrator
+                  ┌─────────┼─────────┐
+             ① Gateway   ② Webhook  ③ 文件系统
+             (实时双向)   (任务触发)  (兜底+持久化)
+                  └─────────┼─────────┘
+                     OpenClaw 运行时
 ```
 
-### 3.2 路由层
+| 通道 | 协议 | 能力 | 适用场景 |
+|------|------|------|---------|
+| Gateway | WebSocket + JSON-RPC 2.0 | 事件订阅、RPC 查询、指令下发 | 实时监控、状态查询 |
+| Webhook | HTTP POST | 向 Agent 发送任务/消息 | 工作流任务触发 |
+| 文件系统 | 直接文件 I/O | JSONL 会话、Cron 排班、Heartbeat、配置 | 兜底通信、排班同步、配置共享 |
 
-9 个路由模块，全部挂载在 `/api` 前缀下：
+### 3.2 三层触发降级
 
-| 路由模块 | 前缀 | 职责 |
+向 Agent 发送指令时，自动选择最佳通道并逐层降级：
+
+```
+发送指令
+  │
+  ├→ Gateway RPC ── 成功 → 直接获得响应（最快，毫秒级）
+  │                  失败 ↓
+  ├→ Webhook HTTP ── 成功 → 轮询 JSONL 等待响应
+  │                  失败 ↓
+  └→ JSONL 文件直写 ─ 等待 Agent 运行时自动拾取（最慢但最可靠）
+```
+
+**设计考量**：文件系统总是可用的，确保在任何部署环境下指令都能送达。
+
+### 3.3 双源事件采集与去重
+
+同时从两个来源采集 Agent 事件，互补而非互斥：
+
+```
+  Gateway 实时推送              文件 JSONL 变更监控
+  （低延迟，依赖连接）           （高可靠，依赖文件IO）
+        │                            │
+        ▼                            ▼
+   事件分发器 ───按消息ID去重──── 文件监控器
+        │                            │
+        └────────────┬───────────────┘
+                     ▼
+               合并后广播到前端
+```
+
+- Gateway 正常时事件来自 Gateway（低延迟），推送的 ID 标记为"已见"
+- 文件监控发现同 ID 消息时自动跳过
+- Gateway 断连后文件监控自动接管，无缝切换
+
+### 3.4 配置共享
+
+直接读写 `~/.openclaw/openclaw.json`，不维护独立配置：
+
+```
+用户在 UI 修改模型 / API Key
+        ↓
+  写入 openclaw.json (models.providers / agents.list)
+        ↓
+  OpenClaw 运行时读取同一文件 → Agent 使用新配置
+```
+
+- 支持 OpenClaw 三种 API Key 格式：明文、`${ENV_VAR}`、SecretRef
+- 模型 ID 使用 `provider/model-id` 格式（如 `anthropic/claude-sonnet-4-5`）
+
+### 3.5 Gateway 认证
+
+```
+启动 → 解析 Token（环境变量 → openclaw.json → 无）
+     → WebSocket 连接 + Authorization: Bearer <token>
+     → JSON-RPC connect 握手 { params.auth.token }
+     → 本地连接(localhost) Gateway 自动放行，无需 Token
+     → 认证失败(1008) → 60s 长间隔重试，不轰炸 Gateway
+```
+
+---
+
+## 4. 工作流引擎设计
+
+### 4.1 有向图执行模型
+
+工作流不是线性队列，而是 DAG 图遍历——天然支持分支、汇合、回跳：
+
+```
+  ┌──────┐     ┌──────────┐     ┌──────┐     ┌──────┐
+  │ 分析  │───→│ 条件判断  │───→│ 编码  │───→│ 审批  │
+  │ Agent │    │ 质量达标? │    │ Agent │    │(暂停) │
+  └──────┘    └────┬─────┘    └──────┘    └──────┘
+                   │ 不达标
+                   └──────→ 回跳到"分析"节点重新执行
+```
+
+### 4.2 四种节点类型
+
+| 节点 | 行为 | 与 OpenClaw 的交互 |
+|------|------|-------------------|
+| **Task** | 向指定 Agent 发送任务，等待响应 | 通过集成层三层降级调用 Agent |
+| **Condition** | 根据上游 Agent 输出评估分支 | 解析 Agent 响应内容做匹配 |
+| **Parallel** | 并行调用多个 Agent，汇合结果 | 并发通过集成层调用 |
+| **Approval** | 暂停执行，等待人工审批 | 不与 OpenClaw 交互，纯 Orchestrator 内部 |
+
+### 4.3 上下文穿透
+
+上游节点的 Agent 产物自动注入下游 Task 的 prompt，形成信息传递链：
+
+```
+Task A (分析 Agent) → 产出分析报告
+        ↓ 自动注入
+Task B (编码 Agent) → prompt 包含"上游分析报告"全文
+        ↓ 自动注入
+Task C (测试 Agent) → prompt 包含"编码结果"
+```
+
+### 4.4 暂停与恢复
+
+审批节点暂停时，完整执行上下文（已执行节点的产物、当前位置）序列化到数据库。审批通过后从断点继续图遍历。服务重启后也能恢复。
+
+### 4.5 条件表达式引擎
+
+评估上游 Agent 输出，决定分支走向：
+
+| 匹配模式 | 示例 | 说明 |
 |---------|------|------|
-| `agent_routes` | `/agents` | Agent CRUD、技能管理、会话/消息 |
-| `team_routes` | `/teams` | Team CRUD、成员管理、排班配置 |
-| `task_routes` | `/tasks` | 任务 CRUD、制品管理 |
-| `workflow_routes` | `/workflows` | 工作流 CRUD、执行/停止/历史 |
-| `chat_routes` | `/agents/:id/sessions` | 会话消息收发 |
-| `approval_routes` | `/approvals` | 审批通过/驳回 |
-| `notification_routes` | `/notifications` | 通知列表/标记已读 |
-| `knowledge_routes` | `/agents/:id/knowledge` | Agent/Team 知识库 |
-| `settings_routes` | `/settings` | Provider API Key 管理 |
-
-### 3.3 服务层
-
-12 个服务模块，均采用**单例模式**：
-
-```
-services/
-├── gateway_connector.py    # Gateway WebSocket 连接器（核心基础设施，含认证）
-├── openclaw_bridge.py      # OpenClaw 桥接层（Webhook/Cron/Heartbeat/JSONL）
-├── session_watcher.py      # JSONL 文件监控 + 双源去重
-├── schedule_executor.py    # 排班调度器（4 种模式）
-├── workflow_engine.py      # 工作流图遍历引擎
-├── agent_service.py        # Agent CRUD + 模型配置
-├── team_service.py         # Team CRUD + 成员管理
-├── task_service.py         # Task CRUD + 制品管理
-├── chat_service.py         # 消息收发（通过 Bridge）
-├── knowledge_service.py    # 知识库 CRUD + 搜索
-├── notification_service.py # 通知 CRUD + WebSocket 推送
-├── provider_keys.py        # API Key 管理（读写 openclaw.json）
-└── file_manager.py         # 文件操作工具
-```
-
-### 3.4 配置管理
-
-基于 `pydantic-settings`，支持环境变量自动绑定：
-
-```python
-class Settings(BaseSettings):
-    port: int = 3721                              # PORT
-    openclaw_home: str = "~/.openclaw"            # OPENCLAW_HOME
-    openclaw_webhook_url: str = "http://localhost:3578"   # OPENCLAW_WEBHOOK_URL
-    openclaw_gateway_url: str = "ws://localhost:18789"    # OPENCLAW_GATEWAY_URL
-    openclaw_gateway_token: str = ""                      # OPENCLAW_GATEWAY_TOKEN（本地可留空）
-    cors_origin: str = "http://localhost:5173"            # CORS_ORIGIN
-
-    @property
-    def db_path(self) -> str:    # DB_PATH 或 $OPENCLAW_HOME/orchestrator.sqlite
-```
+| 子串包含 | `contains:error` | Agent 输出含 "error" |
+| 正则匹配 | `regex:^SUCCESS \d+` | 正则搜索 |
+| JSON 字段 | `json:status=success` | 解析 JSON 比较字段值 |
+| 组合逻辑 | `expr1 \|\| expr2` / `expr1 && expr2` | 与或组合 |
 
 ---
 
-## 4. 前端架构
+## 5. 团队与排班设计
 
-### 4.1 页面路由
-
-```
-BrowserRouter
-└── MainLayout (Sidebar + Content)
-    ├── /                 → DashboardPage     # 总览仪表盘
-    ├── /agents           → AgentListPage     # Agent 列表
-    ├── /agents/:id       → AgentConfigPage   # Agent 配置（身份/灵魂/规则/技能/模型）
-    ├── /teams            → TeamListPage      # Team 列表
-    ├── /teams/:id        → TeamDetailPage    # Team 详情（工作室/成员/排班/战术桌）
-    ├── /workflows        → WorkflowEditorPage # 工作流可视化编辑器
-    ├── /monitor          → MonitorPage       # 实时监控面板
-    ├── /chat             → ChatPage          # Agent 通信频道
-    └── /chat/:agentId    → ChatPage          # 指定 Agent 通信
-```
-
-### 4.2 状态管理
-
-4 个 Zustand Store：
-
-| Store | 职责 |
-|-------|------|
-| `agent-store` | Agent 列表、选中状态 |
-| `team-store` | Team 列表、选中状态 |
-| `workflow-store` | 工作流定义、执行状态 |
-| `monitor-store` | Agent 状态、通信事件、实时消息、Gateway 状态、通知 |
-
-### 4.3 实时通信
+### 5.1 团队模型
 
 ```
-wsClient (WebSocketClient)
-    │
-    ├── connect() → ws://hostname:3721/ws
-    ├── on('agent_status')     → monitor-store.setAgentStatus
-    ├── on('communication')    → monitor-store.addEvent
-    ├── on('new_message')      → monitor-store.addRealtimeMessage
-    ├── on('gateway_status')   → monitor-store.setGatewayConnected
-    ├── on('notification')     → monitor-store.addNotification + Browser Notification
-    └── on('approval_update')  → 生成通知
+Team ──────────── 1:N ──────────── Agent（成员）
+  │                                  │
+  ├── 工作室场景（可视化协作空间）      ├── 角色分配
+  ├── 排班配置                        ├── 独立模型配置
+  ├── 工作流（战术桌）                 └── 心跳状态
+  └── 共享知识库
 ```
 
-### 4.4 组件分层
+### 5.2 四种排班模式
+
+| 模式 | 调度逻辑 | 与 OpenClaw 同步方式 |
+|------|---------|---------------------|
+| 轮询 | 按顺序轮流分配任务 | Webhook 触发 |
+| 优先级 | 优先分配给高优先级 Agent | Webhook 触发 |
+| 时间段 | 按时间表排班值班 | 写入 OpenClaw Cron `jobs.json` |
+| 自定义 | 用户自定义 Cron 表达式 | 写入 OpenClaw Cron `jobs.json` |
+
+### 5.3 Agent 状态感知
+
+综合三个信号源判断 Agent 在线状态：
 
 ```
-components/
-├── layout/         # MainLayout, Sidebar
-├── scene/          # 工作室可视化（StudioScene, DeskSlot, TaskWhiteboard...）
-├── workflow/       # 工作流节点（TaskNode, ConditionNode, ApprovalNode）
-├── agent/          # Agent 配置表单（IdentityForm, SoulForm, ModelSelector...）
-├── team/           # Team 管理（MemberManager, ScheduleEditor, TaskBoard...）
-├── notification/   # 通知中心（NotificationCenter）
-├── avatar/         # AgentAvatar
-└── ui/             # shadcn/ui 基础组件（Button, Dialog, Tabs...）
-```
-
----
-
-## 5. 与 OpenClaw 的集成架构
-
-### 5.1 三个集成通道
-
-```
-Orchestrator ──┬── Gateway WebSocket (ws://18789)  ← 实时双向，首选
-               │     JSON-RPC 2.0 协议
-               │     认证：connect.params.auth.token（本地自动放行）
-               │     Token 来源：OPENCLAW_GATEWAY_TOKEN 环境变量 / openclaw.json
-               │     事件订阅 + RPC 查询 + 指令下发
-               │
-               ├── Webhook HTTP (http://3578)       ← 任务触发，次选
-               │     POST /hooks/agent
-               │     invoke_agent / send_message
-               │
-               └── 文件系统 (~/.openclaw/)           ← 兜底 + 持久化
-                     agents/*/sessions/*.jsonl  (会话监控)
-                     cron/jobs.json             (排班同步)
-                     agents/*/HEARTBEAT.md      (心跳读取)
-                     openclaw.json              (配置共享)
-```
-
-### 5.2 三层触发降级链
-
-当 Orchestrator 需要向 Agent 发送指令时：
-
-```
-invoke_agent() / send_agent_message()
-    │
-    ├── ① Gateway RPC（agent.invoke / agent.sendMessage）
-    │   └── 成功 → 直接返回结果
-    │   └── 失败 ↓
-    │
-    ├── ② Webhook HTTP（POST /hooks/agent）
-    │   └── 成功 → 等待 JSONL 轮询响应
-    │   └── 失败 ↓
-    │
-    └── ③ JSONL 文件直写
-        └── 写入 user 消息到 .jsonl → 等待 Agent 运行时拾取
-```
-
-### 5.3 双源事件去重
-
-Gateway 和文件监控并行工作，通过消息 ID 去重：
-
-```
-Gateway 推送 ─── gateway_connector._dispatch_event()
-    │                │
-    │                ├── broadcast(new_message) → 前端
-    │                └── session_watcher.mark_seen_from_gateway(msg_id)
-    │
-文件变更 ─── session_watcher._handle_file_change()
+Gateway 实时状态推送 ─┐
+                     ├→ 综合判断 → idle / working / offline / error
+JSONL 会话活动 ──────┤
                      │
-                     ├── if msg_id in _seen_message_ids → 跳过（已由 Gateway 推送）
-                     └── else → broadcast(new_message) → 前端
-```
-
-### 5.4 配置共享
-
-通过 `provider_keys.py` 直接读写 `~/.openclaw/openclaw.json`：
-
-```json
-{
-  "models": {
-    "providers": {
-      "anthropic": { "apiKey": "sk-ant-..." },
-      "openai":    { "apiKey": "${OPENAI_API_KEY}" }
-    }
-  },
-  "agents": {
-    "defaults": { "model": { "primary": "anthropic/claude-sonnet-4-5" } },
-    "list": [
-      { "id": "coder", "model": { "primary": "deepseek/deepseek-coder" } }
-    ]
-  }
-}
+Heartbeat.md 心跳 ───┘
 ```
 
 ---
 
-## 6. 数据架构
+## 6. 实时通信设计
 
-### 6.1 数据库设计
+### 6.1 事件体系
 
-SQLite + WAL 模式，9 张表：
+后端到前端通过 WebSocket 推送 9 种事件：
+
+| 事件 | 触发场景 | 数据来源 |
+|------|---------|---------|
+| `new_message` | Agent 产生新消息 | Gateway + 文件监控 |
+| `agent_status` | Agent 状态变化 | Gateway + 文件监控 |
+| `communication` | Agent-to-Agent 通信 | Gateway + 文件监控 |
+| `tool_call` | Agent 工具调用 | Gateway |
+| `gateway_status` | Gateway 连接/断开/认证失败 | 连接器 |
+| `workflow_update` | 工作流执行状态变更 | 工作流引擎 |
+| `notification` | 新通知 | 通知服务 |
+| `approval_update` | 审批状态变更 | 审批路由 |
+
+### 6.2 工作室可视化
+
+团队详情页中的"工作室"是数据驱动的协作可视化场景：
 
 ```
-┌──────────────────┐     ┌──────────────────┐
-│      teams       │ 1:N │   team_members   │
-│──────────────────│────▶│──────────────────│
-│ id (PK)          │     │ team_id (FK)     │
-│ name             │     │ agent_id         │
-│ description      │     │ role             │
-│ goal             │     │ join_order       │
-│ schedule_config  │     └──────────────────┘
-│ theme            │
-│ team_dir         │     ┌──────────────────┐
-│ created_at       │ 1:N │      tasks       │
-└──────────────────│────▶│──────────────────│
-                   │     │ id (PK)          │
-                   │     │ team_id (FK)     │
-                   │     │ title / status   │
-                   │     │ assigned_agent_id│
-                   │     │ artifact_count   │
-                   │     └──────────────────┘
-                   │
-                   │ 1:N ┌──────────────────┐     ┌──────────────────┐
-                   │────▶│    workflows     │ 1:N │workflow_executions│
-                         │──────────────────│────▶│──────────────────│
-                         │ id (PK)          │     │ id (PK)          │
-                         │ team_id (FK)     │     │ workflow_id (FK) │
-                         │ name             │     │ status           │
-                         │ definition_json  │     │ current_node_id  │
-                         │ status           │     │ context_json     │
-                         └──────────────────┘     │ logs             │
-                                                  └───────┬──────────┘
-                                                    1:N   │
-                                            ┌─────────────▼──────────┐
-                                            │      approvals        │
-                                            │───────────────────────│
-                                            │ id (PK)               │
-                                            │ execution_id (FK)     │
-                                            │ node_id               │
-                                            │ status (pending/      │
-                                            │   approved/rejected)  │
-                                            └───────────────────────┘
-
-┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
-│knowledge_entries │     │  notifications   │     │  schedule_jobs   │
-│──────────────────│     │──────────────────│     │──────────────────│
-│ id (PK)          │     │ id (PK)          │     │ id (PK)          │
-│ owner_type       │     │ type             │     │ team_id (FK)     │
-│ owner_id         │     │ title / message  │     │ agent_id         │
-│ source_type      │     │ execution_id     │     │ mode             │
-│ title            │     │ read             │     │ cron_expression  │
-│ chunk_count      │     └──────────────────┘     │ status           │
-└──────────────────┘                               └──────────────────┘
+┌─────────────────────────────────────────────┐
+│              团队工作室                       │
+│                                              │
+│   🧑‍💻 Agent A ←──通信连线──→ 🧑‍💻 Agent B     │
+│     (working)     │           (idle)         │
+│                   │                          │
+│   🧑‍💻 Agent C    ←┘                          │
+│     (offline)          ┌──────────────┐      │
+│                        │ 任务白板      │      │
+│   ＋ 空工位(点击邀请)   │ · 进行中 3   │      │
+│                        │ · 已完成 12  │      │
+│                        └──────────────┘      │
+└─────────────────────────────────────────────┘
 ```
 
-### 6.2 文件系统数据
-
-除数据库外，以下数据存储在 `~/.openclaw/` 文件系统中：
-
-| 路径 | 用途 | 读/写 |
-|------|------|-------|
-| `openclaw.json` | 模型配置、API Key、Agent 模型 | 读写 |
-| `agents/<id>/sessions/*.jsonl` | 会话消息记录 | 读（监控）/ 写（降级） |
-| `agents/<id>/HEARTBEAT.md` | Agent 心跳状态 | 读 / 写 |
-| `cron/jobs.json` | 排班 Cron 配置 | 写 |
-| `teams/<id>/shared/*` | 团队共享文件 | 读写 |
-| `teams/<id>/tasks/<id>/*` | 任务制品 | 读写 |
-| `agents/<id>/knowledge/*` | Agent 知识库文件 | 读写 |
+- Agent 间通信以 SVG 连线呈现，线宽 = 近 60s 通信频率
+- 工位点击跳转到 Agent 通信频道
+- 任务白板实时反映团队任务状态
 
 ---
 
-## 7. 通信架构
+## 7. 数据架构设计
 
-### 7.1 WebSocket 事件体系
+### 7.1 存储策略
 
-前后端 WebSocket 连接 `ws://:3721/ws`，事件格式：
+采用**双存储**设计——Orchestrator 自有数据存 SQLite，OpenClaw 相关数据直接读写文件系统：
 
-```json
-{
-  "type": "<event_type>",
-  "payload": { ... },
-  "timestamp": "2026-03-10T12:00:00.000Z"
-}
+```
+Orchestrator 数据（SQLite）          OpenClaw 数据（文件系统）
+  teams / team_members                 openclaw.json（配置共享）
+  workflows / executions               agents/*/sessions/*.jsonl
+  tasks / approvals                    agents/*/HEARTBEAT.md
+  notifications / knowledge            cron/jobs.json
+  schedule_jobs                        teams/*/shared/*
 ```
 
-事件类型一览：
+**设计考量**：Orchestrator 不复制 OpenClaw 的数据，直接原地读写。SQLite 选择 WAL 模式确保读写不阻塞。
 
-| 事件类型 | 来源 | 触发场景 |
-|---------|------|---------|
-| `connected` | ws_handler | 客户端首次连接 |
-| `new_message` | gateway_connector / session_watcher | Agent 产生新消息 |
-| `agent_status` | gateway_connector / session_watcher | Agent 状态变化 |
-| `communication` | gateway_connector / session_watcher | Agent-to-Agent 通信 |
-| `tool_call` | gateway_connector | Agent 工具调用 |
-| `gateway_status` | gateway_connector | Gateway 连接/断开 |
-| `workflow_update` | workflow_engine | 工作流执行状态变更 |
-| `notification` | notification_service | 新通知 |
-| `approval_update` | approval_routes | 审批状态变更 |
+### 7.2 核心数据关系
 
-### 7.2 广播机制
-
-`ws_handler.broadcast()` 是全局广播函数，支持从同步和异步代码调用：
-
-```python
-def broadcast(event: dict) → None:
-    # 将 event JSON 序列化后发送给所有连接的 WebSocket 客户端
-    # 自动清理断开的死连接
-    # 通过 asyncio.ensure_future() 调度，安全地从同步代码调用
 ```
+Team ──1:N──→ TeamMember (agent_id + role)
+  │
+  ├──1:N──→ Task (assigned_agent_id)
+  │
+  └──1:N──→ Workflow ──1:N──→ Execution ──1:N──→ Approval
+                                  │
+                                  └── context_json（暂停恢复上下文）
+                                  └── logs（执行日志流）
+```
+
+独立实体：`Notification`（全局通知）、`KnowledgeEntry`（Agent/Team 知识库）、`ScheduleJob`（排班任务）
 
 ---
 
-## 8. 工作流引擎
+## 8. 部署架构设计
 
-### 8.1 执行模型
-
-基于**有向图指针遍历**，而非线性 for 循环：
+### 8.1 单端口模型
 
 ```
-while current_node_id is not None and iterations < max_iterations:
-    │
-    ├── node = nodes[current_node_id]
-    │
-    ├── if node.type == "task":
-    │   ├── _build_task_prompt(node, upstream_artifacts)
-    │   ├── openclaw_bridge.invoke_agent(agent_id, prompt)  # 三层降级
-    │   ├── retry on failure (maxRetries times)
-    │   └── store artifact
-    │
-    ├── if node.type == "condition":
-    │   ├── evaluate expression (contains / regex / json)
-    │   ├── select matching branch → next_node_id
-    │   └── branch can point upstream (backtracking)
-    │
-    ├── if node.type == "parallel":
-    │   ├── asyncio.gather(*[invoke_agent(sub_task) for sub_task])
-    │   └── merge results
-    │
-    ├── if node.type == "approval":
-    │   ├── create approval record in DB
-    │   ├── send notification
-    │   ├── persist context_json
-    │   └── return "__paused__" (暂停执行)
-    │
-    └── current_node_id = _resolve_next_node(node, edges)
+:3721 ──→ /api/*      → FastAPI REST 路由
+       ──→ /ws        → WebSocket 事件通道
+       ──→ /*         → 前端静态文件（React SPA）
 ```
 
-### 8.2 条件表达式引擎
+前端构建产物通过 hatch `force-include` 打包进 Python wheel，由后端直接托管。
 
-支持三种匹配模式：
+### 8.2 四种部署方式
 
-```
-contains:error message        # 子串包含
-regex:^ERROR \d+              # 正则匹配
-json:$.status == "success"    # JSON 字段匹配
-```
+| 方式 | 命令 | 适用场景 |
+|------|------|---------|
+| pip install | `pip install openclaw-orchestrator && openclaw-orchestrator serve` | 最简单，本地开发 |
+| Docker | `docker run -p 3721:3721 -v ~/.openclaw:/root/.openclaw ...` | 隔离性好 |
+| Docker Compose | `docker compose up -d` | 可编排扩展 |
+| systemd | `deploy.sh` 一键部署 | 生产服务器 |
 
-支持组合逻辑：`expr1 || expr2`、`expr1 && expr2`
-
-### 8.3 暂停与恢复
-
-审批节点暂停时，将完整执行上下文序列化到 `workflow_executions.context_json`：
-
-```json
-{
-  "current_node_id": "approval-1",
-  "node_artifacts": { "task-1": "分析结果...", "task-2": "代码实现..." },
-  "iteration_count": 5
-}
-```
-
-审批通过后，`resume_execution()` 从数据库恢复上下文继续执行。
-
----
-
-## 9. 部署架构
-
-### 9.1 四种部署方式
+### 8.3 与 OpenClaw 的部署关系
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   部署方式                            │
-├─────────┬────────────┬──────────┬───────────────────┤
-│ pip     │ Docker     │ Compose  │ 源码 + systemd    │
-│ install │ 单容器      │ 编排      │ 服务器部署         │
-├─────────┼────────────┼──────────┼───────────────────┤
-│ 最简单   │ 隔离性好    │ 可扩展    │ 生产推荐           │
-└─────────┴────────────┴──────────┴───────────────────┘
-```
+场景 A：同机部署（推荐）
+  OpenClaw + Orchestrator 在同一台机器
+  → Gateway 本地连接自动放行，无需认证
+  → 文件系统直接共享 ~/.openclaw/
+  → 零配置即可工作
 
-### 9.2 Docker 多阶段构建
-
-```dockerfile
-# Stage 1: Node.js 构建前端
-FROM node:18-alpine AS frontend
-# pnpm install → pnpm build → dist/
-
-# Stage 2: Python 运行后端
-FROM python:3.12-slim
-# COPY 前端 dist/ → static/
-# pip install .
-# EXPOSE 3721
-# HEALTHCHECK /api/health
-```
-
-### 9.3 wheel 打包
-
-通过 hatch 的 `force-include` 将前端构建产物打入 Python wheel：
-
-```toml
-[tool.hatch.build.targets.wheel.force-include]
-"openclaw_orchestrator/static" = "openclaw_orchestrator/static"
-```
-
-用户只需 `pip install openclaw-orchestrator` 即可获得完整应用。
-
----
-
-## 10. 目录结构
-
-```
-openclaw-orchestrator/
-│
-├── server/                              # Python 后端
-│   ├── pyproject.toml                   # 包配置 + 依赖声明
-│   ├── README.md                        # 后端快速开始
-│   └── openclaw_orchestrator/
-│       ├── __init__.py                  # 版本号
-│       ├── __main__.py                  # python -m 入口
-│       ├── app.py                       # FastAPI 应用 + lifespan
-│       ├── cli.py                       # CLI 命令行入口
-│       ├── config.py                    # Pydantic Settings
-│       │
-│       ├── database/
-│       │   ├── db.py                    # SQLite 连接管理（单例）
-│       │   └── init_db.py              # 建表 DDL + 迁移
-│       │
-│       ├── services/
-│       │   ├── gateway_connector.py     # [核心] Gateway WebSocket 连接器
-│       │   ├── openclaw_bridge.py       # [核心] OpenClaw 桥接层
-│       │   ├── session_watcher.py       # [核心] JSONL 文件监控 + 去重
-│       │   ├── schedule_executor.py     # [核心] 排班调度器
-│       │   ├── workflow_engine.py       # [核心] 工作流图遍历引擎
-│       │   ├── agent_service.py         # Agent CRUD
-│       │   ├── team_service.py          # Team CRUD
-│       │   ├── task_service.py          # Task CRUD + 制品
-│       │   ├── chat_service.py          # 消息收发
-│       │   ├── knowledge_service.py     # 知识库
-│       │   ├── notification_service.py  # 通知
-│       │   ├── provider_keys.py         # API Key 管理
-│       │   └── file_manager.py          # 文件工具
-│       │
-│       ├── routes/                      # 9 个 FastAPI Router
-│       │   ├── agent_routes.py
-│       │   ├── team_routes.py
-│       │   ├── task_routes.py
-│       │   ├── workflow_routes.py
-│       │   ├── chat_routes.py
-│       │   ├── approval_routes.py
-│       │   ├── notification_routes.py
-│       │   ├── knowledge_routes.py
-│       │   └── settings_routes.py
-│       │
-│       ├── websocket/
-│       │   └── ws_handler.py            # WebSocket 连接管理 + broadcast
-│       │
-│       ├── utils/
-│       │   ├── markdown_parser.py       # Markdown 解析
-│       │   └── path_validator.py        # 路径安全校验
-│       │
-│       └── static/                      # 前端构建产物（生产模式）
-│
-├── packages/web/                        # React 前端
-│   ├── package.json
-│   ├── vite.config.ts
-│   ├── tsconfig.json
-│   ├── tailwind.config.js
-│   └── src/
-│       ├── App.tsx                      # 路由定义
-│       ├── main.tsx                     # 入口
-│       ├── pages/                       # 8 个页面
-│       ├── components/                  # 组件（scene/workflow/agent/team/ui...）
-│       ├── stores/                      # 4 个 Zustand Store
-│       ├── hooks/                       # 5 个自定义 Hook
-│       ├── lib/                         # api.ts / websocket.ts / utils.ts
-│       └── types/                       # TypeScript 类型定义
-│
-├── scripts/
-│   ├── build_frontend.sh                # 构建前端 → 复制到 static/
-│   ├── build_and_publish.sh             # 打包 wheel + 发布 PyPI
-│   ├── deploy.sh                        # Linux 一键部署（systemd）
-│   └── dev.sh                           # 开发模式启动
-│
-├── Dockerfile                           # 多阶段构建
-├── docker-compose.yml                   # Compose 编排
-├── .gitignore
-├── README.md                            # 项目介绍
-└── package.json                         # 根 monorepo 配置
+场景 B：分离部署
+  OpenClaw 在机器 A，Orchestrator 在机器 B
+  → 需配置 OPENCLAW_GATEWAY_URL 指向远程 Gateway
+  → 需配置 OPENCLAW_GATEWAY_TOKEN 认证
+  → 需共享或挂载 ~/.openclaw/ 目录
+  → Webhook URL 需配置为可达地址
 ```
 
 ---
 
-## 附录：后端 Python 依赖清单
+## 9. 关键设计决策记录
 
-| 包 | 版本要求 | 用途 |
-|---|---------|------|
-| fastapi | ≥0.115.0 | Web 框架 |
-| uvicorn[standard] | ≥0.32.0 | ASGI 服务器 |
-| websockets | ≥13.0 | Gateway WebSocket 客户端 |
-| aiosqlite | ≥0.20.0 | SQLite async 支持 |
-| python-frontmatter | ≥1.1.0 | Markdown frontmatter 解析 |
-| watchfiles | ≥0.24.0 | 文件监控（Rust 引擎） |
-| pydantic | ≥2.9.0 | 数据验证 |
-| pydantic-settings | ≥2.5.0 | 环境变量配置 |
-| httpx | ≥0.27.0 | async HTTP 客户端 |
+| 决策 | 选择 | 原因 |
+|------|------|------|
+| 后端语言 | Python（非 Node.js） | OpenClaw 是 Python 生态，可 `pip install` 一键安装，未来可直接 `import openclaw` |
+| 数据库 | SQLite（非 PostgreSQL） | 本地单用户服务，零运维，跟随 OpenClaw 目录无需额外部署 |
+| Agent 执行 | 委托给 OpenClaw（非自己实现） | 寄生式架构，不重复造轮子，利用 OpenClaw 完整的 Agent 能力 |
+| 前端打包 | 嵌入 Python wheel（非独立部署） | 单端口 = 用户体验最简，`pip install` 即包含完整 UI |
+| 事件采集 | Gateway + 文件双源（非单一） | 互补而非互斥，既要低延迟又要高可靠 |
+| 配置存储 | 共享 openclaw.json（非独立配置） | 一份配置源，避免同步问题 |
+| 工作流模型 | DAG 图遍历（非线性队列） | 支持条件分支、回跳、并行、暂停恢复 |
