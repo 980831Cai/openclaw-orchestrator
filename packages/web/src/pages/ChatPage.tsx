@@ -44,8 +44,9 @@ export function ChatPage() {
   useEffect(() => {
     if (selectedAgent) {
       api.get<Session[]>(`/agents/${selectedAgent.id}/sessions`).then((s) => {
-        setSessions(s)
-        if (s.length > 0) setSelectedSession(s[0].id)
+        const visibleSessions = s.filter((session) => !session.id.startsWith('wf-'))
+        setSessions(visibleSessions)
+        if (visibleSessions.length > 0) setSelectedSession(visibleSessions[0].id)
       })
     }
   }, [selectedAgent])
@@ -94,9 +95,9 @@ export function ChatPage() {
   }
 
   return (
-    <div className="min-h-screen flex">
+    <div className="h-screen overflow-hidden flex">
       {/* ── Agent list sidebar ── */}
-      <div className="w-64 border-r border-white/5 flex flex-col bg-cyber-surface/20">
+      <div className="w-64 border-r border-white/5 flex flex-col bg-cyber-surface/20 min-h-0">
         <div className="p-4 border-b border-white/5">
           <h2 className="text-white font-bold text-sm flex items-center gap-2">
             <MessageSquare className="w-4 h-4 text-cyber-blue" />
@@ -143,7 +144,7 @@ export function ChatPage() {
       </div>
 
       {/* ── Chat area ── */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col min-h-0">
         {!selectedAgent ? (
           <div className="flex-1 flex flex-col items-center justify-center">
             <EmptyState
@@ -155,7 +156,7 @@ export function ChatPage() {
         ) : (
           <>
             {/* Chat header */}
-            <div className="flex items-center gap-3 px-6 py-3 border-b border-white/5 bg-cyber-surface/20">
+            <div className="shrink-0 flex items-center gap-3 px-6 py-3 border-b border-white/5 bg-cyber-surface/20">
               <AgentAvatar emoji={selectedAgent.emoji || '🤖'} theme={selectedAgent.theme} status={selectedAgent.status} size="sm" />
               <div className="flex-1">
                 <p className="text-white font-semibold text-sm">{selectedAgent.name}</p>
@@ -194,7 +195,7 @@ export function ChatPage() {
             </div>
 
             {/* Messages */}
-            <div ref={scrollRef} className="flex-1 overflow-y-auto p-6 space-y-4">
+            <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto p-6 space-y-4">
               {messages.length === 0 ? (
                 <EmptyState
                   scene="no-messages"
@@ -223,7 +224,7 @@ export function ChatPage() {
             </div>
 
             {/* Input */}
-            <div className="p-4 border-t border-white/5 bg-cyber-surface/20">
+            <div className="shrink-0 p-4 border-t border-white/5 bg-cyber-surface/20">
               <div className="flex items-center gap-3">
                 <div className="flex-1 relative">
                   <input

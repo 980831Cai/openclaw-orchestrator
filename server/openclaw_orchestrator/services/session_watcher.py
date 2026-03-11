@@ -45,16 +45,16 @@ class SessionWatcher:
         try:
             loop = asyncio.get_running_loop()
             self._task = loop.create_task(self._watch_loop())
-            print("👁️ Session watcher started")
+            print("Session watcher started")
         except RuntimeError:
-            print("👁️ Session watcher: no event loop, skipping")
+            print("Session watcher: no event loop, skipping")
 
     def stop(self) -> None:
         """Stop watching."""
         if self._task:
             self._task.cancel()
             self._task = None
-        print("👁️ Session watcher stopped")
+        print("Session watcher stopped")
 
     def get_agent_status(self, agent_id: str) -> str:
         """Get the current status of an agent."""
@@ -86,7 +86,7 @@ class SessionWatcher:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            print(f"👁️ Session watcher error: {e}")
+            print(f"Session watcher error: {e}")
 
     def _handle_file_change(self, file_path: str) -> None:
         """Process new content in a session file."""
@@ -138,19 +138,45 @@ class SessionWatcher:
         try:
             data = json.loads(line)
             session_id = Path(file_path).stem  # filename without .jsonl
+            if data.get("type") == "session":
+                return None
+            message = data.get("message") if isinstance(data.get("message"), dict) else data
+            if not isinstance(message, dict):
+                return None
+            content = message.get("content", "")
+            normalized_content = self._normalize_content(content)
             return {
-                "id": data.get("id", f"{id(line)}-{hash(line) % 10000}"),
+                "id": data.get("id", message.get("id", f"{id(line)}-{hash(line) % 10000}")),
                 "sessionId": session_id,
                 "agentId": agent_id,
-                "role": data.get("role", "assistant"),
-                "content": data["content"]
-                if isinstance(data.get("content"), str)
-                else json.dumps(data.get("content", "")),
-                "timestamp": data.get("timestamp", ""),
-                "metadata": data.get("metadata"),
+                "role": message.get("role", "assistant"),
+                "content": normalized_content,
+                "timestamp": data.get("timestamp", message.get("timestamp", "")),
+                "metadata": message.get("metadata") or data.get("metadata"),
             }
         except (json.JSONDecodeError, KeyError):
             return None
+
+    @staticmethod
+    def _normalize_content(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str) and text.strip():
+                        parts.append(text)
+                elif isinstance(item, str) and item.strip():
+                    parts.append(item)
+            return "\n".join(parts)
+        if isinstance(content, dict):
+            text = content.get("text")
+            if isinstance(text, str):
+                return text
+            return json.dumps(content, ensure_ascii=False)
+        return ""
 
     def _mark_seen(self, msg_id: str) -> None:
         """Record a message ID to prevent duplicate broadcasts."""
