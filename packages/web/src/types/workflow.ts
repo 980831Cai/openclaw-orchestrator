@@ -53,7 +53,9 @@ export interface ApprovalNodeData {
   label: string
   title: string
   description: string
-  approver: string
+  approvalMode?: 'human' | 'agent'
+  approver?: string
+  approverAgentId?: string
   timeoutMinutes: number
   onTimeout: 'reject'
   position?: { x: number; y: number }
@@ -160,6 +162,9 @@ export interface ApprovalRecord {
   title: string
   description: string
   status: ApprovalStatus
+  approvalMode?: 'human' | 'agent'
+  approverAgentId?: string
+  resolvedBy?: string
   rejectReason?: string
   createdAt: string
   resolvedAt?: string

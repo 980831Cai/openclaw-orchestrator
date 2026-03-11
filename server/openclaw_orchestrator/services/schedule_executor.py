@@ -48,14 +48,19 @@ class ScheduleExecutor:
 
         db = get_db()
         rows = db.execute(
-            "SELECT id, schedule_config FROM teams WHERE schedule_config IS NOT NULL AND schedule_config != '{}'"
+            """
+            SELECT id,
+                   COALESCE(NULLIF(schedule_config, ''), NULLIF(schedule_json, ''), '{}') AS schedule_payload
+            FROM teams
+            WHERE COALESCE(NULLIF(schedule_config, ''), NULLIF(schedule_json, ''), '{}') != '{}'
+            """
         ).fetchall()
 
         count = 0
         for row in rows:
             team_id = row["id"]
             try:
-                schedule = json.loads(row["schedule_config"])
+                schedule = json.loads(row["schedule_payload"])
                 if schedule and schedule.get("entries"):
                     self._active_schedules[team_id] = schedule
                     self._sync_to_openclaw(team_id, schedule)

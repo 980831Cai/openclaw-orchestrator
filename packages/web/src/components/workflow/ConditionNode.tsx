@@ -4,6 +4,11 @@ import { Split } from 'lucide-react'
 
 export const ConditionNodeComponent = memo(({ data, selected }: NodeProps) => {
   const executionState = String((data as any).executionState || 'idle')
+  const executionStateLabel =
+    executionState === 'running' ? '进行中' :
+    executionState === 'failed' ? '失败' :
+    executionState === 'success' ? '成功' :
+    null
   const stateClass =
     executionState === 'running'
       ? 'border-amber-400/80 shadow-lg shadow-amber-400/20'
@@ -43,8 +48,8 @@ export const ConditionNodeComponent = memo(({ data, selected }: NodeProps) => {
           <span>未命中</span>
         </div>
 
-        {executionState !== 'idle' ? (
-          <div className="mt-2 text-[9px] uppercase tracking-wide text-white/45">{executionState}</div>
+        {executionStateLabel ? (
+          <div className="mt-2 text-[9px] tracking-wide text-white/45">{executionStateLabel}</div>
         ) : null}
       </div>
 

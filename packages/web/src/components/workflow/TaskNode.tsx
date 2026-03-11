@@ -4,6 +4,11 @@ import { Zap } from 'lucide-react'
 
 export const TaskNodeComponent = memo(({ data, selected }: NodeProps) => {
   const executionState = String((data as any).executionState || 'idle')
+  const executionStateLabel =
+    executionState === 'running' ? '进行中' :
+    executionState === 'failed' ? '失败' :
+    executionState === 'success' ? '成功' :
+    null
   const stateClass =
     executionState === 'running'
       ? 'border-amber-400/80 shadow-lg shadow-amber-400/20'
@@ -43,8 +48,8 @@ export const TaskNodeComponent = memo(({ data, selected }: NodeProps) => {
 
         {data.task && <p className="truncate text-[10px] text-white/30">{data.task}</p>}
         {data.timeoutSeconds && <span className="text-[9px] text-white/15">超时: {data.timeoutSeconds}s</span>}
-        {executionState !== 'idle' ? (
-          <div className="mt-2 text-[9px] uppercase tracking-wide text-white/45">{executionState}</div>
+        {executionStateLabel ? (
+          <div className="mt-2 text-[9px] tracking-wide text-white/45">{executionStateLabel}</div>
         ) : null}
       </div>
 

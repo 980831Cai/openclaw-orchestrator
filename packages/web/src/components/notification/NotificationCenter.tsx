@@ -89,7 +89,7 @@ export function NotificationCenter() {
     const approvals = await api.get<any[]>(
       `/approvals?execution_id=${notification.executionId}`
     )
-    const pending = approvals.find((a: any) => a.status === 'pending')
+    const pending = approvals.find((a: any) => a.status === 'pending' && (a.approvalMode || 'human') === 'human')
     if (pending) {
       await api.post(`/approvals/${pending.id}/approve`)
     }
@@ -104,7 +104,7 @@ export function NotificationCenter() {
     const approvals = await api.get<any[]>(
       `/approvals?execution_id=${notification.executionId}`
     )
-    const pending = approvals.find((a: any) => a.status === 'pending')
+    const pending = approvals.find((a: any) => a.status === 'pending' && (a.approvalMode || 'human') === 'human')
     if (pending) {
       await api.post(`/approvals/${pending.id}/reject`, { reject_reason: '通过通知中心驳回' })
     }
@@ -160,7 +160,8 @@ export function NotificationCenter() {
           ) : (
             notifications.map((n) => {
               const colorClass = getNotificationColor(n.type)
-              const isApproval = n.type === 'approval_required' && !n.read
+              const approvalMode = (n as any).approvalMode || 'human'
+              const isApproval = n.type === 'approval_required' && !n.read && approvalMode === 'human'
               const isProcessing = approving === n.id
 
               return (

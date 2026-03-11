@@ -29,6 +29,15 @@ TEAM_MD_TEMPLATE = """# {name}
 """
 
 
+def _parse_schedule_value(raw_value: Any) -> Optional[dict[str, Any]]:
+    if not raw_value or raw_value == "{}":
+        return None
+    try:
+        return json.loads(raw_value)
+    except (TypeError, json.JSONDecodeError):
+        return None
+
+
 class TeamService:
     """Service for managing teams."""
 
@@ -79,7 +88,9 @@ class TeamService:
             raise ValueError(f"Team not found: {team_id}")
 
         members = self._get_team_members(team_id)
-        schedule = json.loads(row["schedule_config"]) if row["schedule_config"] and row["schedule_config"] != "{}" else None
+        schedule = _parse_schedule_value(row["schedule_config"] if "schedule_config" in row.keys() else None)
+        if schedule is None and "schedule_json" in row.keys():
+            schedule = _parse_schedule_value(row["schedule_json"])
 
         return {
             "id": row["id"],
@@ -243,8 +254,8 @@ class TeamService:
         """
         db = get_db()
         db.execute(
-            "UPDATE teams SET schedule_config = ? WHERE id = ?",
-            (json.dumps(schedule), team_id),
+            "UPDATE teams SET schedule_config = ?, schedule_json = ? WHERE id = ?",
+            (json.dumps(schedule), json.dumps(schedule), team_id),
         )
         db.commit()
 

@@ -315,10 +315,10 @@ class WorkflowEngine:
         db.execute(
             """
             UPDATE approvals
-            SET status = ?, reject_reason = ?, resolved_at = datetime('now')
+            SET status = ?, reject_reason = ?, resolved_by = ?, resolved_at = datetime('now')
             WHERE id = ?
             """,
-            (next_status, reject_reason if not approved else None, approval_id),
+            (next_status, reject_reason if not approved else None, resolved_by, approval_id),
         )
         db.commit()
 
@@ -615,6 +615,13 @@ class WorkflowEngine:
             if result == "__paused__":
                 control["paused"] = True
                 return
+            if result == "__failed__":
+                control["failed"] = True
+                await self._mark_failed(
+                    execution_id,
+                    f"节点 {current_node_id} 执行失败，工作流已停止",
+                )
+                return
 
             next_targets = self._resolve_next_targets(
                 current_node_id,
@@ -785,7 +792,7 @@ class WorkflowEngine:
         node: dict[str, Any],
         upstream_artifacts: list[dict[str, Any]],
         node_artifacts: dict[str, list[dict[str, Any]]],
-    ) -> None:
+    ) -> Any:
         label = node.get("label", node_id)
         agent_id = node.get("agentId", "unknown")
         task_prompt = node.get("task", "")
@@ -914,7 +921,7 @@ class WorkflowEngine:
 
         if not result.get("success"):
             node_artifacts[node_id] = []
-            return None
+            return "__failed__"
 
         node_artifacts[node_id] = result.get("artifacts", [])
         return None
@@ -1030,8 +1037,9 @@ class WorkflowEngine:
         upstream_text: str,
         branches: dict[str, str],
     ) -> str:
-        if not expression or not upstream_text:
+        if not expression:
             return "no"
+        upstream_text = upstream_text or ""
         if ";;" in expression:
             segments = [segment.strip() for segment in expression.split(";;") if segment.strip()]
             for segment in segments:
@@ -1061,6 +1069,11 @@ class WorkflowEngine:
     def _match_single_expr(expr: str, text: str) -> bool:
         expr = expr.strip()
         if not expr:
+            return False
+        lowered_expr = expr.lower()
+        if lowered_expr in {"true", "yes", "always"}:
+            return True
+        if lowered_expr in {"false", "no", "never"}:
             return False
         if "||" in expr:
             return any(
@@ -1238,13 +1251,25 @@ class WorkflowEngine:
     ) -> str:
         title = node.get("title", node.get("label", "审批"))
         description = node.get("description", "")
+        approval_mode = str(node.get("approvalMode") or "human").strip().lower()
+        if approval_mode not in {"human", "agent"}:
+            approval_mode = "human"
+        approver_agent_id = (
+            self._resolve_approval_agent_id(node.get("approverAgentId"))
+            if approval_mode == "agent"
+            else None
+        )
 
         self._append_log(
             execution_id,
             {
                 "timestamp": datetime.utcnow().isoformat(),
                 "nodeId": node_id,
-                "message": f"审批节点: {title}，工作流已暂停等待审批",
+                "message": (
+                    f"审批节点: {title}，模式={approval_mode}"
+                    + (f"，审批 Agent={approver_agent_id}" if approver_agent_id else "")
+                    + "，工作流已暂停等待审批"
+                ),
                 "level": "info",
             },
         )
@@ -1264,10 +1289,21 @@ class WorkflowEngine:
         approval_id = str(uuid.uuid4())
         db.execute(
             """
-            INSERT INTO approvals (id, execution_id, node_id, title, description, status)
-            VALUES (?, ?, ?, ?, ?, 'pending')
+            INSERT INTO approvals (
+                id, execution_id, node_id, title, description,
+                approval_mode, approver_agent_id, status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
             """,
-            (approval_id, execution_id, node_id, title, description),
+            (
+                approval_id,
+                execution_id,
+                node_id,
+                title,
+                description,
+                approval_mode,
+                approver_agent_id,
+                ),
         )
         db.commit()
 
@@ -1291,8 +1327,7 @@ class WorkflowEngine:
             }
         )
 
-        approver_agent_id = self._resolve_approval_agent_id(node.get("approver"))
-        if approver_agent_id:
+        if approval_mode == "agent" and approver_agent_id:
             asyncio.create_task(
                 self._request_agent_approval(
                     approval_id=approval_id,
@@ -1342,6 +1377,17 @@ class WorkflowEngine:
     @staticmethod
     def _map_workflow_row(row: Any) -> dict[str, Any]:
         definition = json.loads(row["definition_json"] or "{}")
+        schedule = definition.get("schedule")
+        next_run_at = None
+        if isinstance(schedule, dict):
+            try:
+                from openclaw_orchestrator.services.workflow_scheduler import (
+                    workflow_scheduler,
+                )
+
+                next_run_at = workflow_scheduler.next_run_at(schedule)
+            except Exception:
+                next_run_at = None
         return {
             "id": row["id"],
             "name": row["name"],
@@ -1349,7 +1395,9 @@ class WorkflowEngine:
             "nodes": definition.get("nodes", {}),
             "edges": definition.get("edges", []),
             "maxIterations": definition.get("maxIterations", 100),
-            "schedule": definition.get("schedule"),
+            "schedule": {**schedule, "nextRunAt": next_run_at}
+            if isinstance(schedule, dict)
+            else schedule,
         }
 
     @staticmethod
@@ -1372,7 +1420,10 @@ class WorkflowEngine:
             "nodeId": row["node_id"],
             "title": row["title"],
             "description": row["description"],
+            "approvalMode": row["approval_mode"] if "approval_mode" in row.keys() else "human",
+            "approverAgentId": row["approver_agent_id"] if "approver_agent_id" in row.keys() else None,
             "status": row["status"],
+            "resolvedBy": row["resolved_by"] if "resolved_by" in row.keys() else None,
             "rejectReason": row["reject_reason"],
             "createdAt": row["created_at"],
             "resolvedAt": row["resolved_at"],

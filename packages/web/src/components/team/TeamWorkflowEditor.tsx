@@ -93,6 +93,29 @@ function normalizeNodeData(data: WorkflowNodeData): WorkflowNodeData {
     }
   }
 
+  if (data.type === 'approval') {
+    const legacyApprover = String((data as any).approver || '').trim()
+    const explicitMode = (data as any).approvalMode
+    const explicitAgentId = String((data as any).approverAgentId || '').trim()
+    const derivedMode = explicitMode === 'agent' || explicitMode === 'human'
+      ? explicitMode
+      : legacyApprover && legacyApprover !== 'web-user'
+        ? 'agent'
+        : 'human'
+    const derivedAgentId = explicitAgentId || (
+      derivedMode === 'agent'
+        ? (legacyApprover.startsWith('agent:') ? legacyApprover.slice(6) : legacyApprover)
+        : ''
+    )
+
+    return {
+      ...data,
+      approvalMode: derivedMode,
+      approverAgentId: derivedAgentId || undefined,
+      approver: derivedMode === 'agent' ? derivedAgentId : 'web-user',
+    }
+  }
+
   return data
 }
 
@@ -268,7 +291,11 @@ export function TeamWorkflowEditor({ teamId }: TeamWorkflowEditorProps) {
   const selectedNode = useMemo(() => nodes.find((node) => node.id === selectedNodeId) ?? null, [nodes, selectedNodeId])
   const selectedNodeUpstreamOptions = useMemo(() => {
     if (!selectedNodeId) return []
-    const upstreamIds = edges.filter((edge) => edge.target === selectedNodeId).map((edge) => edge.source)
+
+    const upstreamIds = Array.from(
+      new Set(edges.filter((edge) => edge.target === selectedNodeId).map((edge) => edge.source))
+    )
+
     return upstreamIds.map((sourceId) => {
       const sourceNode = nodes.find((node) => node.id === sourceId)
       const sourceData = sourceNode?.data as WorkflowNodeData | undefined
@@ -515,7 +542,7 @@ export function TeamWorkflowEditor({ teamId }: TeamWorkflowEditorProps) {
     const baseData: Record<WorkflowNodeData['type'], WorkflowNodeData> = {
       task: { type: 'task', label: '任务节点', agentId: '', task: '', timeoutSeconds: 60, requireResponse: true, requireArtifacts: false, minOutputLength: 1, successPattern: '', position: { x: 240, y: 120 } },
       condition: { type: 'condition', label: '条件节点', expression: 'true', branches: { yes: '', no: '' }, position: { x: 240, y: 120 } },
-      approval: { type: 'approval', label: '审批节点', title: '请确认', description: '', approver: 'web-user', timeoutMinutes: 30, onTimeout: 'reject', position: { x: 240, y: 120 } },
+      approval: { type: 'approval', label: '审批节点', title: '请确认', description: '', approvalMode: 'human', approver: 'web-user', approverAgentId: '', timeoutMinutes: 30, onTimeout: 'reject', position: { x: 240, y: 120 } },
       join: { type: 'join', label: '汇合节点', joinMode: 'and', waitForAll: true, position: { x: 240, y: 120 } },
       parallel: { type: 'parallel', label: '汇合节点', joinMode: 'and', waitForAll: true, position: { x: 240, y: 120 } },
       meeting: { type: 'meeting', label: '会议节点', meetingType: 'brainstorm', topic: '', participants: [], position: { x: 240, y: 120 } },
@@ -865,45 +892,55 @@ export function TeamWorkflowEditor({ teamId }: TeamWorkflowEditorProps) {
                       {(selectedNode.data as WorkflowNodeData).type === 'approval' ? (
                         <>
                           <div className="space-y-2">
-                            <Label className="text-xs text-white/60">审批处理人</Label>
+                            <Label className="text-xs text-white/60">审批模式</Label>
                             <Select
-                              value={(() => {
-                                const approver = String((selectedNode.data as any).approver || 'web-user')
-                                if (approver === 'web-user') return 'web-user'
-                                const matchedAgent = agents.find((agent) => approver === agent.id || approver === `agent:${agent.id}`)
-                                return matchedAgent ? `agent:${matchedAgent.id}` : '__manual__'
-                              })()}
-                              onValueChange={(value) => updateSelectedNode({ approver: value === '__manual__' ? '' : value } as Partial<WorkflowNodeData>)}
+                              value={String((selectedNode.data as any).approvalMode || 'human')}
+                              onValueChange={(value) => updateSelectedNode({
+                                approvalMode: value as 'human' | 'agent',
+                                approver: value === 'agent'
+                                  ? (String((selectedNode.data as any).approverAgentId || '').trim() || agents[0]?.id || '')
+                                  : 'web-user',
+                                approverAgentId: value === 'agent'
+                                  ? (String((selectedNode.data as any).approverAgentId || '').trim() || agents[0]?.id || '')
+                                  : '',
+                              } as Partial<WorkflowNodeData>)}
                             >
                               <SelectTrigger className="border-white/10 bg-cyber-bg text-white">
-                                <SelectValue placeholder="选择审批处理人" />
+                                <SelectValue placeholder="选择审批模式" />
                               </SelectTrigger>
                               <SelectContent className="border-white/10 bg-cyber-surface text-white">
-                                <SelectItem value="web-user">人工审批（控制台）</SelectItem>
-                                {agents.map((agent) => (
-                                  <SelectItem key={agent.id} value={`agent:${agent.id}`}>
-                                    Agent 审批：{agent.name || agent.id} ({agent.id})
-                                  </SelectItem>
-                                ))}
-                                <SelectItem value="__manual__">手动输入</SelectItem>
+                                <SelectItem value="human">人工审批</SelectItem>
+                                <SelectItem value="agent">AI 审批</SelectItem>
                               </SelectContent>
                             </Select>
                           </div>
-                          {(() => {
-                            const approver = String((selectedNode.data as any).approver || 'web-user')
-                            const matchedAgent = agents.some((agent) => approver === agent.id || approver === `agent:${agent.id}`)
-                            return approver !== 'web-user' && !matchedAgent
-                          })() ? (
+                          {String((selectedNode.data as any).approvalMode || 'human') === 'agent' ? (
                             <div className="space-y-2">
-                              <Label className="text-xs text-white/60">手动填写审批处理人</Label>
-                              <Input
-                                value={(selectedNode.data as any).approver || ''}
-                                onChange={(event) => updateSelectedNode({ approver: event.target.value } as Partial<WorkflowNodeData>)}
-                                placeholder="例如：agent:reviewer-1"
-                                className="border-white/10 bg-cyber-bg text-white"
-                              />
+                              <Label className="text-xs text-white/60">审批 Agent</Label>
+                              <Select
+                                value={String((selectedNode.data as any).approverAgentId || '__none__')}
+                                onValueChange={(value) => updateSelectedNode({
+                                  approverAgentId: value === '__none__' ? '' : value,
+                                  approver: value === '__none__' ? '' : value,
+                                } as Partial<WorkflowNodeData>)}
+                              >
+                                <SelectTrigger className="border-white/10 bg-cyber-bg text-white">
+                                  <SelectValue placeholder="选择审批 Agent" />
+                                </SelectTrigger>
+                                <SelectContent className="border-white/10 bg-cyber-surface text-white">
+                                  <SelectItem value="__none__">未选择</SelectItem>
+                                  {agents.map((agent) => (
+                                    <SelectItem key={agent.id} value={agent.id}>
+                                      {agent.name || agent.id} ({agent.id})
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              <p className="text-xs text-white/40">执行到此节点时，会把审批请求发给指定 Agent，由它返回通过或驳回。</p>
                             </div>
-                          ) : null}
+                          ) : (
+                            <p className="text-xs text-white/40">执行到此节点时，工作流会暂停，等待人工在通知中心或审批接口中处理。</p>
+                          )}
                           <div className="space-y-2">
                             <Label className="text-xs text-white/60">审批标题</Label>
                             <Input value={(selectedNode.data as any).title || ''} onChange={(event) => updateSelectedNode({ title: event.target.value } as Partial<WorkflowNodeData>)} placeholder="审批标题" className="border-white/10 bg-cyber-bg text-white" />
@@ -916,7 +953,11 @@ export function TeamWorkflowEditor({ teamId }: TeamWorkflowEditorProps) {
                             <Label className="text-xs text-white/60">超时时间（分钟）</Label>
                             <Input type="number" min={1} value={(selectedNode.data as any).timeoutMinutes ?? 30} onChange={(event) => updateSelectedNode({ timeoutMinutes: Number(event.target.value || 30) } as Partial<WorkflowNodeData>)} placeholder="timeoutMinutes" className="border-white/10 bg-cyber-bg text-white" />
                           </div>
-                          <p className="text-xs text-white/40">选择 `agent:xxx` 后，后端会尝试让该 Agent 自动返回批准 / 驳回 JSON；解析失败时保留人工审批。</p>
+                          <p className="text-xs text-white/40">
+                            {String((selectedNode.data as any).approvalMode || 'human') === 'agent'
+                              ? 'AI 审批会向指定 Agent 发出结构化审批请求；若返回无法解析，则保留为人工待处理。'
+                              : '人工审批会生成待办通知，等待你手动通过或驳回。'}
+                          </p>
                         </>
                       ) : null}
                       {((selectedNode.data as WorkflowNodeData).type === 'join' || (selectedNode.data as WorkflowNodeData).type === 'parallel') ? (
@@ -1276,3 +1317,4 @@ export function TeamWorkflowEditor({ teamId }: TeamWorkflowEditorProps) {
     </div>
   )
 }
+

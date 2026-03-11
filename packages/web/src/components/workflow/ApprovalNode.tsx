@@ -4,6 +4,11 @@ import { Clock, UserCheck } from 'lucide-react'
 
 export const ApprovalNodeComponent = memo(({ data, selected }: NodeProps) => {
   const executionState = String((data as any).executionState || 'idle')
+  const executionStateLabel =
+    executionState === 'running' ? '进行中' :
+    executionState === 'failed' ? '失败' :
+    executionState === 'success' ? '成功' :
+    null
   const stateClass =
     executionState === 'running'
       ? 'border-amber-400/80 shadow-lg shadow-amber-400/20'
@@ -43,6 +48,15 @@ export const ApprovalNodeComponent = memo(({ data, selected }: NodeProps) => {
 
         {data.description && <p className="mb-1 truncate text-[10px] text-white/30">{data.description}</p>}
 
+        <div className="mb-1 flex items-center gap-1.5">
+          <span className="text-[10px] font-medium text-yellow-400/70">模式:</span>
+          <span className="truncate text-[10px] text-white/60">
+            {data.approvalMode === 'agent'
+              ? `AI 审批${data.approverAgentId ? ` · ${data.approverAgentId}` : ''}`
+              : '人工审批'}
+          </span>
+        </div>
+
         {data.timeoutMinutes > 0 && (
           <div className="mt-1 flex items-center gap-1">
             <Clock className="h-3 w-3 text-yellow-500/40" />
@@ -50,8 +64,8 @@ export const ApprovalNodeComponent = memo(({ data, selected }: NodeProps) => {
           </div>
         )}
 
-        {executionState !== 'idle' ? (
-          <div className="mt-2 text-[9px] uppercase tracking-wide text-white/45">{executionState}</div>
+        {executionStateLabel ? (
+          <div className="mt-2 text-[9px] tracking-wide text-white/45">{executionStateLabel}</div>
         ) : null}
       </div>
 

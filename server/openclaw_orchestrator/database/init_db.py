@@ -95,7 +95,10 @@ def init_database() -> None:
             node_id TEXT NOT NULL,
             title TEXT NOT NULL DEFAULT '',
             description TEXT DEFAULT '',
+            approval_mode TEXT NOT NULL DEFAULT 'human',
+            approver_agent_id TEXT,
             status TEXT NOT NULL DEFAULT 'pending',
+            resolved_by TEXT,
             reject_reason TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             resolved_at TEXT,
@@ -150,8 +153,18 @@ def init_database() -> None:
         CREATE INDEX IF NOT EXISTS idx_schedule_jobs_agent ON schedule_jobs(agent_id);
         CREATE INDEX IF NOT EXISTS idx_schedule_jobs_status ON schedule_jobs(status);
     """)
+    # 兼容旧代码中对 schedule_config 列的引用
+    _migrate_add_column(db, "teams", "schedule_config", "TEXT DEFAULT '{}'")
+    db.execute(
+        "UPDATE teams SET schedule_config = schedule_json WHERE (schedule_config IS NULL OR schedule_config = '{}' OR schedule_config = '') AND schedule_json IS NOT NULL AND schedule_json != ''"
+    )
+    db.commit()
+
     # 为 teams 表添加 lead_agent_id 列（Team Lead 角色）
     _migrate_add_column(db, "teams", "lead_agent_id", "TEXT DEFAULT NULL")
+    _migrate_add_column(db, "approvals", "approval_mode", "TEXT DEFAULT 'human'")
+    _migrate_add_column(db, "approvals", "approver_agent_id", "TEXT DEFAULT NULL")
+    _migrate_add_column(db, "approvals", "resolved_by", "TEXT DEFAULT NULL")
 
     # 会议表
     db.executescript("""

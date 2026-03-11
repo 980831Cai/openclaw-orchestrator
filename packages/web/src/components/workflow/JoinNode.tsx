@@ -11,6 +11,11 @@ const MODE_LABELS: Record<string, string> = {
 export const JoinNodeComponent = memo(({ data, selected }: NodeProps) => {
   const mode = MODE_LABELS[String(data.joinMode || 'and').toLowerCase()] || 'AND'
   const executionState = String((data as any).executionState || 'idle')
+  const executionStateLabel =
+    executionState === 'running' ? '进行中' :
+    executionState === 'failed' ? '失败' :
+    executionState === 'success' ? '成功' :
+    null
   const stateClass =
     executionState === 'running'
       ? 'border-amber-400/80 shadow-lg shadow-amber-400/20'
@@ -49,8 +54,8 @@ export const JoinNodeComponent = memo(({ data, selected }: NodeProps) => {
         {String(data.joinMode || 'and').toLowerCase() === 'xor' && data.preferredSourceNodeId ? (
           <p className="mt-1 text-[10px] text-cyber-green/65">指定上游：{String(data.preferredSourceNodeId)}</p>
         ) : null}
-        {executionState !== 'idle' ? (
-          <div className="mt-2 text-[9px] uppercase tracking-wide text-white/45">{executionState}</div>
+        {executionStateLabel ? (
+          <div className="mt-2 text-[9px] tracking-wide text-white/45">{executionStateLabel}</div>
         ) : null}
       </div>
 

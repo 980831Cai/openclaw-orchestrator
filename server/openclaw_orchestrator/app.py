@@ -46,10 +46,14 @@ async def lifespan(app: FastAPI):
 
     schedule_executor.start()
 
-    # Start workflow scheduler (polls workflow cron definitions)
-    from openclaw_orchestrator.services.workflow_scheduler import workflow_scheduler
+    workflow_scheduler = None
+    try:
+        from openclaw_orchestrator.services.workflow_scheduler import workflow_scheduler as imported_workflow_scheduler
 
-    await workflow_scheduler.start()
+        workflow_scheduler = imported_workflow_scheduler
+        await workflow_scheduler.start()
+    except ModuleNotFoundError:
+        print("⚠️ workflow_scheduler module not found, skipping scheduled workflow runtime")
 
     # Initialize OpenClaw bridge (tests Webhook connectivity)
     from openclaw_orchestrator.services.openclaw_bridge import openclaw_bridge
@@ -64,13 +68,14 @@ async def lifespan(app: FastAPI):
     print("OpenClaw Orchestrator server running")
     print(f"OpenClaw home: {settings.openclaw_home}")
     print(f"OpenClaw Webhook: {settings.openclaw_webhook_url}")
-    print(f"OpenClaw Gateway: {settings.openclaw_gateway_url}")
+    print(f"OpenClaw Gateway: {settings.gateway_url}")
 
     yield
 
     # ─── Shutdown ───
     await gateway_connector.stop()
-    await workflow_scheduler.stop()
+    if workflow_scheduler is not None:
+        await workflow_scheduler.stop()
     schedule_executor.stop()
     session_watcher.stop()
 
@@ -125,7 +130,7 @@ def health_check():
         "timestamp": datetime.utcnow().isoformat(),
         "openclawHome": settings.openclaw_home,
         "gatewayConnected": gateway_connector.connected,
-        "gatewayUrl": settings.openclaw_gateway_url,
+        "gatewayUrl": gateway_connector.gateway_url,
         "webhookUrl": settings.openclaw_webhook_url,
         "activeAgents": len(session_watcher.get_all_statuses()),
     }

@@ -123,45 +123,35 @@ class OpenClawBridge:
             dict with keys: success, content, session_id, correlation_id, elapsed
         """
         correlation_id = correlation_id or str(uuid.uuid4())[:8]
-        session_id = session_id or f"orchestrator-{correlation_id}"
+        session_id = session_id or "main"
+        session_key = self._resolve_session_key(agent_id, session_id)
         start_time = datetime.utcnow()
 
-        # ── Try Gateway sessions.spawn first (create session + trigger Agent) ──
-        # NOTE: OpenClaw Gateway is a communication bus, not an execution engine.
-        # It does NOT support "agent.invoke". The correct RPC method is:
-        #   - sessions.spawn: Create a new session and send the first message
-        #   - sessions.send: Send a message to an existing session
-        # After spawning, we still poll JSONL for the response since Gateway
-        # only triggers the Agent — it doesn't wait for the response.
-        gateway_spawned = False
+        gateway_used = False
+        gateway_history_baseline: list[dict[str, Any]] = []
         try:
             from openclaw_orchestrator.services.gateway_connector import gateway_connector
             if gateway_connector.connected:
-                spawn_params: dict[str, Any] = {
-                    "agentId": agent_id,
-                    "sessionId": session_id,
-                    "message": message,
-                    "metadata": {
-                        "source": "orchestrator",
-                        "correlationId": correlation_id,
-                    },
-                }
-                if model:
-                    spawn_params["model"] = model
-                await gateway_connector.call_rpc(
-                    "sessions.spawn", spawn_params, timeout=10.0
+                gateway_history_baseline = await gateway_connector.get_chat_history(
+                    session_key, limit=20
                 )
-                gateway_spawned = True
-                print(f"🔌 Gateway sessions.spawn → {agent_id}/{session_id}")
+                await gateway_connector.send_chat(
+                    session_key=session_key,
+                    message=message,
+                    timeout_ms=timeout_seconds * 1000,
+                    idempotency_key=correlation_id,
+                )
+                gateway_used = True
+                print(f"🔌 Gateway chat.send → {session_key}")
         except Exception as e:
-            print(f"⚠️ Gateway sessions.spawn failed for {agent_id}: {e}")
+            print(f"⚠️ Gateway chat.send failed for {agent_id}: {e}")
             # Fall through to Webhook+JSONL fallback
 
         # Record the current file offset BEFORE sending, so we only read new content
         session_file = self._agent_session_path(agent_id, session_id)
         pre_offset = self._get_file_size(session_file)
 
-        if not gateway_spawned:
+        if not gateway_used:
             # Gateway unavailable — try Webhook, then JSONL direct write
             webhook_ok = await self._send_webhook(agent_id, message, session_id, correlation_id, model=model)
 
@@ -169,10 +159,21 @@ class OpenClawBridge:
                 # Fallback: write directly to JSONL (manual trigger)
                 self._write_user_message(agent_id, session_id, message, correlation_id)
 
-        # Poll for response
-        response = await self._poll_for_response(
-            agent_id, session_id, pre_offset, timeout_seconds
-        )
+        response = None
+        if gateway_used:
+            try:
+                response = await self._poll_gateway_history_for_response(
+                    session_key=session_key,
+                    baseline=gateway_history_baseline,
+                    timeout_seconds=timeout_seconds,
+                )
+            except Exception:
+                response = None
+
+        if response is None:
+            response = await self._poll_for_response(
+                agent_id, session_id, pre_offset, timeout_seconds
+            )
 
         elapsed = (datetime.utcnow() - start_time).total_seconds()
 
@@ -181,15 +182,17 @@ class OpenClawBridge:
                 "success": True,
                 "content": response,
                 "sessionId": session_id,
+                "sessionKey": session_key,
                 "correlationId": correlation_id,
                 "elapsed": round(elapsed, 2),
-                "channel": "gateway" if gateway_spawned else "webhook+jsonl",
+                "channel": "gateway" if gateway_used else "webhook+jsonl",
             }
 
         return {
             "success": False,
             "content": f"Agent {agent_id} did not respond within {timeout_seconds}s",
             "sessionId": session_id,
+            "sessionKey": session_key,
             "correlationId": correlation_id,
             "elapsed": round(elapsed, 2),
         }
@@ -211,28 +214,27 @@ class OpenClawBridge:
         """
         correlation_id = str(uuid.uuid4())[:8]
 
-        # ── Try Gateway sessions.send first ──
+        session_key = self._resolve_session_key(agent_id, session_id)
+
+        # ── Try Gateway chat.send first ──
         try:
             from openclaw_orchestrator.services.gateway_connector import gateway_connector
             if gateway_connector.connected:
-                await gateway_connector.call_rpc("sessions.send", {
-                    "agentId": agent_id,
-                    "sessionId": session_id,
-                    "message": content,
-                    "metadata": {
-                        "source": "orchestrator",
-                        "correlationId": correlation_id,
-                    },
-                    **({"model": model} if model else {}),
-                }, timeout=5.0)
+                await gateway_connector.send_chat(
+                    session_key=session_key,
+                    message=content,
+                    timeout_ms=60_000,
+                    idempotency_key=correlation_id,
+                )
                 return {
                     "success": True,
-                    "message": "Message sent to agent via Gateway (sessions.send)",
+                    "message": "Message sent to agent via Gateway (chat.send)",
                     "correlationId": correlation_id,
                     "channel": "gateway",
+                    "sessionKey": session_key,
                 }
         except Exception as e:
-            print(f"⚠️ Gateway sessions.send failed for {agent_id}: {e}")
+            print(f"⚠️ Gateway chat.send failed for {agent_id}: {e}")
             # Fall back to Webhook
 
         webhook_ok = await self._send_webhook(agent_id, content, session_id, correlation_id, model=model)
@@ -245,6 +247,7 @@ class OpenClawBridge:
             "success": True,
             "message": "Message sent to agent",
             "correlationId": correlation_id,
+            "sessionKey": session_key,
         }
 
     async def _send_webhook(
@@ -528,13 +531,9 @@ class OpenClawBridge:
                 if not line.strip():
                     continue
                 try:
-                    data = json.loads(line)
-                    if data.get("role") == "assistant":
-                        content = data.get("content", "")
-                        if isinstance(content, str) and content.strip():
-                            return content
-                        elif isinstance(content, dict):
-                            return json.dumps(content)
+                    content = self._extract_assistant_content_from_line(line)
+                    if content:
+                        return content
                 except (json.JSONDecodeError, KeyError):
                     continue
 
@@ -544,6 +543,28 @@ class OpenClawBridge:
 
         return None
 
+    async def _poll_gateway_history_for_response(
+        self,
+        *,
+        session_key: str,
+        baseline: list[dict[str, Any]],
+        timeout_seconds: int,
+    ) -> Optional[str]:
+        from openclaw_orchestrator.services.gateway_connector import gateway_connector
+
+        baseline_size = len(baseline)
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        while asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(1.0)
+            messages = await gateway_connector.get_chat_history(session_key, limit=50)
+            if len(messages) <= baseline_size:
+                continue
+            for message in reversed(messages[baseline_size:]):
+                content = self._extract_assistant_content_from_message(message)
+                if content:
+                    return content
+        return None
+
     # ════════════════════════════════════════════════════════════
     # Helper methods
     # ════════════════════════════════════════════════════════════
@@ -551,6 +572,14 @@ class OpenClawBridge:
     def _agent_session_path(self, agent_id: str, session_id: str) -> str:
         """Get full path to an agent's session JSONL file."""
         return str(self._home / "agents" / agent_id / "sessions" / f"{session_id}.jsonl")
+
+    def _resolve_session_key(self, agent_id: str, session_id: Optional[str]) -> str:
+        raw = (session_id or "main").strip()
+        if raw.startswith("agent:"):
+            return raw
+        if raw == "main":
+            return f"agent:{agent_id}:main"
+        return f"agent:{agent_id}:{raw}"
 
     def _get_file_size(self, file_path: str) -> int:
         """Get current file size, 0 if not exists."""
@@ -592,6 +621,40 @@ class OpenClawBridge:
             print(f"📝 Wrote user message to {agent_id}/{session_id}.jsonl")
         except OSError as e:
             print(f"❌ Failed to write JSONL for {agent_id}: {e}")
+
+    def _extract_assistant_content_from_line(self, line: str) -> Optional[str]:
+        data = json.loads(line)
+        if data.get("role") == "assistant":
+            return self._normalize_message_content(data.get("content"))
+        if data.get("type") == "message":
+            message = data.get("message")
+            if isinstance(message, dict) and message.get("role") == "assistant":
+                return self._normalize_message_content(message.get("content"))
+        return None
+
+    def _extract_assistant_content_from_message(self, message: dict[str, Any]) -> Optional[str]:
+        if message.get("role") != "assistant":
+            return None
+        return self._normalize_message_content(message.get("content"))
+
+    def _normalize_message_content(self, content: Any) -> Optional[str]:
+        if isinstance(content, str):
+            return content.strip() or None
+        if isinstance(content, list):
+            text_parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str) and text.strip():
+                        text_parts.append(text.strip())
+            combined = "\n".join(text_parts).strip()
+            return combined or None
+        if isinstance(content, dict):
+            text = content.get("text")
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+            return json.dumps(content, ensure_ascii=False)
+        return None
 
     async def close(self) -> None:
         """Close the HTTP client on shutdown."""

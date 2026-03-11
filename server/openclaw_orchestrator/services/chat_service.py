@@ -141,14 +141,16 @@ class ChatService:
         try:
             result = await openclaw_bridge.send_agent_message(
                 agent_id=agent_id,
-                message=content,
+                content=content,
                 session_id=session_id,
                 model=agent_model,
             )
             return {
-                "success": True,
-                "message": "Message delivered via Webhook" if result.get("webhook") else "Message written to session file",
-                "method": "webhook" if result.get("webhook") else "file",
+                "success": bool(result.get("success", True)),
+                "message": result.get("message", "Message sent to agent"),
+                "method": result.get("channel", "unknown"),
+                "sessionKey": result.get("sessionKey"),
+                "correlationId": result.get("correlationId"),
             }
         except Exception as exc:
             logger.error("Failed to send message to %s: %s", agent_id, exc)
