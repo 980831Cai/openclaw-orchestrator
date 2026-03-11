@@ -379,8 +379,22 @@ class GatewayConnector:
 
         logger.debug("Ignoring unknown Gateway frame: %s", msg)
 
+    # Event names that carry a message ID which may also appear in JSONL files.
+    # When Gateway pushes these events, we register the ID with SessionWatcher
+    # so the file-based watcher won't broadcast the same message a second time.
+    _MESSAGE_EVENTS = frozenset({
+        "message",
+        "chat.message",
+        "agent.message",
+        "agent.output",
+        "session.message",
+    })
+
     def _dispatch_event(self, event_name: str, payload: dict[str, Any]) -> None:
         timestamp = payload.get("timestamp", _now())
+
+        # ── Dedup: register message IDs so SessionWatcher skips duplicates ──
+        self._try_mark_seen(event_name, payload)
 
         broadcast(
             {
@@ -399,6 +413,36 @@ class GatewayConnector:
                 handler(event_name, payload)
             except Exception as exc:
                 logger.error("Event handler error for %s: %s", event_name, exc)
+
+    def _try_mark_seen(self, event_name: str, payload: dict[str, Any]) -> None:
+        """Extract message ID from Gateway event and register it with SessionWatcher.
+
+        This prevents the file-based SessionWatcher from broadcasting the same
+        message again when it detects the corresponding JSONL write.
+
+        ID extraction order (matches SessionWatcher._parse_line logic):
+        1. payload["id"]
+        2. payload["messageId"]
+        3. payload["message"]["id"]
+        """
+        if event_name not in self._MESSAGE_EVENTS:
+            return
+
+        msg_id = payload.get("id") or payload.get("messageId")
+        if not msg_id:
+            message = payload.get("message")
+            if isinstance(message, dict):
+                msg_id = message.get("id")
+
+        if not msg_id or not isinstance(msg_id, str):
+            return
+
+        try:
+            from openclaw_orchestrator.services.session_watcher import session_watcher
+            session_watcher.mark_seen_from_gateway(msg_id)
+        except Exception:
+            # SessionWatcher may not be initialized yet; silently ignore.
+            pass
 
     def _reject_all_pending(self, error: Exception) -> None:
         for future in self._pending_requests.values():
