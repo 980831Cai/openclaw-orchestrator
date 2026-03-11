@@ -2,7 +2,6 @@
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Optional
 
 from openclaw_orchestrator.services.chat_service import chat_service
 from openclaw_orchestrator.services.session_watcher import session_watcher
@@ -35,8 +34,6 @@ async def send_message(agent_id: str, session_id: str, req: SendMessageRequest):
         raise HTTPException(status_code=400, detail="content is required")
     return await chat_service.send_message(agent_id, session_id, req.content)
 
-
-# ────── Monitor endpoints ──────
 
 @router.get("/monitor/statuses")
 def get_statuses():
