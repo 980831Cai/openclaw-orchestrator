@@ -395,6 +395,15 @@ class GatewayConnector:
 
         # ── Dedup: register message IDs so SessionWatcher skips duplicates ──
         self._try_mark_seen(event_name, payload)
+        if event_name == "chat" or event_name in self._MESSAGE_EVENTS:
+            try:
+                from openclaw_orchestrator.services.session_watcher import session_watcher
+
+                session_watcher.mark_gateway_activity(payload)
+            except Exception as exc:
+                logger.debug(
+                    "Failed to project gateway event onto status chain: %s", exc
+                )
 
         broadcast(
             {
