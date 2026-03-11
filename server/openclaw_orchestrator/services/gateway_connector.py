@@ -275,6 +275,12 @@ class GatewayConnector:
         timestamp = payload.get("timestamp", _now())
 
         if event == "chat":
+            try:
+                from openclaw_orchestrator.services.session_watcher import session_watcher
+
+                session_watcher.mark_gateway_activity(payload)
+            except Exception as exc:
+                logger.debug("Failed to project gateway chat event onto status chain: %s", exc)
             broadcast({"type": "gateway_chat", "payload": payload, "timestamp": timestamp})
 
         handlers = self._event_handlers.get(event, [])

@@ -177,12 +177,9 @@ class WorkflowEngine:
             (execution_id,),
         )
         db.commit()
-        broadcast(
-            {
-                "type": "workflow_update",
-                "payload": {"executionId": execution_id, "status": "stopped"},
-                "timestamp": datetime.utcnow().isoformat(),
-            }
+        self._broadcast_workflow_update(
+            execution_id=execution_id,
+            status="stopped",
         )
 
     def get_execution(self, execution_id: str) -> dict[str, Any]:
@@ -234,12 +231,9 @@ class WorkflowEngine:
                     "level": "error",
                 },
             )
-            broadcast(
-                {
-                    "type": "workflow_update",
-                    "payload": {"executionId": execution_id, "status": "failed"},
-                    "timestamp": datetime.utcnow().isoformat(),
-                }
+            self._broadcast_workflow_update(
+                execution_id=execution_id,
+                status="failed",
             )
             notification_service.create_notification(
                 type="workflow_error",
@@ -478,16 +472,10 @@ class WorkflowEngine:
                 "level": "info",
             },
         )
-        broadcast(
-            {
-                "type": "workflow_update",
-                "payload": {
-                    "executionId": execution_id,
-                    "status": "completed",
-                    "totalArtifacts": total_artifacts,
-                },
-                "timestamp": datetime.utcnow().isoformat(),
-            }
+        self._broadcast_workflow_update(
+            execution_id=execution_id,
+            status="completed",
+            extra={"totalArtifacts": total_artifacts},
         )
         notification_service.create_notification(
             type="workflow_completed",
@@ -726,12 +714,9 @@ class WorkflowEngine:
             (execution_id,),
         )
         db.commit()
-        broadcast(
-            {
-                "type": "workflow_update",
-                "payload": {"executionId": execution_id, "status": "failed"},
-                "timestamp": datetime.utcnow().isoformat(),
-            }
+        self._broadcast_workflow_update(
+            execution_id=execution_id,
+            status="failed",
         )
         notification_service.create_notification(
             type="workflow_error",
@@ -751,6 +736,13 @@ class WorkflowEngine:
         node_type = node.get("type", "task")
         upstream_artifacts = self._collect_upstream_artifacts(
             node_id, edges, node_artifacts
+        )
+        self._broadcast_workflow_update(
+            execution_id=execution_id,
+            status="running",
+            node_id=node_id,
+            node=node,
+            extra={"upstreamArtifactCount": len(upstream_artifacts)},
         )
 
         if node_type == "task":
@@ -835,19 +827,6 @@ class WorkflowEngine:
                 "level": "info",
             },
         )
-        broadcast(
-            {
-                "type": "workflow_update",
-                "payload": {
-                    "executionId": execution_id,
-                    "currentNodeId": node_id,
-                    "status": "running",
-                    "upstreamArtifactCount": len(upstream_artifacts),
-                },
-                "timestamp": datetime.utcnow().isoformat(),
-            }
-        )
-
         full_prompt = self._build_task_prompt(
             label, task_prompt, upstream_artifacts, execution_id, node_id
         )
@@ -1314,17 +1293,16 @@ class WorkflowEngine:
             execution_id=execution_id,
             node_id=node_id,
         )
-        broadcast(
-            {
-                "type": "workflow_update",
-                "payload": {
-                    "executionId": execution_id,
-                    "currentNodeId": node_id,
-                    "status": "waiting_approval",
-                    "approvalId": approval_id,
-                },
-                "timestamp": datetime.utcnow().isoformat(),
-            }
+        self._broadcast_workflow_update(
+            execution_id=execution_id,
+            status="waiting_approval",
+            node_id=node_id,
+            node=node,
+            extra={
+                "approvalId": approval_id,
+                "approvalMode": approval_mode,
+                "approverAgentId": approver_agent_id,
+            },
         )
 
         if approval_mode == "agent" and approver_agent_id:
@@ -1360,6 +1338,94 @@ class WorkflowEngine:
             (node_id, execution_id),
         )
         db.commit()
+
+    def _build_workflow_signal_payload(
+        self,
+        *,
+        execution_id: str,
+        status: str,
+        node_id: str | None = None,
+        node: dict[str, Any] | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "executionId": execution_id,
+            "status": status,
+        }
+        workflow_id = self._get_workflow_id_for_execution(execution_id)
+        if workflow_id:
+            payload["workflowId"] = workflow_id
+        if node_id:
+            payload["currentNodeId"] = node_id
+        if node:
+            node_type = str(node.get("type") or "task")
+            payload["nodeType"] = node_type
+            payload["nodeLabel"] = str(
+                node.get("label") or node.get("title") or node_id or node_type
+            )
+
+            if node_type == "task":
+                agent_id = node.get("agentId")
+                if agent_id:
+                    payload["agentId"] = str(agent_id)
+            elif node_type in {"meeting", "debate"}:
+                participants = node.get("participants")
+                if isinstance(participants, list):
+                    payload["participantIds"] = [str(item) for item in participants if item]
+                lead_key = "leadAgentId" if node_type == "meeting" else "judgeAgentId"
+                lead_agent_id = node.get(lead_key)
+                if lead_agent_id:
+                    payload["agentId"] = str(lead_agent_id)
+            elif node_type == "approval":
+                approval_mode = str(node.get("approvalMode") or "human").strip().lower()
+                if approval_mode not in {"human", "agent"}:
+                    approval_mode = "human"
+                payload["approvalMode"] = approval_mode
+                approver_agent_id = self._resolve_approval_agent_id(
+                    node.get("approverAgentId") or node.get("approver")
+                )
+                if approver_agent_id:
+                    payload["approverAgentId"] = approver_agent_id
+        if extra:
+            payload.update(extra)
+        return payload
+
+    def _get_workflow_id_for_execution(self, execution_id: str) -> str | None:
+        try:
+            db = get_db()
+            row = db.execute(
+                "SELECT workflow_id FROM workflow_executions WHERE id = ?",
+                (execution_id,),
+            ).fetchone()
+        except Exception:
+            return None
+        if not row:
+            return None
+        workflow_id = row["workflow_id"]
+        return str(workflow_id) if workflow_id else None
+
+    def _broadcast_workflow_update(
+        self,
+        *,
+        execution_id: str,
+        status: str,
+        node_id: str | None = None,
+        node: dict[str, Any] | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        broadcast(
+            {
+                "type": "workflow_update",
+                "payload": self._build_workflow_signal_payload(
+                    execution_id=execution_id,
+                    status=status,
+                    node_id=node_id,
+                    node=node,
+                    extra=extra,
+                ),
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+        )
 
     def _append_log(self, execution_id: str, log: dict[str, Any]) -> None:
         db = get_db()
