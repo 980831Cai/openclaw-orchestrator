@@ -23,6 +23,7 @@ const sizeMap = {
 const statusColors: Record<AgentStatus, string> = {
   idle: 'bg-gray-400',
   busy: 'bg-cyber-green',
+  scheduled: 'bg-cyan-400',
   error: 'bg-cyber-red',
   offline: 'bg-gray-600',
 }
@@ -30,6 +31,7 @@ const statusColors: Record<AgentStatus, string> = {
 const statusLabels: Record<AgentStatus, string> = {
   idle: '空闲',
   busy: '工作中',
+  scheduled: '值守中',
   error: '异常',
   offline: '离线',
 }
