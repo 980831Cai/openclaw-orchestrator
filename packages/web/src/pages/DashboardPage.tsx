@@ -1,21 +1,23 @@
 import { useEffect } from 'react'
+import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Wifi, WifiOff, Users, Zap, ClipboardList, ArrowRight, Building2 } from 'lucide-react'
-import { AgentAvatar } from '@/components/avatar/AgentAvatar'
+import { Wifi, Zap, ClipboardList, ArrowRight, Building2 } from 'lucide-react'
 import { Logo } from '@/components/brand/Logo'
 import { EmptyState } from '@/components/brand/EmptyState'
+import { EmpireOfficeBoard } from '@/components/empire-dashboard/EmpireOfficeBoard'
+import { buildAgentRooms, resolveAgents } from '@/components/empire-dashboard/model'
 import { useAgents } from '@/hooks/use-agents'
 import { useTeams } from '@/hooks/use-teams'
 import { useWebSocket } from '@/hooks/use-websocket'
 import { useMonitorStore } from '@/stores/monitor-store'
 import { cn } from '@/lib/utils'
-import type { AgentListItem, TeamListItem, CommunicationEvent } from '@/types'
+import type { TeamListItem, CommunicationEvent } from '@/types'
 
 export function DashboardPage() {
   const navigate = useNavigate()
   const { agents, fetchAgents } = useAgents()
   const { teams, fetchTeams } = useTeams()
-  const { connected, events } = useMonitorStore()
+  const { connected, events, agentStatuses, realtimeMessages, notifications, workflowSignals } = useMonitorStore()
   useWebSocket()
 
   useEffect(() => {
@@ -23,145 +25,121 @@ export function DashboardPage() {
     fetchTeams()
   }, [fetchAgents, fetchTeams])
 
-  const busyCount = agents.filter((a) => a.status === 'busy').length
+  const resolvedAgents = resolveAgents(agents, agentStatuses, {
+    events,
+    messages: realtimeMessages,
+    notifications,
+    workflowSignals,
+  })
+  const busyCount = resolvedAgents.filter((agent) => agent.resolvedStatus === 'busy').length
+  const agentRooms = buildAgentRooms(teams, resolvedAgents)
   const hour = new Date().getHours()
   const greeting = hour < 12 ? '早上好' : hour < 18 ? '下午好' : '晚上好'
 
   return (
-    <div className="min-h-screen p-8">
-      {/* ── Hero welcome ── */}
-      <div className="relative rounded-2xl overflow-hidden mb-8 cartoon-card p-8">
-        {/* Background decorative */}
-        <div className="absolute inset-0 pointer-events-none" style={{
-          background: 'radial-gradient(ellipse at 20% 50%, rgba(99,102,241,0.08) 0%, transparent 60%), radial-gradient(ellipse at 80% 50%, rgba(139,92,246,0.06) 0%, transparent 60%)',
-        }} />
+    <div className="h-full overflow-auto p-8">
+      <div className="cartoon-card relative mb-8 overflow-hidden p-8">
+        <div
+          className="pointer-events-none absolute inset-0"
+          style={{
+            background:
+              'radial-gradient(ellipse at 20% 50%, rgba(99,102,241,0.08) 0%, transparent 60%), radial-gradient(ellipse at 80% 50%, rgba(139,92,246,0.06) 0%, transparent 60%)',
+          }}
+        />
 
-        <div className="relative z-10 flex items-center justify-between">
+        <div className="relative z-10 flex items-center justify-between gap-6">
           <div className="flex items-center gap-5">
             <Logo size="lg" mood={connected ? 'waving' : 'worried'} animated />
             <div>
-              <h1 className="text-2xl font-bold text-white/90">
-                {greeting}，指挥官 👋
-              </h1>
-              <p className="text-white/30 text-sm mt-1">
-                {connected ? 'OpenClaw 系统运行正常' : 'Gateway 未连接，部分功能受限'}
-              </p>
+              <h1 className="text-2xl font-bold text-white/90">{greeting}，指挥官 👋</h1>
+              <p className="mt-1 text-sm text-white/30">{connected ? 'OpenClaw 系统运行正常' : 'Gateway 未连接，部分功能受限'}</p>
             </div>
           </div>
 
-          {/* Quick stats */}
           <div className="flex items-center gap-6">
             <StatCard
-              icon={<Wifi className={cn('w-4 h-4', connected ? 'text-cyber-green' : 'text-cyber-red')} />}
+              icon={<Wifi className={cn('h-4 w-4', connected ? 'text-cyber-green' : 'text-cyber-red')} />}
               label="Gateway"
               value={connected ? '在线' : '离线'}
               valueColor={connected ? 'text-cyber-green' : 'text-cyber-red'}
             />
-            <StatCard
-              icon={<Zap className="w-4 h-4 text-cyber-purple" />}
-              label="活跃 Agent"
-              value={String(busyCount)}
-              valueColor="text-cyber-purple"
-            />
-            <StatCard
-              icon={<Building2 className="w-4 h-4 text-cyber-cyan" />}
-              label="工作室"
-              value={String(teams.length)}
-              valueColor="text-cyber-cyan"
-            />
-            <StatCard
-              icon={<ClipboardList className="w-4 h-4 text-cyber-amber" />}
-              label="事件"
-              value={String(events.length)}
-              valueColor="text-cyber-amber"
-            />
+            <StatCard icon={<Zap className="h-4 w-4 text-cyber-purple" />} label="活跃 Agent" value={String(busyCount)} valueColor="text-cyber-purple" />
+            <StatCard icon={<Building2 className="h-4 w-4 text-cyber-cyan" />} label="工作室" value={String(teams.length)} valueColor="text-cyber-cyan" />
+            <StatCard icon={<ClipboardList className="h-4 w-4 text-cyber-amber" />} label="事件" value={String(events.length)} valueColor="text-cyber-amber" />
           </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* ── Agent Plaza — main area ── */}
-        <div className="lg:col-span-2">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-white font-bold text-lg flex items-center gap-2">
-              <Zap className="w-5 h-5 text-cyber-purple" />
+      <div className="grid grid-cols-1 gap-8 xl:grid-cols-[minmax(0,1.9fr)_340px]">
+        <div className="min-w-0">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="flex items-center gap-2 text-lg font-bold text-white">
+              <Zap className="h-5 w-5 text-cyber-purple" />
               Agent 广场
             </h2>
-            {agents.length > 0 && (
+            {agents.length > 0 ? (
               <button
                 onClick={() => navigate('/agents')}
-                className="text-white/25 text-xs hover:text-white/50 transition-colors flex items-center gap-1 cursor-pointer"
+                className="flex cursor-pointer items-center gap-1 text-xs text-white/25 transition-colors hover:text-white/50"
               >
-                查看全部 <ArrowRight className="w-3 h-3" />
+                查看全部 <ArrowRight className="h-3 w-3" />
               </button>
-            )}
+            ) : null}
           </div>
 
-          <div className="cartoon-card p-6 min-h-[360px]">
+          <div className="cartoon-card min-h-[420px] p-4 sm:p-6 xl:min-h-[760px]">
             {agents.length === 0 ? (
               <EmptyState scene="no-agents" />
             ) : (
-              <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-4">
-                {agents.map((agent, i) => (
-                  <AgentPlazaCard
-                    key={agent.id}
-                    agent={agent}
-                    delay={i * 50}
-                    onClick={() => navigate(`/agents/${agent.id}`)}
-                  />
-                ))}
-              </div>
+              <EmpireOfficeBoard
+                rooms={agentRooms}
+                onOpenRoom={(roomId) => navigate(`/teams/${roomId}`)}
+                onOpenAgent={(agentId) => navigate(`/chat?agent=${encodeURIComponent(agentId)}`)}
+              />
             )}
           </div>
         </div>
 
-        {/* ── Right sidebar ── */}
-        <div className="space-y-6">
-          {/* Team rooms */}
+        <div className="space-y-6 xl:max-h-[calc(100vh-220px)] xl:overflow-y-auto xl:pr-1">
           <div>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-white font-bold text-lg flex items-center gap-2">
-                <Building2 className="w-5 h-5 text-cyber-cyan" />
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="flex items-center gap-2 text-lg font-bold text-white">
+                <Building2 className="h-5 w-5 text-cyber-cyan" />
                 工作室入口
               </h2>
-              {teams.length > 0 && (
+              {teams.length > 0 ? (
                 <button
                   onClick={() => navigate('/teams')}
-                  className="text-white/25 text-xs hover:text-white/50 transition-colors flex items-center gap-1 cursor-pointer"
+                  className="flex cursor-pointer items-center gap-1 text-xs text-white/25 transition-colors hover:text-white/50"
                 >
-                  全部 <ArrowRight className="w-3 h-3" />
+                  全部 <ArrowRight className="h-3 w-3" />
                 </button>
-              )}
+              ) : null}
             </div>
 
             <div className="space-y-3">
               {teams.length === 0 ? (
                 <EmptyState scene="no-teams" className="py-8" />
               ) : (
-                teams.map((team) => (
-                  <TeamDoorMini key={team.id} team={team} onClick={() => navigate(`/teams/${team.id}`)} />
-                ))
+                teams.map((team) => <TeamDoorMini key={team.id} team={team} onClick={() => navigate(`/teams/${team.id}`)} />)
               )}
             </div>
           </div>
 
-          {/* Event timeline */}
           <div>
-            <h2 className="text-white font-bold text-sm mb-3 flex items-center gap-2">
-              <Zap className="w-4 h-4 text-cyber-amber" />
+            <h2 className="mb-3 flex items-center gap-2 text-sm font-bold text-white">
+              <Zap className="h-4 w-4 text-cyber-amber" />
               实时事件流
             </h2>
-            <div className="cartoon-card p-4 max-h-[240px] overflow-y-auto">
+            <div className="cartoon-card max-h-[240px] overflow-y-auto p-4">
               {events.length === 0 ? (
                 <EmptyState scene="no-events" className="py-6" />
               ) : (
                 <div className="relative">
-                  {/* Timeline line */}
-                  <div className="absolute left-[7px] top-2 bottom-2 w-px bg-white/5" />
-
+                  <div className="absolute bottom-2 left-[7px] top-2 w-px bg-white/5" />
                   <div className="space-y-3">
-                    {events.slice(-10).reverse().map((evt, i) => (
-                      <EventTimelineItem key={evt.id || i} event={evt} />
+                    {events.slice(-10).reverse().map((evt, index) => (
+                      <EventTimelineItem key={evt.id || index} event={evt} />
                     ))}
                   </div>
                 </div>
@@ -174,77 +152,16 @@ export function DashboardPage() {
   )
 }
 
-/** Stat card for hero section */
-function StatCard({ icon, label, value, valueColor }: {
-  icon: React.ReactNode
-  label: string
-  value: string
-  valueColor: string
-}) {
+function StatCard({ icon, label, value, valueColor }: { icon: ReactNode; label: string; value: string; valueColor: string }) {
   return (
     <div className="flex flex-col items-center gap-1">
-      <div className="w-10 h-10 rounded-xl bg-white/5 border border-white/5 flex items-center justify-center">
-        {icon}
-      </div>
-      <span className={cn('font-bold text-sm font-mono', valueColor)}>{value}</span>
-      <span className="text-white/20 text-[9px]">{label}</span>
+      <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-white/5 bg-white/5">{icon}</div>
+      <span className={cn('font-mono text-sm font-bold', valueColor)}>{value}</span>
+      <span className="text-[9px] text-white/20">{label}</span>
     </div>
   )
 }
 
-/** Agent card in the plaza */
-function AgentPlazaCard({ agent, delay, onClick }: { agent: AgentListItem; delay: number; onClick: () => void }) {
-  const statusConfig: Record<string, { color: string; label: string }> = {
-    busy: { color: '#22C55E', label: '执行中' },
-    idle: { color: '#3B82F6', label: '空闲' },
-    error: { color: '#EF4444', label: '异常' },
-    offline: { color: '#6B7280', label: '离线' },
-  }
-  const cfg = statusConfig[agent.status] || statusConfig.idle
-
-  return (
-    <button
-      onClick={onClick}
-      className="flex flex-col items-center gap-2 p-3 rounded-xl hover:bg-white/5 transition-all group cursor-pointer animate-fade-in"
-      style={{ animationDelay: `${delay}ms` }}
-    >
-      <AgentAvatar
-        emoji={agent.emoji || '🤖'}
-        theme={agent.theme}
-        status={agent.status}
-        size="md"
-      />
-      {/* Status bar under avatar */}
-      <div
-        className={cn(
-          'h-[3px] rounded-full transition-all duration-500',
-          agent.status === 'busy' ? 'w-8 animate-pulse' : 'w-5',
-        )}
-        style={{
-          backgroundColor: cfg.color,
-          boxShadow: agent.status === 'busy' ? `0 0 8px ${cfg.color}80` : 'none',
-        }}
-      />
-      <span className="text-white/50 text-[10px] truncate max-w-full group-hover:text-white/80 transition-colors">
-        {agent.name}
-      </span>
-      <span className="text-[9px] flex items-center gap-1" style={{ color: `${cfg.color}CC` }}>
-        <span
-          className={cn('w-1.5 h-1.5 rounded-full inline-block', agent.status === 'busy' && 'animate-pulse')}
-          style={{ backgroundColor: cfg.color }}
-        />
-        {cfg.label}
-      </span>
-      {agent.currentTask && agent.status === 'busy' && (
-        <span className="text-[8px] text-cyber-green/60 truncate max-w-full px-1">
-          {agent.currentTask.length > 20 ? `${agent.currentTask.slice(0, 20)}...` : agent.currentTask}
-        </span>
-      )}
-    </button>
-  )
-}
-
-/** Team door card */
 function TeamDoorMini({ team, onClick }: { team: TeamListItem; onClick: () => void }) {
   const hasActivity = (team.activeTaskCount ?? 0) > 0
 
@@ -252,36 +169,34 @@ function TeamDoorMini({ team, onClick }: { team: TeamListItem; onClick: () => vo
     <button
       onClick={onClick}
       className={cn(
-        'w-full cartoon-card p-3 flex items-center gap-3 transition-all cursor-pointer group text-left',
+        'cartoon-card group flex w-full cursor-pointer items-center gap-3 p-3 text-left transition-all',
         hasActivity && 'border-cyber-amber/20'
       )}
     >
-      <div className={cn(
-        'w-10 h-10 rounded-xl flex items-center justify-center border border-white/5 transition-colors',
-        hasActivity ? 'bg-cyber-amber/10' : 'bg-white/5'
-      )}>
-        <Building2 className={cn(
-          'w-4 h-4 transition-colors',
-          hasActivity ? 'text-cyber-amber' : 'text-cyber-lavender/60'
-        )} />
+      <div
+        className={cn(
+          'flex h-10 w-10 items-center justify-center rounded-xl border border-white/5 transition-colors',
+          hasActivity ? 'bg-cyber-amber/10' : 'bg-white/5'
+        )}
+      >
+        <Building2 className={cn('h-4 w-4 transition-colors', hasActivity ? 'text-cyber-amber' : 'text-cyber-lavender/60')} />
       </div>
-      <div className="flex-1 min-w-0">
-        <p className="text-white/80 text-sm font-medium truncate group-hover:text-white transition-colors">{team.name}</p>
-        <p className="text-white/20 text-[10px]">{team.memberCount} 成员</p>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium text-white/80 transition-colors group-hover:text-white">{team.name}</p>
+        <p className="text-[10px] text-white/20">{team.memberCount} 成员</p>
       </div>
       <div className="flex items-center gap-2">
-        {hasActivity && (
-          <span className="px-1.5 py-0.5 rounded-md bg-cyber-amber/10 text-cyber-amber text-[9px] border border-cyber-amber/20">
+        {hasActivity ? (
+          <span className="rounded-md border border-cyber-amber/20 bg-cyber-amber/10 px-1.5 py-0.5 text-[9px] text-cyber-amber">
             {team.activeTaskCount}
           </span>
-        )}
-        <ArrowRight className="w-3 h-3 text-white/10 group-hover:text-white/30 transition-colors" />
+        ) : null}
+        <ArrowRight className="h-3 w-3 text-white/10 transition-colors group-hover:text-white/30" />
       </div>
     </button>
   )
 }
 
-/** Timeline-style event item */
 function EventTimelineItem({ event }: { event: CommunicationEvent }) {
   const typeColors: Record<string, string> = {
     message: 'bg-cyber-blue',
@@ -292,22 +207,17 @@ function EventTimelineItem({ event }: { event: CommunicationEvent }) {
   const dotColor = typeColors[event.eventType ?? event.type] || 'bg-white/30'
 
   return (
-    <div className="flex items-start gap-3 pl-1 animate-slide-in">
-      {/* Timeline dot */}
-      <div className={cn('w-[9px] h-[9px] rounded-full mt-1 flex-shrink-0 ring-2 ring-cyber-bg', dotColor)} />
-
-      {/* Content */}
-      <div className="flex-1 min-w-0 -mt-0.5">
+    <div className="animate-slide-in flex items-start gap-3 pl-1">
+      <div className={cn('mt-1 h-[9px] w-[9px] flex-shrink-0 rounded-full ring-2 ring-cyber-bg', dotColor)} />
+      <div className="mt-[-2px] min-w-0 flex-1">
         <div className="flex items-center gap-1.5 text-[10px]">
-          <span className="text-white/50 font-medium">{event.fromAgentId}</span>
+          <span className="font-medium text-white/50">{event.fromAgentId}</span>
           <span className="text-white/15">→</span>
           <span className="text-white/40">{event.toAgentId}</span>
         </div>
-        <p className="text-white/20 text-[10px] truncate mt-0.5">{event.message ?? event.content}</p>
+        <p className="mt-0.5 truncate text-[10px] text-white/20">{event.message ?? event.content}</p>
       </div>
-
-      {/* Time */}
-      <span className="text-white/10 text-[9px] flex-shrink-0 mt-0.5">
+      <span className="mt-0.5 flex-shrink-0 text-[9px] text-white/10">
         {new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
       </span>
     </div>
