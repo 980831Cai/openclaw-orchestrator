@@ -1,17 +1,17 @@
 import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
-import { cn } from '@/lib/utils'
 import {
-  Building2,
-  Users,
-  Bot,
-  GitBranch,
   Activity,
-  MessageSquare,
+  Bot,
+  Building2,
   Command,
+  GitBranch,
+  MessageSquare,
+  Users,
 } from 'lucide-react'
 import { NotificationCenter } from '@/components/notification/NotificationCenter'
 import { Logo } from '@/components/brand/Logo'
+import { cn } from '@/lib/utils'
 import { useMonitorStore } from '@/stores/monitor-store'
 
 const navItems = [
@@ -21,44 +21,40 @@ const navItems = [
   { path: '/workflows', label: '战术桌', icon: GitBranch, color: 'cyber-amber' },
   { path: '/monitor', label: '指挥中心', icon: Activity, color: 'cyber-green' },
   { path: '/chat', label: '通信频道', icon: MessageSquare, color: 'cyber-blue' },
-]
+] as const
 
-export function Sidebar() {
-  const [expanded, setExpanded] = useState(false)
-  const { connected } = useMonitorStore()
+interface SidebarProps {
+  expanded?: boolean
+  onExpandedChange?: (expanded: boolean) => void
+}
+
+export function Sidebar({ expanded: expandedProp, onExpandedChange }: SidebarProps) {
+  const [internalExpanded, setInternalExpanded] = useState(false)
+  const expanded = expandedProp ?? internalExpanded
+  const setExpanded = onExpandedChange ?? setInternalExpanded
+  const { connected, gatewayConnected } = useMonitorStore()
 
   return (
     <>
-      {/* Backdrop when expanded */}
-      {expanded && (
-        <div className="fixed inset-0 z-30" onClick={() => setExpanded(false)} />
-      )}
+      {expanded ? <div className="fixed inset-0 z-30" onClick={() => setExpanded(false)} /> : null}
 
       <aside
         className={cn(
-          'fixed left-0 top-0 z-40 flex h-screen flex-col border-r border-white/5 bg-cyber-bg/95 backdrop-blur-sm py-4 transition-all duration-300',
+          'fixed left-0 top-0 z-40 flex h-screen flex-col border-r border-white/5 bg-cyber-bg/95 py-4 backdrop-blur-sm transition-all duration-300',
           expanded ? 'w-[200px]' : 'w-[72px]'
         )}
         onMouseEnter={() => setExpanded(true)}
         onMouseLeave={() => setExpanded(false)}
       >
-        {/* Logo area */}
         <div className="mb-6 flex items-center px-4">
           <div className="flex-shrink-0">
-            <Logo
-              size="md"
-              showText={expanded}
-              mood={connected ? 'happy' : 'worried'}
-              animated
-            />
+            <Logo size="md" showText={expanded} mood={connected ? 'happy' : 'worried'} animated />
           </div>
         </div>
 
-        {/* Separator */}
         <div className="mx-4 mb-3 h-px bg-gradient-to-r from-transparent via-white/8 to-transparent" />
 
-        {/* Navigation */}
-        <nav className="flex flex-1 flex-col gap-1 w-full px-2">
+        <nav className="flex w-full flex-1 flex-col gap-1 px-2">
           {navItems.map((item) => (
             <NavLink
               key={item.path}
@@ -68,29 +64,25 @@ export function Sidebar() {
                 cn(
                   'relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-200',
                   'hover:bg-white/5',
-                  isActive
-                    ? 'bg-white/5 text-white'
-                    : 'text-white/40 hover:text-white/70'
+                  isActive ? 'bg-white/5 text-white' : 'text-white/40 hover:text-white/70'
                 )
               }
             >
               {({ isActive }) => (
                 <>
-                  {/* Active indicator bar */}
-                  {isActive && (
+                  {isActive ? (
                     <div
-                      className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full transition-all"
+                      className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full transition-all"
                       style={{ backgroundColor: `var(--color-${item.color}, #6366F1)` }}
                     />
-                  )}
-                  <item.icon className={cn(
-                    'h-5 w-5 flex-shrink-0 transition-colors',
-                    isActive && `text-${item.color}`
-                  )} />
-                  <span className={cn(
-                    'transition-all duration-300 whitespace-nowrap',
-                    expanded ? 'opacity-100' : 'opacity-0 w-0 overflow-hidden'
-                  )}>
+                  ) : null}
+                  <item.icon className={cn('h-5 w-5 flex-shrink-0 transition-colors', isActive ? `text-${item.color}` : undefined)} />
+                  <span
+                    className={cn(
+                      'whitespace-nowrap transition-all duration-300',
+                      expanded ? 'opacity-100' : 'w-0 overflow-hidden opacity-0'
+                    )}
+                  >
                     {item.label}
                   </span>
                 </>
@@ -99,47 +91,39 @@ export function Sidebar() {
           ))}
         </nav>
 
-        {/* Bottom area */}
-        <div className="mt-auto px-2 w-full space-y-1">
-          {/* Command palette hint */}
+        <div className="mt-auto w-full space-y-1 px-2">
           <button
             onClick={() => {
               window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))
             }}
-            className="w-full flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-white/20 hover:text-white/40 hover:bg-white/5 cursor-pointer transition-colors"
+            className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-xl px-3 py-2 text-white/20 transition-colors hover:bg-white/5 hover:text-white/40"
           >
             <Command className="h-3.5 w-3.5 flex-shrink-0" />
-            <span className={cn(
-              'text-[10px] transition-opacity duration-300 whitespace-nowrap',
-              expanded ? 'opacity-100' : 'opacity-0 w-0 overflow-hidden'
-            )}>
-              搜索  ⌘K
+            <span
+              className={cn(
+                'whitespace-nowrap text-[10px] transition-opacity duration-300',
+                expanded ? 'opacity-100' : 'w-0 overflow-hidden opacity-0'
+              )}
+            >
+              搜索 ⌘K
             </span>
           </button>
 
-          {/* Notification */}
           <NotificationCenter />
 
-          {/* Connection status */}
           <div className="flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-white/30 transition-colors">
-            <div className={cn(
-              'h-2 w-2 rounded-full flex-shrink-0',
-              connected ? 'bg-cyber-green animate-pulse' : 'bg-cyber-red'
-            )} />
-            <span className={cn(
-              'text-xs transition-opacity duration-300 whitespace-nowrap',
-              expanded ? 'opacity-100' : 'opacity-0 w-0 overflow-hidden'
-            )}>
-              {connected ? 'Gateway 已连接' : '未连接'}
+            <div className={cn('h-2 w-2 flex-shrink-0 rounded-full', connected ? 'bg-cyber-green animate-pulse' : 'bg-cyber-red')} />
+            <span
+              className={cn(
+                'whitespace-nowrap text-xs transition-opacity duration-300',
+                expanded ? 'opacity-100' : 'w-0 overflow-hidden opacity-0'
+              )}
+            >
+              {connected ? (gatewayConnected ? '实时通道与 Gateway 已连接' : '实时通道已连接') : '未连接'}
             </span>
           </div>
 
-          {/* Version */}
-          {expanded && (
-            <div className="text-center text-white/10 text-[9px] py-1 animate-fade-in">
-              v0.1.0
-            </div>
-          )}
+          {expanded ? <div className="animate-fade-in py-1 text-center text-[9px] text-white/10">v0.1.0</div> : null}
         </div>
       </aside>
     </>

@@ -26,6 +26,7 @@ const ROLE_LABELS: Record<string, string> = {
 const STATUS_CFG: Record<AgentStatus, { color: string; label: string }> = {
   busy: { color: '#22C55E', label: '执行中' },
   idle: { color: '#3B82F6', label: '空闲' },
+  scheduled: { color: '#06B6D4', label: '值守中' },
   error: { color: '#EF4444', label: '异常' },
   offline: { color: '#6B7280', label: '离线' },
 }
