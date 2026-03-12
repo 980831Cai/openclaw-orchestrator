@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { wsClient } from '@/lib/websocket'
 import { useMonitorStore } from '@/stores/monitor-store'
 import type { Notification } from '@/types'
+import type { WsPayloadMap } from '@/types/websocket'
 
 export function useWebSocket() {
   const { setConnected, setGatewayConnected, setAgentStatus, addEvent, addNotification, addRealtimeMessage } = useMonitorStore()
@@ -10,35 +11,31 @@ export function useWebSocket() {
     wsClient.connect()
     setConnected(true)
 
-    // Request browser notification permission
     if ('Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission()
     }
 
-    const unsubStatus = wsClient.on('agent_status', (data) => {
-      setAgentStatus(data as any)
+    const unsubStatus = wsClient.on('agent_status', (raw) => {
+      setAgentStatus(raw as WsPayloadMap['agent_status'])
     })
 
-    const unsubComm = wsClient.on('communication', (data) => {
-      addEvent(data as any)
+    const unsubComm = wsClient.on('communication', (raw) => {
+      addEvent(raw as WsPayloadMap['communication'])
     })
 
-    // Subscribe to real-time agent messages (from session_watcher + Gateway)
-    const unsubMessage = wsClient.on('new_message', (data) => {
-      addRealtimeMessage(data as any)
+    const unsubMessage = wsClient.on('new_message', (raw) => {
+      addRealtimeMessage(raw as WsPayloadMap['new_message'])
     })
 
-    // Subscribe to Gateway connection status
-    const unsubGateway = wsClient.on('gateway_status', (data) => {
-      setGatewayConnected((data as any)?.connected ?? false)
+    const unsubGateway = wsClient.on('gateway_status', (raw) => {
+      const payload = raw as WsPayloadMap['gateway_status']
+      setGatewayConnected(payload?.connected ?? false)
     })
 
-    // Subscribe to notification events
-    const unsubNotification = wsClient.on('notification', (data) => {
-      const notification = data as Notification
+    const unsubNotification = wsClient.on('notification', (raw) => {
+      const notification = raw as WsPayloadMap['notification']
       addNotification(notification)
 
-      // Show browser notification
       if ('Notification' in window && Notification.permission === 'granted') {
         new Notification(notification.title, {
           body: notification.message,
@@ -48,10 +45,8 @@ export function useWebSocket() {
       }
     })
 
-    // Subscribe to approval_update events
-    const unsubApproval = wsClient.on('approval_update', (data) => {
-      const approval = data as any
-      // Create a notification-like event for approval status changes
+    const unsubApproval = wsClient.on('approval_update', (raw) => {
+      const approval = raw as WsPayloadMap['approval_update']
       if (approval.status === 'approved' || approval.status === 'rejected') {
         addNotification({
           id: `approval-${approval.id}-${Date.now()}`,

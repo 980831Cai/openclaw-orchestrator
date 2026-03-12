@@ -49,6 +49,17 @@ class Settings(BaseSettings):
                     "For remote, set via env var or auto-read from openclaw.json.",
     )
 
+    # API Key authentication
+    # When set, all API endpoints (except /api/health and /ws) require
+    # the X-API-Key header or ?api_key= query parameter to match this value.
+    # Leave empty to disable authentication (development mode).
+    api_key: str = Field(
+        default="",
+        alias="API_KEY",
+        description="API Key for authenticating requests. "
+                    "Empty = no auth (dev mode). Set to enable.",
+    )
+
     @property
     def db_path(self) -> str:
         return os.environ.get(

@@ -1,10 +1,17 @@
 type EventHandler = (data: unknown) => void;
 
+/** Exponential backoff configuration */
+const RECONNECT_BASE_MS = 1000;   // Initial reconnect delay: 1s
+const RECONNECT_MAX_MS = 30000;   // Max reconnect delay: 30s
+const RECONNECT_MULTIPLIER = 2;   // Backoff multiplier
+
 class WebSocketClient {
   private ws: WebSocket | null = null;
   private handlers: Map<string, Set<EventHandler>> = new Map();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectDelay: number = RECONNECT_BASE_MS;
   private url: string;
+  private intentionallyClosed = false;
 
   constructor(url: string) {
     this.url = url;
@@ -13,10 +20,13 @@ class WebSocketClient {
   connect() {
     if (this.ws?.readyState === WebSocket.OPEN) return;
 
+    this.intentionallyClosed = false;
     this.ws = new WebSocket(this.url);
 
     this.ws.onopen = () => {
       console.log('WebSocket connected');
+      // Reset backoff on successful connection
+      this.reconnectDelay = RECONNECT_BASE_MS;
       if (this.reconnectTimer) {
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
@@ -24,16 +34,42 @@ class WebSocketClient {
     };
 
     this.ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      const handlers = this.handlers.get(data.type);
-      if (handlers) {
-        handlers.forEach((handler) => handler(data.payload));
+      try {
+        const data = JSON.parse(event.data);
+
+        // Respond to server ping with pong
+        if (data.type === 'ping') {
+          this.send({ type: 'pong', timestamp: new Date().toISOString() });
+          return;
+        }
+
+        const handlers = this.handlers.get(data.type);
+        if (handlers) {
+          handlers.forEach((handler) => handler(data.payload));
+        }
+      } catch (e) {
+        console.error('Failed to parse WebSocket message:', e);
       }
     };
 
     this.ws.onclose = () => {
-      console.log('WebSocket disconnected, reconnecting...');
-      this.reconnectTimer = setTimeout(() => this.connect(), 3000);
+      if (this.intentionallyClosed) {
+        console.log('WebSocket closed intentionally');
+        return;
+      }
+
+      console.log(
+        `WebSocket disconnected, reconnecting in ${this.reconnectDelay}ms...`
+      );
+      this.reconnectTimer = setTimeout(() => {
+        this.connect();
+      }, this.reconnectDelay);
+
+      // Exponential backoff with cap
+      this.reconnectDelay = Math.min(
+        this.reconnectDelay * RECONNECT_MULTIPLIER,
+        RECONNECT_MAX_MS
+      );
     };
 
     this.ws.onerror = (error) => {
@@ -42,11 +78,14 @@ class WebSocketClient {
   }
 
   disconnect() {
+    this.intentionallyClosed = true;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
     }
     this.ws?.close();
     this.ws = null;
+    this.reconnectDelay = RECONNECT_BASE_MS;
   }
 
   on(event: string, handler: EventHandler) {
