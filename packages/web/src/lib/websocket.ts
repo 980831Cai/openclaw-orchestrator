@@ -9,21 +9,41 @@ class WebSocketClient {
   private ws: WebSocket | null = null;
   private handlers: Map<string, Set<EventHandler>> = new Map();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay: number = RECONNECT_BASE_MS;
   private url: string;
-  private intentionallyClosed = false;
+  private subscriberCount = 0;
+  private shouldReconnect = false;
+  private intentionalClose = false;
 
   constructor(url: string) {
     this.url = url;
   }
 
   connect() {
-    if (this.ws?.readyState === WebSocket.OPEN) return;
+    this.subscriberCount += 1;
+    this.shouldReconnect = true;
 
-    this.intentionallyClosed = false;
-    this.ws = new WebSocket(this.url);
+    if (this.disconnectTimer) {
+      clearTimeout(this.disconnectTimer);
+      this.disconnectTimer = null;
+    }
 
-    this.ws.onopen = () => {
+    if (
+      this.ws?.readyState === WebSocket.OPEN ||
+      this.ws?.readyState === WebSocket.CONNECTING
+    ) {
+      return;
+    }
+
+    this.intentionalClose = false;
+    const socket = new WebSocket(this.url);
+    this.ws = socket;
+
+    socket.onopen = () => {
+      if (socket !== this.ws) {
+        return;
+      }
       console.log('WebSocket connected');
       // Reset backoff on successful connection
       this.reconnectDelay = RECONNECT_BASE_MS;
@@ -33,7 +53,10 @@ class WebSocketClient {
       }
     };
 
-    this.ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
+      if (socket !== this.ws) {
+        return;
+      }
       try {
         const data = JSON.parse(event.data);
 
@@ -52,12 +75,14 @@ class WebSocketClient {
       }
     };
 
-    this.ws.onclose = () => {
-      if (this.intentionallyClosed) {
-        console.log('WebSocket closed intentionally');
+    socket.onclose = () => {
+      if (socket !== this.ws) {
         return;
       }
-
+      this.ws = null;
+      if (!this.shouldReconnect || this.intentionalClose) {
+        return;
+      }
       console.log(
         `WebSocket disconnected, reconnecting in ${this.reconnectDelay}ms...`
       );
@@ -72,20 +97,51 @@ class WebSocketClient {
       );
     };
 
-    this.ws.onerror = (error) => {
+    socket.onerror = (error) => {
+      if (socket !== this.ws || this.intentionalClose) {
+        return;
+      }
       console.error('WebSocket error:', error);
     };
   }
 
   disconnect() {
-    this.intentionallyClosed = true;
+    this.subscriberCount = Math.max(0, this.subscriberCount - 1);
+    if (this.subscriberCount > 0) {
+      return;
+    }
+
+    this.shouldReconnect = false;
+
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    this.ws?.close();
-    this.ws = null;
-    this.reconnectDelay = RECONNECT_BASE_MS;
+
+    if (this.disconnectTimer) {
+      clearTimeout(this.disconnectTimer);
+      this.disconnectTimer = null;
+    }
+
+    const closeSocket = () => {
+      if (this.subscriberCount > 0) {
+        return;
+      }
+      this.intentionalClose = true;
+      this.ws?.close();
+      this.ws = null;
+      this.reconnectDelay = RECONNECT_BASE_MS;
+    };
+
+    if (this.ws?.readyState === WebSocket.CONNECTING) {
+      this.disconnectTimer = setTimeout(() => {
+        this.disconnectTimer = null;
+        closeSocket();
+      }, 150);
+      return;
+    }
+
+    closeSocket();
   }
 
   on(event: string, handler: EventHandler) {
@@ -103,5 +159,6 @@ class WebSocketClient {
   }
 }
 
-const wsUrl = `ws://${window.location.hostname}:3721/ws`;
+const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
 export const wsClient = new WebSocketClient(wsUrl);

@@ -1,11 +1,188 @@
 import { useEffect } from 'react'
+import { api } from '@/lib/api'
 import { wsClient } from '@/lib/websocket'
+import { useAgentStore } from '@/stores/agent-store'
 import { useMonitorStore } from '@/stores/monitor-store'
-import type { Notification } from '@/types'
-import type { WsPayloadMap } from '@/types/websocket'
+import type { AgentStatus, Notification, SessionMessage, WorkflowRuntimeSignal } from '@/types'
+
+function coerceTimestamp(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const milliseconds = value > 10_000_000_000 ? value : value * 1000
+    return new Date(milliseconds).toISOString()
+  }
+  return new Date().toISOString()
+}
+
+function parseAgentSessionKey(value: string): { agentId?: string; sessionId?: string } {
+  if (value.startsWith('agent:')) {
+    const parts = value.split(':')
+    if (parts.length >= 3) {
+      return {
+        agentId: parts[1],
+        sessionId: parts.slice(2).join(':'),
+      }
+    }
+  }
+
+  if (value.startsWith('agent/')) {
+    const parts = value.split('/')
+    if (parts.length >= 3) {
+      return {
+        agentId: parts[1],
+        sessionId: parts.slice(2).join('/'),
+      }
+    }
+  }
+
+  return {}
+}
+
+function coerceContent(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        if (typeof item === 'string') return item
+        if (item && typeof item === 'object') {
+          const text = (item as Record<string, unknown>).text ?? (item as Record<string, unknown>).content
+          return typeof text === 'string' ? text : ''
+        }
+        return ''
+      })
+      .filter(Boolean)
+      .join('\n')
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    if (typeof record.text === 'string') return record.text
+    if (typeof record.content === 'string') return record.content
+  }
+  return ''
+}
+
+function normalizeRealtimeMessage(payload: unknown): SessionMessage | null {
+  if (!payload || typeof payload !== 'object') return null
+  const record = payload as Record<string, unknown>
+  const envelope =
+    record.message && typeof record.message === 'object'
+      ? (record.message as Record<string, unknown>)
+      : record
+
+  const directRole = envelope.role ?? record.role
+  const role =
+    directRole === 'user' || directRole === 'assistant' || directRole === 'system'
+      ? directRole
+      : ((envelope.authorRole ??
+          record.authorRole ??
+          envelope.senderRole ??
+          record.senderRole ??
+          'assistant') as SessionMessage['role'])
+
+  const nestedSession =
+    envelope.session && typeof envelope.session === 'object'
+      ? (envelope.session as Record<string, unknown>)
+      : record.session && typeof record.session === 'object'
+        ? (record.session as Record<string, unknown>)
+        : null
+
+  const sessionKey =
+    typeof envelope.sessionKey === 'string'
+      ? envelope.sessionKey
+      : typeof record.sessionKey === 'string'
+        ? record.sessionKey
+        : typeof envelope.scope === 'string'
+          ? envelope.scope
+          : typeof record.scope === 'string'
+            ? record.scope
+            : typeof nestedSession?.key === 'string'
+              ? nestedSession.key
+              : typeof nestedSession?.id === 'string'
+                ? nestedSession.id
+                : ''
+
+  let sessionId =
+    typeof envelope.sessionId === 'string'
+      ? envelope.sessionId
+      : typeof record.sessionId === 'string'
+        ? record.sessionId
+        : typeof nestedSession?.id === 'string'
+          ? nestedSession.id
+          : ''
+  let agentId =
+    typeof envelope.agentId === 'string'
+      ? envelope.agentId
+      : typeof record.agentId === 'string'
+        ? record.agentId
+        : typeof nestedSession?.agentId === 'string'
+          ? nestedSession.agentId
+          : typeof envelope.agent === 'string'
+            ? envelope.agent
+            : typeof record.agent === 'string'
+              ? record.agent
+              : ''
+
+  const parsedFromSessionKey = sessionKey ? parseAgentSessionKey(sessionKey) : {}
+  if (!agentId && parsedFromSessionKey.agentId) {
+    agentId = parsedFromSessionKey.agentId
+  }
+  if (!sessionId && parsedFromSessionKey.sessionId) {
+    sessionId = parsedFromSessionKey.sessionId
+  }
+
+  const content = coerceContent(
+    envelope.content ??
+      record.content ??
+      envelope.text ??
+      record.text ??
+      envelope.message ??
+      record.message ??
+      envelope.parts ??
+      record.parts ??
+      ''
+  )
+  if (!content) return null
+
+  return {
+    id:
+      (typeof envelope.id === 'string' && envelope.id) ||
+      (typeof record.id === 'string' && record.id) ||
+      (typeof envelope.messageId === 'string' && envelope.messageId) ||
+      (typeof record.messageId === 'string' && record.messageId) ||
+      `rt-${agentId || 'unknown'}-${sessionId || 'main'}-${String(record.timestamp ?? Date.now())}`,
+    sessionId: sessionId || 'main',
+    sessionKey: sessionKey || undefined,
+    agentId,
+    role,
+    content,
+    timestamp: coerceTimestamp(
+      envelope.timestamp ??
+        record.timestamp ??
+        envelope.createdAt ??
+        record.createdAt ??
+        envelope.updatedAt ??
+        record.updatedAt
+    ),
+  }
+}
 
 export function useWebSocket() {
-  const { setConnected, setGatewayConnected, setAgentStatus, addEvent, addNotification, addRealtimeMessage } = useMonitorStore()
+  const {
+    setConnected,
+    setGatewayConnected,
+    setAgentStatus,
+    addEvent,
+    addNotification,
+    addRealtimeMessage,
+    setWorkflowSignal,
+    clearWorkflowSignal,
+  } = useMonitorStore()
+  const updateAgentStatus = useAgentStore((state) => state.updateAgentStatus)
+
+  const applyAgentStatus = (agentId: string, status: AgentStatus, timestamp?: string) => {
+    setAgentStatus({ agentId, status, timestamp })
+    updateAgentStatus(agentId, status)
+  }
 
   useEffect(() => {
     wsClient.connect()
@@ -15,25 +192,52 @@ export function useWebSocket() {
       Notification.requestPermission()
     }
 
-    const unsubStatus = wsClient.on('agent_status', (raw) => {
-      setAgentStatus(raw as WsPayloadMap['agent_status'])
+    const unsubStatus = wsClient.on('agent_status', (data) => {
+      const event = data as { agentId?: string; status?: AgentStatus; timestamp?: string }
+      if (!event.agentId || !event.status) return
+      applyAgentStatus(event.agentId, event.status, event.timestamp)
     })
 
     const unsubComm = wsClient.on('communication', (raw) => {
-      addEvent(raw as WsPayloadMap['communication'])
+      addEvent(raw as any)
     })
 
-    const unsubMessage = wsClient.on('new_message', (raw) => {
-      addRealtimeMessage(raw as WsPayloadMap['new_message'])
+    const unsubMessage = wsClient.on('new_message', (data) => {
+      const normalized = normalizeRealtimeMessage(data)
+      if (normalized) {
+        addRealtimeMessage(normalized)
+      }
     })
 
-    const unsubGateway = wsClient.on('gateway_status', (raw) => {
-      const payload = raw as WsPayloadMap['gateway_status']
-      setGatewayConnected(payload?.connected ?? false)
+    const unsubGatewayChat = wsClient.on('gateway_chat', (data) => {
+      const normalized = normalizeRealtimeMessage(data)
+      if (normalized) {
+        addRealtimeMessage(normalized)
+      }
     })
 
-    const unsubNotification = wsClient.on('notification', (raw) => {
-      const notification = raw as WsPayloadMap['notification']
+    const unsubGateway = wsClient.on('gateway_status', (data) => {
+      setGatewayConnected((data as any)?.connected ?? false)
+    })
+
+    const unsubWorkflow = wsClient.on('workflow_update', (data) => {
+      const signal = data as WorkflowRuntimeSignal
+      if (!signal?.executionId) {
+        return
+      }
+      const nextSignal: WorkflowRuntimeSignal = {
+        ...signal,
+        updatedAt: signal.updatedAt ?? new Date().toISOString(),
+      }
+      if (['completed', 'failed', 'stopped'].includes(nextSignal.status)) {
+        clearWorkflowSignal(nextSignal.executionId)
+        return
+      }
+      setWorkflowSignal(nextSignal)
+    })
+
+    const unsubNotification = wsClient.on('notification', (data) => {
+      const notification = data as Notification
       addNotification(notification)
 
       if ('Notification' in window && Notification.permission === 'granted') {
@@ -45,8 +249,8 @@ export function useWebSocket() {
       }
     })
 
-    const unsubApproval = wsClient.on('approval_update', (raw) => {
-      const approval = raw as WsPayloadMap['approval_update']
+    const unsubApproval = wsClient.on('approval_update', (data) => {
+      const approval = data as any
       if (approval.status === 'approved' || approval.status === 'rejected') {
         addNotification({
           id: `approval-${approval.id}-${Date.now()}`,
@@ -65,11 +269,50 @@ export function useWebSocket() {
       unsubStatus()
       unsubComm()
       unsubMessage()
+      unsubGatewayChat()
       unsubGateway()
+      unsubWorkflow()
       unsubNotification()
       unsubApproval()
       wsClient.disconnect()
       setConnected(false)
     }
-  }, [setConnected, setGatewayConnected, setAgentStatus, addEvent, addNotification, addRealtimeMessage])
+  }, [
+    setConnected,
+    setGatewayConnected,
+    setAgentStatus,
+    updateAgentStatus,
+    addEvent,
+    addNotification,
+    addRealtimeMessage,
+    setWorkflowSignal,
+    clearWorkflowSignal,
+  ])
+
+  useEffect(() => {
+    let disposed = false
+
+    const syncStatuses = async () => {
+      try {
+        const statuses = await api.get<Record<string, AgentStatus>>('/monitor/statuses')
+        if (disposed) return
+        const timestamp = new Date().toISOString()
+        Object.entries(statuses || {}).forEach(([agentId, status]) => {
+          applyAgentStatus(agentId, status, timestamp)
+        })
+      } catch {
+        // Ignore polling failures; websocket remains the primary source.
+      }
+    }
+
+    void syncStatuses()
+    const timer = window.setInterval(() => {
+      void syncStatuses()
+    }, 5000)
+
+    return () => {
+      disposed = true
+      window.clearInterval(timer)
+    }
+  }, [setAgentStatus, updateAgentStatus])
 }
