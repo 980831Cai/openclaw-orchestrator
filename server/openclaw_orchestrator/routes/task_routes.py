@@ -1,5 +1,7 @@
 """Task API routes (including artifact endpoints)."""
 
+import re
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
@@ -7,6 +9,10 @@ from typing import Optional
 from openclaw_orchestrator.services.task_service import task_service
 
 router = APIRouter()
+
+# Safe filename/ext pattern: alphanumeric, hyphens, underscores, dots (no path separators or ..)
+_SAFE_FILENAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+_SAFE_EXT_RE = re.compile(r"^[a-zA-Z0-9]+$")
 
 
 class CreateTaskRequest(BaseModel):
@@ -81,9 +87,13 @@ def create_artifact(task_id: str, req: CreateArtifactRequest):
             detail="Missing required fields: agentId, name, ext, content",
         )
 
-    # Security: ext must not contain path traversal
-    if ".." in req.ext and ("/" in req.ext or "\\" in req.ext):
-        raise HTTPException(status_code=400, detail="Invalid extension")
+    # Security: ext must be a simple extension (alphanumeric only, no dots/slashes/..)
+    if not _SAFE_EXT_RE.match(req.ext):
+        raise HTTPException(status_code=400, detail="Invalid extension: must be alphanumeric only")
+
+    # Security: name must also be safe
+    if not _SAFE_FILENAME_RE.match(req.name):
+        raise HTTPException(status_code=400, detail="Invalid artifact name")
 
     try:
         return task_service.add_artifact(
@@ -103,8 +113,8 @@ def list_artifacts(task_id: str):
 
 @router.get("/tasks/{task_id}/artifacts/{filename}/content")
 def get_artifact_content(task_id: str, filename: str):
-    # Security: filename must not contain path traversal
-    if ".." in filename or "/" in filename or "\\" in filename:
+    # Security: filename must match safe pattern (no path traversal)
+    if not _SAFE_FILENAME_RE.match(filename):
         raise HTTPException(status_code=400, detail="Invalid filename")
 
     try:
@@ -118,8 +128,8 @@ def get_artifact_content(task_id: str, filename: str):
 
 @router.delete("/tasks/{task_id}/artifacts/{filename}")
 def delete_artifact(task_id: str, filename: str):
-    # Security
-    if ".." in filename or "/" in filename or "\\" in filename:
+    # Security: filename must match safe pattern
+    if not _SAFE_FILENAME_RE.match(filename):
         raise HTTPException(status_code=400, detail="Invalid filename")
 
     try:
