@@ -8,6 +8,7 @@ import {
   GitBranch,
   MessageSquare,
   Users,
+  AlertCircle,
 } from 'lucide-react'
 import { NotificationCenter } from '@/components/notification/NotificationCenter'
 import { Logo } from '@/components/brand/Logo'
@@ -32,7 +33,8 @@ export function Sidebar({ expanded: expandedProp, onExpandedChange }: SidebarPro
   const [internalExpanded, setInternalExpanded] = useState(false)
   const expanded = expandedProp ?? internalExpanded
   const setExpanded = onExpandedChange ?? setInternalExpanded
-  const { connected, gatewayConnected } = useMonitorStore()
+  const { connected, gatewayConnected, gatewayError, gatewayAuthRequired } = useMonitorStore()
+  const [showError, setShowError] = useState(false)
 
   return (
     <>
@@ -111,7 +113,10 @@ export function Sidebar({ expanded: expandedProp, onExpandedChange }: SidebarPro
 
           <NotificationCenter />
 
-          <div className="flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-white/30 transition-colors">
+          <div 
+            className="flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-white/30 transition-colors cursor-pointer hover:bg-white/5"
+            onClick={() => gatewayError && setShowError(!showError)}
+          >
             <div className={cn('h-2 w-2 flex-shrink-0 rounded-full', connected ? 'bg-cyber-green animate-pulse' : 'bg-cyber-red')} />
             <span
               className={cn(
@@ -121,7 +126,38 @@ export function Sidebar({ expanded: expandedProp, onExpandedChange }: SidebarPro
             >
               {connected ? (gatewayConnected ? '实时通道与 Gateway 已连接' : '实时通道已连接') : '未连接'}
             </span>
+            {gatewayError && <AlertCircle className="w-3 h-3 text-cyber-amber flex-shrink-0" />}
           </div>
+
+          {/* Gateway error details */}
+          {showError && gatewayError && expanded && (
+            <div className="mx-2 mb-2 p-3 rounded-lg bg-cyber-amber/10 border border-cyber-amber/20 text-xs">
+              <div className="flex items-center gap-1.5 mb-2 text-cyber-amber font-medium">
+                <AlertCircle className="w-3.5 h-3.5" />
+                Gateway 连接失败
+              </div>
+              <p className="text-white/60 leading-relaxed mb-2">{gatewayError}</p>
+              {gatewayAuthRequired ? (
+                <div className="space-y-1.5 text-white/40">
+                  <p>需要配置 Gateway 认证 Token：</p>
+                  <ol className="list-decimal list-inside space-y-1 ml-1">
+                    <li>在 OpenClaw 中运行 <code className="text-white/60 bg-white/5 px-1 rounded">openclaw devices list</code></li>
+                    <li>复制 Token 值</li>
+                    <li>设置环境变量 <code className="text-white/60 bg-white/5 px-1 rounded">OPENCLAW_GATEWAY_TOKEN</code></li>
+                    <li>重启 Orchestrator 服务</li>
+                  </ol>
+                </div>
+              ) : (
+                <p className="text-white/40">请检查 OpenClaw Gateway 是否正常运行在 ws://localhost:18789</p>
+              )}
+              <button
+                onClick={() => setShowError(false)}
+                className="mt-2 text-white/20 hover:text-white/40 transition-colors"
+              >
+                关闭
+              </button>
+            </div>
+          )}
 
           {expanded ? <div className="animate-fade-in py-1 text-center text-[9px] text-white/10">v0.1.0</div> : null}
         </div>

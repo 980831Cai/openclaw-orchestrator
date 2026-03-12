@@ -14,6 +14,7 @@ from typing import Any, Optional
 
 from openclaw_orchestrator.database.db import get_db
 from openclaw_orchestrator.services.file_manager import file_manager
+from openclaw_orchestrator.services.team_service import team_service
 from openclaw_orchestrator.websocket.ws_handler import broadcast
 
 # ─── Artifact type inference ───
@@ -77,6 +78,31 @@ def _empty_manifest(task_id: str) -> dict[str, Any]:
 class TaskService:
     """Service for managing tasks and their artifacts."""
 
+    # ────── Permission Checks ──────
+
+    def validate_task_assignment_permission(
+        self, team_id: str, caller_agent_id: Optional[str] = None
+    ) -> None:
+        """Validate that the caller has permission to create/assign tasks.
+
+        Args:
+            team_id: The team ID
+            caller_agent_id: The agent ID making the call (if called by an agent)
+
+        Raises:
+            PermissionError: If the caller is not authorized to assign tasks
+        """
+        if caller_agent_id is None:
+            # User-initiated task creation, no permission check needed
+            return
+
+        # Agent-initiated task assignment requires Lead permission
+        if not team_service.is_lead(caller_agent_id, team_id):
+            raise PermissionError(
+                f"Agent {caller_agent_id} is not authorized to assign tasks in team {team_id}. "
+                "Only the team Lead can assign tasks to members."
+            )
+
     # ────── Task CRUD ──────
 
     def create_task(
@@ -85,8 +111,26 @@ class TaskService:
         title: str,
         description: str,
         participant_agent_ids: list[str],
+        caller_agent_id: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Create a new task with directory structure."""
+        """Create a new task with directory structure.
+
+        Args:
+            team_id: The team ID
+            title: Task title
+            description: Task description
+            participant_agent_ids: List of agent IDs participating in the task
+            caller_agent_id: The agent ID making the call (for permission check)
+
+        Returns:
+            The created task
+
+        Raises:
+            PermissionError: If caller_agent_id is provided but not a team Lead
+        """
+        # Validate permission if called by an agent
+        self.validate_task_assignment_permission(team_id, caller_agent_id)
+
         db = get_db()
         task_id = str(uuid.uuid4())
 

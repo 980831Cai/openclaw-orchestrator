@@ -6,6 +6,8 @@ interface MonitorStore {
   events: CommunicationEvent[];
   connected: boolean;
   gatewayConnected: boolean;
+  gatewayError: string | null;
+  gatewayAuthRequired: boolean;
   notifications: Notification[];
   unreadCount: number;
   realtimeMessages: SessionMessage[];
@@ -14,6 +16,7 @@ interface MonitorStore {
   addEvent: (event: CommunicationEvent) => void;
   setConnected: (connected: boolean) => void;
   setGatewayConnected: (connected: boolean) => void;
+  setGatewayError: (error: string | null, authRequired?: boolean) => void;
   addNotification: (notification: Notification) => void;
   addRealtimeMessage: (message: SessionMessage) => void;
   setWorkflowSignal: (signal: WorkflowRuntimeSignal) => void;
@@ -29,6 +32,8 @@ export const useMonitorStore = create<MonitorStore>((set) => ({
   events: [],
   connected: false,
   gatewayConnected: false,
+  gatewayError: null,
+  gatewayAuthRequired: false,
   notifications: [],
   unreadCount: 0,
   realtimeMessages: [],
@@ -45,6 +50,7 @@ export const useMonitorStore = create<MonitorStore>((set) => ({
     })),
   setConnected: (connected) => set({ connected }),
   setGatewayConnected: (connected) => set({ gatewayConnected: connected }),
+  setGatewayError: (error, authRequired = false) => set({ gatewayError: error, gatewayAuthRequired: authRequired }),
   addRealtimeMessage: (message) =>
     set((state) => {
       // Dedup by message id
