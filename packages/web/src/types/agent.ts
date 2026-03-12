@@ -1,7 +1,7 @@
 // Agent-related type definitions
 // Migrated from @openclaw/shared to local types
 
-export type AgentStatus = 'idle' | 'busy' | 'offline' | 'error'
+export type AgentStatus = 'idle' | 'busy' | 'scheduled' | 'offline' | 'error'
 
 export interface AgentListItem {
   id: string
@@ -51,6 +51,7 @@ export interface AgentConfig {
   id: string
   name: string
   model?: string
+  status?: AgentStatus
   workspace: string
   identity: AgentIdentity
   soul: AgentSoul

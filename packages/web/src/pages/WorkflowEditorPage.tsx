@@ -30,6 +30,8 @@ const nodeTypes = {
   debate: DebateNodeComponent,
 }
 
+const EDGE_STYLE = { stroke: '#6366F1', strokeWidth: 2 }
+
 export function WorkflowEditorPage() {
   const editor = useWorkflowEditor()
 
@@ -126,7 +128,10 @@ export function WorkflowEditorPage() {
                 onEdgesChange={editor.onEdgesChange}
                 onConnect={editor.onConnect}
                 onNodeClick={(_, node) => editor.setSelectedNodeId(node.id)}
+                onPaneClick={() => editor.setSelectedNodeId(null)}
                 nodeTypes={nodeTypes}
+                defaultEdgeOptions={{ style: EDGE_STYLE, reconnectable: 'source' }}
+                edgesUpdatable
                 fitView
                 className="bg-cyber-bg"
               >
