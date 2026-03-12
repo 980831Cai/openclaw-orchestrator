@@ -107,7 +107,7 @@ const LOCALE_TEXT = {
     zh: "☕ 休息室",
   },
   role: {
-    team_leader: { ko: "팀장", en: "Lead", ja: "リーダー", zh: "组长" },
+    lead: { ko: "팀장", en: "Lead", ja: "リーダー", zh: "组长" },
     senior: { ko: "시니어", en: "Senior", ja: "シニア", zh: "资深" },
     junior: { ko: "주니어", en: "Junior", ja: "ジュニア", zh: "初级" },
     intern: { ko: "인턴", en: "Intern", ja: "インターン", zh: "实习" },

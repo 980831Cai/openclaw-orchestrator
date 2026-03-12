@@ -69,7 +69,7 @@ export function EmpireOfficeBoard({ rooms, onOpenRoom, onOpenAgent }: EmpireOffi
         name_ja: room.agent.name,
         name_zh: room.agent.name,
         department_id: room.id,
-        role: index === 0 ? 'team_leader' : index % 3 === 0 ? 'senior' : 'junior',
+        role: index === 0 ? 'lead' : index % 3 === 0 ? 'senior' : 'junior',
         cli_provider: 'codex',
         avatar_emoji: room.agent.emoji || '🤖',
         personality: room.teamName ? `所属工作室：${room.teamName}` : null,

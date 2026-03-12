@@ -117,6 +117,68 @@ class AgentService:
         self._update_openclaw_config(agent_id, "add")
         return self.get_agent(agent_id)
 
+    def create_manager_agent(self, team_id: str, team_name: str) -> dict[str, Any]:
+        """Create a manager agent for a team.
+
+        Manager agents are created automatically when a team is created.
+        They are responsible for coordinating team members, assigning tasks, and making decisions.
+        They do not execute specific tasks themselves.
+
+        Args:
+            team_id: The ID of the team this manager belongs to
+            team_name: The name of the team (used in agent naming)
+
+        Returns:
+            The created manager agent configuration
+        """
+        # Use deterministic ID: {team_id}-manager
+        agent_id = f"{team_id}-manager"
+        agent_path = os.path.join(AGENTS_DIR, agent_id)
+
+        # If manager already exists, return it
+        if file_manager.file_exists(agent_path):
+            return self.get_agent(agent_id)
+
+        file_manager.ensure_dir(agent_path)
+        file_manager.ensure_dir(os.path.join(agent_path, "sessions"))
+
+        identity = {
+            "name": f"团队管理员-{team_name}",
+            "emoji": "👑",
+            "theme": "#F59E0B",  # Gold/Amber for leadership
+            "vibe": "专业、公正、有条理",
+            "greeting": f"我是 {team_name} 团队的管理者，负责协调团队工作。",
+        }
+
+        soul = {
+            "coreTruths": f"我是 {team_name} 团队的管理者。\n我的职责是协调团队成员、分配任务、做出决策。\n我不直接执行具体任务，而是将任务分配给合适的团队成员。",
+            "boundaries": "- 我只负责协调和决策，不执行编程、分析等具体任务\n- 我根据成员的能力和排班情况分配任务\n- 我主持团队会议并总结结论",
+            "vibe": "专业、公正、有条理",
+            "continuity": "我记住每个成员的能力和历史表现，以便做出合理的任务分配决策",
+            "rawContent": "",
+        }
+
+        rules = {
+            "startupFlow": "检查团队状态，了解当前任务进展和成员工作情况。",
+            "memoryRules": "记住每个团队成员的能力、专长和历史表现记录。",
+            "securityRules": "作为团队管理者，确保团队信息安全和权限正确。",
+            "toolProtocols": "使用团队协调工具进行任务分配和进度跟踪。",
+            "rawContent": "",
+        }
+
+        file_manager.write_file(
+            os.path.join(agent_path, "IDENTITY.md"), generate_identity_md(identity)
+        )
+        file_manager.write_file(
+            os.path.join(agent_path, "SOUL.md"), generate_soul_md(soul)
+        )
+        file_manager.write_file(
+            os.path.join(agent_path, "AGENTS.md"), generate_rules_md(rules)
+        )
+
+        self._update_openclaw_config(agent_id, "add")
+        return self.get_agent(agent_id)
+
     def update_agent(self, agent_id: str, updates: dict[str, Any]) -> dict[str, Any]:
         """Update an existing agent's configuration."""
         agent_path = os.path.join(AGENTS_DIR, agent_id)

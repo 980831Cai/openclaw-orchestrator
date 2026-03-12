@@ -31,6 +31,27 @@ KNOWN_PROVIDERS = {
     "deepseek":  {"name": "DeepSeek",  "icon": "🐋"},
 }
 
+# Common models for each provider (used when provider API key is configured)
+_COMMON_MODELS = {
+    "anthropic": [
+        {"id": "anthropic/claude-sonnet-4-5", "name": "Claude Sonnet 4", "desc": "最强综合能力"},
+        {"id": "anthropic/claude-haiku-3.5", "name": "Claude 3.5 Haiku", "desc": "快速且便宜"},
+    ],
+    "openai": [
+        {"id": "openai/gpt-4o", "name": "GPT-4o", "desc": "旗舰多模态"},
+        {"id": "openai/gpt-4o-mini", "name": "GPT-4o Mini", "desc": "极低成本"},
+        {"id": "openai/o3", "name": "o3", "desc": "深度推理"},
+    ],
+    "google": [
+        {"id": "google/gemini-2.5-pro", "name": "Gemini 2.5 Pro", "desc": "长上下文"},
+        {"id": "google/gemini-2.0-flash", "name": "Gemini 2.0 Flash", "desc": "快速便宜"},
+    ],
+    "deepseek": [
+        {"id": "deepseek/deepseek-v3", "name": "DeepSeek V3", "desc": "编程和数学"},
+        {"id": "deepseek/deepseek-r1", "name": "DeepSeek R1", "desc": "推理"},
+    ],
+}
+
 # Prefix-based provider detection for model IDs without explicit provider/
 _PREFIX_TO_PROVIDER = {
     "claude": "anthropic",
@@ -179,6 +200,118 @@ class ProviderKeysService:
             })
 
         return result
+
+    def get_available_models(self) -> dict[str, Any]:
+        """Get all available models from OpenClaw configuration.
+        
+        Returns a structure containing:
+        - providers: list of providers with their configured models
+        - defaultModel: the global default model (if configured)
+        - customModels: list of custom models used by agents
+        
+        Models are sourced from:
+        1. Models already used by agents (agents.list[].model.primary)
+        2. Common models for providers with configured API keys
+        """
+        config = self._read_config()
+        providers_config = self._get_providers_section(config)
+        
+        # Step 1: Extract models used by agents
+        used_models = set()
+        agents_list = config.get("agents", {}).get("list", [])
+        for agent in agents_list:
+            model = agent.get("model")
+            if isinstance(model, dict):
+                primary = model.get("primary")
+                if primary:
+                    used_models.add(primary)
+            elif isinstance(model, str) and model:
+                used_models.add(model)
+        
+        # Step 2: Get default model
+        defaults = config.get("agents", {}).get("defaults", {})
+        default_model = None
+        default_model_conf = defaults.get("model")
+        if isinstance(default_model_conf, dict):
+            default_model = default_model_conf.get("primary")
+        elif isinstance(default_model_conf, str):
+            default_model = default_model_conf
+        
+        if default_model:
+            used_models.add(default_model)
+        
+        # Step 3: Build provider list with models
+        result_providers = []
+        seen_providers = set()
+        
+        # First, process known providers
+        for provider_id, meta in KNOWN_PROVIDERS.items():
+            seen_providers.add(provider_id)
+            provider_conf = providers_config.get(provider_id, {})
+            raw_key = provider_conf.get("apiKey")
+            has_key = self._resolve_key(raw_key) is not None
+            
+            # Collect models for this provider
+            provider_models = []
+            
+            # Add common models if API key is configured
+            if has_key and provider_id in _COMMON_MODELS:
+                for model_info in _COMMON_MODELS[provider_id]:
+                    provider_models.append({
+                        "id": model_info["id"],
+                        "name": model_info["name"],
+                        "desc": model_info.get("desc", ""),
+                        "available": True,
+                        "source": "common",
+                    })
+            
+            # Add models used by agents for this provider
+            for model_id in used_models:
+                model_provider = self._provider_for_model(model_id)
+                if model_provider == provider_id:
+                    # Check if already added (from common models)
+                    if not any(m["id"] == model_id for m in provider_models):
+                        # Extract display name from model ID
+                        display_name = model_id.split("/", 1)[1] if "/" in model_id else model_id
+                        provider_models.append({
+                            "id": model_id,
+                            "name": display_name,
+                            "desc": "",
+                            "available": has_key,
+                            "source": "used",
+                        })
+            
+            result_providers.append({
+                "id": provider_id,
+                "name": meta["name"],
+                "icon": meta.get("icon", "⚙️"),
+                "configured": has_key,
+                "models": provider_models,
+            })
+        
+        # Step 4: Handle custom/unknown providers from used_models
+        custom_models = []
+        for model_id in used_models:
+            provider_id = self._provider_for_model(model_id)
+            if provider_id and provider_id not in seen_providers:
+                # This is a custom provider
+                provider_conf = providers_config.get(provider_id, {})
+                raw_key = provider_conf.get("apiKey")
+                has_key = self._resolve_key(raw_key) is not None
+                
+                display_name = model_id.split("/", 1)[1] if "/" in model_id else model_id
+                custom_models.append({
+                    "id": model_id,
+                    "provider": provider_id,
+                    "name": display_name,
+                    "available": has_key,
+                })
+        
+        return {
+            "providers": result_providers,
+            "defaultModel": default_model,
+            "customModels": custom_models,
+        }
 
     # ─── Internal helpers ─────────────────────────────────────
 

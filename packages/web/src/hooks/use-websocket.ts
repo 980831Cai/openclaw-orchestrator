@@ -217,7 +217,9 @@ export function useWebSocket() {
     })
 
     const unsubGateway = wsClient.on('gateway_status', (data) => {
-      setGatewayConnected((data as any)?.connected ?? false)
+      const payload = data as any
+      setGatewayConnected(payload?.connected ?? false)
+      setGatewayError(payload?.error ?? null, payload?.authRequired ?? false)
     })
 
     const unsubWorkflow = wsClient.on('workflow_update', (data) => {

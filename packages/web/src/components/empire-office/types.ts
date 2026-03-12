@@ -19,7 +19,7 @@ export interface Department {
 }
 
 // Agent roles
-export type AgentRole = "team_leader" | "senior" | "junior" | "intern";
+export type AgentRole = "lead" | "senior" | "junior" | "intern";
 export type AgentStatus = "idle" | "working" | "break" | "offline";
 export type EmpireAgentStatus =
   | "idle"
