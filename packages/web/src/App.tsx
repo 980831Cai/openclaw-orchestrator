@@ -9,6 +9,7 @@ import { TeamDetailPage } from '@/pages/TeamDetailPage'
 import { WorkflowEditorPage } from '@/pages/WorkflowEditorPage'
 import { MonitorPage } from '@/pages/MonitorPage'
 import { ChatPage } from '@/pages/ChatPage'
+import { SettingsPage } from '@/pages/SettingsPage'
 
 function App() {
   return (
@@ -25,6 +26,7 @@ function App() {
             <Route path="/monitor" element={<MonitorPage />} />
             <Route path="/chat" element={<ChatPage />} />
             <Route path="/chat/:agentId" element={<ChatPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
           </Route>
         </Routes>
       </BrowserRouter>
