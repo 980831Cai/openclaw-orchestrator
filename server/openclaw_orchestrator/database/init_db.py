@@ -157,6 +157,8 @@ def init_database() -> None:
     """)
     # 为 teams 表添加 lead_agent_id 列（Team Lead 角色）
     _migrate_add_column(db, "teams", "lead_agent_id", "TEXT DEFAULT NULL")
+    # 为 teams 表添加 schedule_config 列（排班配置）
+    _migrate_add_column(db, "teams", "schedule_config", "TEXT DEFAULT NULL")
 
     # 会议表
     db.executescript("""
