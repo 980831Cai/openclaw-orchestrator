@@ -10,12 +10,23 @@ const MODE_LABELS: Record<string, string> = {
 
 export const JoinNodeComponent = memo(({ data, selected }: NodeProps) => {
   const mode = MODE_LABELS[String(data.joinMode || 'and').toLowerCase()] || 'AND'
+  const executionState = String((data as any).executionState || 'idle')
+  const stateClass =
+    executionState === 'running'
+      ? 'border-amber-400/80 shadow-lg shadow-amber-400/20'
+      : executionState === 'failed'
+        ? 'border-red-400/70 shadow-lg shadow-red-500/15'
+        : executionState === 'success'
+          ? 'border-cyber-green/60 shadow-lg shadow-cyber-green/15'
+          : selected
+            ? 'border-cyber-green/60 shadow-lg shadow-cyber-green/10 scale-105'
+            : 'border-cyber-green/20'
 
   return (
     <div
       className={`
         min-w-[180px] rounded-xl border-2 transition-all
-        ${selected ? 'border-cyber-green/60 shadow-lg shadow-cyber-green/10 scale-105' : 'border-cyber-green/20'}
+        ${stateClass}
         bg-gradient-to-br from-cyber-panel to-cyber-surface
       `}
     >
@@ -37,6 +48,9 @@ export const JoinNodeComponent = memo(({ data, selected }: NodeProps) => {
         <p className="text-[10px] text-white/35">等待上游分支满足条件后再继续向下执行</p>
         {String(data.joinMode || 'and').toLowerCase() === 'xor' && data.preferredSourceNodeId ? (
           <p className="mt-1 text-[10px] text-cyber-green/65">指定上游：{String(data.preferredSourceNodeId)}</p>
+        ) : null}
+        {executionState !== 'idle' ? (
+          <div className="mt-2 text-[9px] uppercase tracking-wide text-white/45">{executionState}</div>
         ) : null}
       </div>
 

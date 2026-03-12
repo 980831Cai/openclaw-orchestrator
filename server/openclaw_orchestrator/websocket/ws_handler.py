@@ -19,7 +19,7 @@ async def handle_ws_connection(websocket: WebSocket) -> None:
     """Handle a new WebSocket connection."""
     await websocket.accept()
     _clients.add(websocket)
-    print("🔌 WebSocket client connected")
+    print("WebSocket client connected")
 
     # Send welcome message
     await websocket.send_json(
@@ -42,7 +42,7 @@ async def handle_ws_connection(websocket: WebSocket) -> None:
         pass
     finally:
         _clients.discard(websocket)
-        print("🔌 WebSocket client disconnected")
+        print("WebSocket client disconnected")
 
 
 def _handle_client_message(ws: WebSocket, message: Any) -> None:
