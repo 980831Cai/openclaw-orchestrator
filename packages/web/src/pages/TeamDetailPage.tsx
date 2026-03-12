@@ -4,6 +4,7 @@ import { ArrowLeft, Users, Calendar, FileText, BookOpen, ClipboardList, GitBranc
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { StudioScene } from '@/components/scene/StudioScene'
+import { SceneErrorBoundary } from '@/components/ErrorBoundary'
 import { MemberManager } from '@/components/team/MemberManager'
 import { ScheduleEditor } from '@/components/team/ScheduleEditor'
 import { TaskBoard } from '@/components/team/TaskBoard'
@@ -64,12 +65,14 @@ export function TeamDetailPage() {
 
       {/* Studio Scene (60% height) */}
       <div className="flex-1 min-h-[400px] max-h-[60vh] relative overflow-hidden">
-        <StudioScene
-          team={selectedTeam}
-          teamMd={teamMd}
-          onAddMember={() => setActiveTab('members')}
-          onViewAgent={(agentId) => navigate(`/chat?agent=${agentId}`)}
-        />
+        <SceneErrorBoundary>
+          <StudioScene
+            team={selectedTeam}
+            teamMd={teamMd}
+            onAddMember={() => setActiveTab('members')}
+            onViewAgent={(agentId) => navigate(`/chat?agent=${agentId}`)}
+          />
+        </SceneErrorBoundary>
       </div>
 
       {/* Bottom control panel (40%) */}

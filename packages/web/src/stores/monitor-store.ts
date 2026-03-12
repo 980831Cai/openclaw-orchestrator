@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { CommunicationEvent, AgentStatusEvent, Notification, SessionMessage } from '@/types'
+import type { CommunicationEvent, AgentStatusEvent, Notification, SessionMessage, WorkflowRuntimeSignal } from '@/types'
 
 interface MonitorStore {
   agentStatuses: Map<string, AgentStatusEvent>;
@@ -9,12 +9,15 @@ interface MonitorStore {
   notifications: Notification[];
   unreadCount: number;
   realtimeMessages: SessionMessage[];
+  workflowSignals: Map<string, WorkflowRuntimeSignal>;
   setAgentStatus: (event: AgentStatusEvent) => void;
   addEvent: (event: CommunicationEvent) => void;
   setConnected: (connected: boolean) => void;
   setGatewayConnected: (connected: boolean) => void;
   addNotification: (notification: Notification) => void;
   addRealtimeMessage: (message: SessionMessage) => void;
+  setWorkflowSignal: (signal: WorkflowRuntimeSignal) => void;
+  clearWorkflowSignal: (executionId: string) => void;
   markNotificationRead: (notificationId: string) => void;
   markAllNotificationsRead: () => void;
   setUnreadCount: (count: number) => void;
@@ -29,6 +32,7 @@ export const useMonitorStore = create<MonitorStore>((set) => ({
   notifications: [],
   unreadCount: 0,
   realtimeMessages: [],
+  workflowSignals: new Map(),
   setAgentStatus: (event) =>
     set((state) => {
       const newMap = new Map(state.agentStatuses);
@@ -50,6 +54,21 @@ export const useMonitorStore = create<MonitorStore>((set) => ({
       return {
         realtimeMessages: [...state.realtimeMessages.slice(-199), message],
       }
+    }),
+  setWorkflowSignal: (signal) =>
+    set((state) => {
+      const next = new Map(state.workflowSignals)
+      next.set(signal.executionId, signal)
+      return { workflowSignals: next }
+    }),
+  clearWorkflowSignal: (executionId) =>
+    set((state) => {
+      if (!state.workflowSignals.has(executionId)) {
+        return state
+      }
+      const next = new Map(state.workflowSignals)
+      next.delete(executionId)
+      return { workflowSignals: next }
     }),
   addNotification: (notification) =>
     set((state) => ({

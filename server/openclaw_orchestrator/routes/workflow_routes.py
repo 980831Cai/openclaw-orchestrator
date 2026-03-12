@@ -14,12 +14,14 @@ class CreateWorkflowRequest(BaseModel):
     name: str
     nodes: Optional[dict[str, Any]] = None
     edges: Optional[list[dict[str, Any]]] = None
+    schedule: Optional[dict[str, Any]] = None
 
 
 class UpdateWorkflowRequest(BaseModel):
     name: Optional[str] = None
     nodes: Optional[dict[str, Any]] = None
     edges: Optional[list[dict[str, Any]]] = None
+    schedule: Optional[dict[str, Any]] = None
 
 
 class StopExecutionRequest(BaseModel):
@@ -46,7 +48,13 @@ def create_workflow(req: CreateWorkflowRequest):
             status_code=400, detail="teamId and name are required"
         )
     return workflow_engine.create_workflow(
-        req.teamId, req.name, {"nodes": req.nodes or {}, "edges": req.edges or []}
+        req.teamId,
+        req.name,
+        {
+            "nodes": req.nodes or {},
+            "edges": req.edges or [],
+            "schedule": req.schedule,
+        },
     )
 
 

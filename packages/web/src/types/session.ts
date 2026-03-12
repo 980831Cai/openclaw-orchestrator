@@ -5,6 +5,7 @@
 export interface SessionMessage {
   id?: string
   sessionId?: string
+  sessionKey?: string
   agentId?: string
   role: 'user' | 'assistant' | 'system'
   content: string
@@ -22,11 +23,31 @@ export interface CommunicationEvent {
   timestamp: string
 }
 
+export type WorkflowRuntimeStatus = 'running' | 'waiting_approval' | 'completed' | 'failed' | 'stopped'
+
+export interface WorkflowRuntimeSignal {
+  executionId: string
+  workflowId?: string
+  status: WorkflowRuntimeStatus
+  currentNodeId?: string | null
+  nodeType?: 'task' | 'condition' | 'join' | 'parallel' | 'approval' | 'meeting' | 'debate' | string
+  nodeLabel?: string | null
+  agentId?: string | null
+  participantIds?: string[]
+  approvalId?: string | null
+  approvalMode?: 'human' | 'agent' | string | null
+  approverAgentId?: string | null
+  upstreamArtifactCount?: number
+  totalArtifacts?: number
+  updatedAt?: string
+}
+
 // ─── WebSocket event types ───
 
 export type WebSocketEventType =
   | 'agent_status'
   | 'new_message'
+  | 'gateway_chat'
   | 'communication'
   | 'task_update'
   | 'workflow_update'

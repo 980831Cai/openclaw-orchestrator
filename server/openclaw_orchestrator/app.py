@@ -6,16 +6,21 @@ Serves both the API and the pre-built React frontend as static files.
 
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from openclaw_orchestrator.config import settings
 from openclaw_orchestrator.database import init_database
+from openclaw_orchestrator.middleware.auth import ApiKeyMiddleware
+
+logger = logging.getLogger(__name__)
 from openclaw_orchestrator.routes.agent_routes import router as agent_router
 from openclaw_orchestrator.routes.approval_routes import router as approval_router
 from openclaw_orchestrator.routes.chat_routes import router as chat_router
@@ -46,6 +51,11 @@ async def lifespan(app: FastAPI):
 
     schedule_executor.start()
 
+    # Start workflow scheduler (polls workflow cron definitions)
+    from openclaw_orchestrator.services.workflow_scheduler import workflow_scheduler
+
+    await workflow_scheduler.start()
+
     # Initialize OpenClaw bridge (tests Webhook connectivity)
     from openclaw_orchestrator.services.openclaw_bridge import openclaw_bridge
 
@@ -56,15 +66,16 @@ async def lifespan(app: FastAPI):
 
     await gateway_connector.start()
 
-    print(f"🚀 OpenClaw Orchestrator server running")
-    print(f"📁 OpenClaw home: {settings.openclaw_home}")
-    print(f"🔗 OpenClaw Webhook: {settings.openclaw_webhook_url}")
-    print(f"🔌 OpenClaw Gateway: {settings.openclaw_gateway_url}")
+    print("OpenClaw Orchestrator server running")
+    print(f"OpenClaw home: {settings.openclaw_home}")
+    print(f"OpenClaw Webhook: {settings.openclaw_webhook_url}")
+    print(f"OpenClaw Gateway: {settings.openclaw_gateway_url}")
 
     yield
 
     # ─── Shutdown ───
     await gateway_connector.stop()
+    await workflow_scheduler.stop()
     schedule_executor.stop()
     session_watcher.stop()
 
@@ -74,7 +85,7 @@ async def lifespan(app: FastAPI):
     from openclaw_orchestrator.database.db import close_db
 
     close_db()
-    print("👋 Server shut down")
+    print("Server shut down")
 
 
 # ─── Create FastAPI app ───
@@ -93,6 +104,45 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ─── API Key authentication middleware ───
+app.add_middleware(ApiKeyMiddleware)
+
+
+# ─── Global exception handlers ───
+@app.exception_handler(ValueError)
+async def value_error_handler(request: Request, exc: ValueError):
+    """Return 400 for ValueError (validation failures)."""
+    return JSONResponse(
+        status_code=400,
+        content={"detail": str(exc)},
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Preserve FastAPI's default HTTPException behavior."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+    )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catch-all handler: log the full traceback, return a safe 500 response."""
+    logger.error(
+        "Unhandled exception on %s %s: %s",
+        request.method,
+        request.url.path,
+        exc,
+        exc_info=True,
+    )
+    # In production, never expose stack traces to clients
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
 
 # ─── API routes (all under /api prefix) ───
 app.include_router(agent_router, prefix="/api")

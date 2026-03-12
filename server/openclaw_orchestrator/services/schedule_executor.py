@@ -42,11 +42,36 @@ class ScheduleExecutor:
         """Load all team schedules from DB and sync to OpenClaw.
 
         Called during FastAPI lifespan startup.
+        Includes crash recovery: restores round_robin_pointers from DB.
         """
         if self._started:
             return
 
         db = get_db()
+
+        # Ensure the scheduler_state table exists (for crash recovery)
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS scheduler_state (
+                team_id TEXT PRIMARY KEY,
+                round_robin_pointer INTEGER DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        db.commit()
+
+        # Restore round-robin pointers from persistent state
+        try:
+            state_rows = db.execute(
+                "SELECT team_id, round_robin_pointer FROM scheduler_state"
+            ).fetchall()
+            for sr in state_rows:
+                self._round_robin_pointers[sr["team_id"]] = sr["round_robin_pointer"]
+            if state_rows:
+                print(f"  ↳ Recovered {len(state_rows)} round-robin pointer(s) from DB")
+        except Exception as e:
+            print(f"  ⚠ Failed to recover scheduler state: {e}")
+
+        # Load active schedules
         rows = db.execute(
             "SELECT id, schedule_config FROM teams WHERE schedule_config IS NOT NULL AND schedule_config != '{}'"
         ).fetchall()
@@ -67,7 +92,8 @@ class ScheduleExecutor:
         print(f"📅 Schedule executor started: {count} active schedules loaded")
 
     def stop(self) -> None:
-        """Clean up on shutdown."""
+        """Clean up on shutdown. Persist round-robin state to DB."""
+        self._persist_round_robin_state()
         self._started = False
         self._active_schedules.clear()
         self._round_robin_pointers.clear()
@@ -366,8 +392,10 @@ class ScheduleExecutor:
         idx = self._round_robin_pointers.get(team_id, 0) % len(sorted_entries)
         agent_id = sorted_entries[idx].get("agentId")
 
-        # Advance pointer
-        self._round_robin_pointers[team_id] = (idx + 1) % len(sorted_entries)
+        # Advance pointer and persist
+        new_idx = (idx + 1) % len(sorted_entries)
+        self._round_robin_pointers[team_id] = new_idx
+        self._persist_round_robin_pointer(team_id, new_idx)
 
         return agent_id
 
@@ -395,6 +423,46 @@ class ScheduleExecutor:
                 return entry.get("agentId")
 
         return None
+
+    # ════════════════════════════════════════════════════════════
+    # Persistence helpers (crash recovery)
+    # ════════════════════════════════════════════════════════════
+
+    def _persist_round_robin_pointer(self, team_id: str, pointer: int) -> None:
+        """Persist a single team's round-robin pointer to DB."""
+        try:
+            db = get_db()
+            db.execute(
+                """INSERT INTO scheduler_state (team_id, round_robin_pointer, updated_at)
+                   VALUES (?, ?, datetime('now'))
+                   ON CONFLICT(team_id) DO UPDATE SET
+                     round_robin_pointer = excluded.round_robin_pointer,
+                     updated_at = datetime('now')""",
+                (team_id, pointer),
+            )
+            db.commit()
+        except Exception as e:
+            print(f"  ⚠ Failed to persist round-robin pointer for {team_id}: {e}")
+
+    def _persist_round_robin_state(self) -> None:
+        """Persist all round-robin pointers to DB (called on shutdown)."""
+        if not self._round_robin_pointers:
+            return
+        try:
+            db = get_db()
+            for team_id, pointer in self._round_robin_pointers.items():
+                db.execute(
+                    """INSERT INTO scheduler_state (team_id, round_robin_pointer, updated_at)
+                       VALUES (?, ?, datetime('now'))
+                       ON CONFLICT(team_id) DO UPDATE SET
+                         round_robin_pointer = excluded.round_robin_pointer,
+                         updated_at = datetime('now')""",
+                    (team_id, pointer),
+                )
+            db.commit()
+            print(f"  ↳ Persisted {len(self._round_robin_pointers)} round-robin pointer(s)")
+        except Exception as e:
+            print(f"  ⚠ Failed to persist scheduler state: {e}")
 
     # ════════════════════════════════════════════════════════════
     # Helpers

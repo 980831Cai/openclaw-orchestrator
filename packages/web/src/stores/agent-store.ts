@@ -27,5 +27,9 @@ export const useAgentStore = create<AgentStore>((set) => ({
       agents: state.agents.map((a) =>
         a.id === agentId ? { ...a, status } : a
       ),
+      selectedAgent:
+        state.selectedAgent?.id === agentId
+          ? { ...state.selectedAgent, status }
+          : state.selectedAgent,
     })),
 }))
