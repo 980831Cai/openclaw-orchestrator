@@ -2,6 +2,8 @@
 // Migrated from @openclaw/shared to local types
 // Enhanced with ApprovalNode and waiting_approval status
 
+import type { MeetingType } from './team'
+
 export type WorkflowNodeType = 'task' | 'condition' | 'join' | 'parallel' | 'approval' | 'meeting' | 'debate'
 export type WorkflowJoinMode = 'and' | 'or' | 'xor'
 
@@ -11,6 +13,10 @@ export interface TaskNodeData {
   agentId: string
   task: string
   timeoutSeconds: number
+  requireResponse?: boolean
+  requireArtifacts?: boolean
+  minOutputLength?: number
+  successPattern?: string
   position?: { x: number; y: number }
   maxRetries?: number
   retryDelayMs?: number
@@ -56,7 +62,7 @@ export interface ApprovalNodeData {
 export interface MeetingNodeData {
   type: 'meeting'
   label: string
-  meetingType: 'standup' | 'kickoff' | 'review' | 'brainstorm' | 'decision' | 'retro'
+  meetingType: Exclude<MeetingType, 'debate'>
   topic: string
   topicDescription?: string
   participants: string[]
@@ -70,7 +76,7 @@ export interface DebateNodeData {
   label: string
   topic: string
   topicDescription?: string
-  participants: string[]  // exactly 2
+  participants: string[]
   teamId?: string
   judgeAgentId?: string
   maxRounds: number
@@ -99,6 +105,25 @@ export interface WorkflowDefinition {
   nodes: Record<string, WorkflowNodeData>
   edges: WorkflowEdge[]
   maxIterations?: number
+  schedule?: WorkflowSchedule | null
+}
+
+export interface WorkflowScheduleWindow {
+  start: string
+  end: string
+  timezone?: string
+}
+
+export interface WorkflowSchedule {
+  enabled: boolean
+  cron: string
+  timezone: string
+  expression?: string
+  tz?: string
+  window?: WorkflowScheduleWindow | null
+  activeFrom?: string | null
+  activeUntil?: string | null
+  nextRunAt?: string | null
 }
 
 export type WorkflowExecutionStatus =

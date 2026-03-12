@@ -46,6 +46,11 @@ async def lifespan(app: FastAPI):
 
     schedule_executor.start()
 
+    # Start workflow scheduler (polls workflow cron definitions)
+    from openclaw_orchestrator.services.workflow_scheduler import workflow_scheduler
+
+    await workflow_scheduler.start()
+
     # Initialize OpenClaw bridge (tests Webhook connectivity)
     from openclaw_orchestrator.services.openclaw_bridge import openclaw_bridge
 
@@ -56,15 +61,16 @@ async def lifespan(app: FastAPI):
 
     await gateway_connector.start()
 
-    print(f"🚀 OpenClaw Orchestrator server running")
-    print(f"📁 OpenClaw home: {settings.openclaw_home}")
-    print(f"🔗 OpenClaw Webhook: {settings.openclaw_webhook_url}")
-    print(f"🔌 OpenClaw Gateway: {settings.openclaw_gateway_url}")
+    print("OpenClaw Orchestrator server running")
+    print(f"OpenClaw home: {settings.openclaw_home}")
+    print(f"OpenClaw Webhook: {settings.openclaw_webhook_url}")
+    print(f"OpenClaw Gateway: {settings.openclaw_gateway_url}")
 
     yield
 
     # ─── Shutdown ───
     await gateway_connector.stop()
+    await workflow_scheduler.stop()
     schedule_executor.stop()
     session_watcher.stop()
 
@@ -74,7 +80,7 @@ async def lifespan(app: FastAPI):
     from openclaw_orchestrator.database.db import close_db
 
     close_db()
-    print("👋 Server shut down")
+    print("Server shut down")
 
 
 # ─── Create FastAPI app ───
