@@ -1,23 +1,42 @@
-import { useCallback } from 'react'
+import { useCallback, useMemo } from 'react'
 import { api } from '@/lib/api'
+import { resolveEffectiveAgentStatus } from '@/lib/effective-agent-status'
 import { useAgentStore } from '@/stores/agent-store'
+import { useMonitorStore } from '@/stores/monitor-store'
 import type { AgentListItem, AgentConfig } from '@/types'
 
 export function useAgents() {
-  const { agents, setAgents, setLoading, setSelectedAgent } = useAgentStore()
+  const { agents, loading, setAgents, setLoading, setSelectedAgent } = useAgentStore()
+  const gatewayConnected = useMonitorStore((state) => state.gatewayConnected)
+  const gatewayRuntimeRunning = useMonitorStore((state) => state.gatewayRuntime?.running === true)
+
+  const effectiveAgents = useMemo(
+    () =>
+      agents.map((agent) => ({
+        ...agent,
+        status: resolveEffectiveAgentStatus(agent.status, gatewayConnected, gatewayRuntimeRunning),
+      })),
+    [agents, gatewayConnected, gatewayRuntimeRunning],
+  )
 
   const fetchAgents = useCallback(async () => {
     setLoading(true)
-    const data = await api.get<AgentListItem[]>('/agents')
-    setAgents(data)
-    setLoading(false)
+    try {
+      const data = await api.get<AgentListItem[]>('/agents')
+      setAgents(data)
+    } finally {
+      setLoading(false)
+    }
   }, [setAgents, setLoading])
 
   const fetchAgent = useCallback(async (id: string) => {
     setLoading(true)
-    const data = await api.get<AgentConfig>(`/agents/${id}`)
-    setSelectedAgent(data)
-    setLoading(false)
+    try {
+      const data = await api.get<AgentConfig>(`/agents/${id}`)
+      setSelectedAgent(data)
+    } finally {
+      setLoading(false)
+    }
   }, [setSelectedAgent, setLoading])
 
   const createAgent = useCallback(async (name: string) => {
@@ -38,5 +57,5 @@ export function useAgents() {
     await fetchAgents()
   }, [fetchAgents])
 
-  return { agents, fetchAgents, fetchAgent, createAgent, updateAgent, deleteAgent }
+  return { agents: effectiveAgents, loading, fetchAgents, fetchAgent, createAgent, updateAgent, deleteAgent }
 }

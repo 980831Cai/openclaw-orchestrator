@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     def openclaw_config(self) -> dict[str, Any]:
         if self.openclaw_config_path.exists():
             try:
-                return json.loads(self.openclaw_config_path.read_text(encoding="utf-8"))
+                return json.loads(self.openclaw_config_path.read_text(encoding="utf-8-sig"))
             except Exception:
                 return {}
         return {}

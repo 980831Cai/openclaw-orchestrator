@@ -6,16 +6,21 @@ import asyncio
 import json
 import re
 import uuid
-from datetime import datetime
 from typing import Any, Optional
 
 from openclaw_orchestrator.database.db import get_db
 from openclaw_orchestrator.services.notification_service import notification_service
 from openclaw_orchestrator.services.openclaw_bridge import openclaw_bridge
+from openclaw_orchestrator.utils.time import utc_now, utc_now_iso
 from openclaw_orchestrator.websocket.ws_handler import broadcast
 
 JOIN_NODE_TYPES = {"join", "parallel"}
 JOIN_MODES = {"and", "or", "xor"}
+ACTIONABLE_NODE_TYPES = {"task", "meeting", "debate"}
+
+
+class WorkflowValidationError(ValueError):
+    """Raised when a workflow definition is not runnable."""
 
 
 class WorkflowEngine:
@@ -24,16 +29,33 @@ class WorkflowEngine:
     def __init__(self) -> None:
         self._running_executions: dict[str, dict[str, Any]] = {}
 
+    @staticmethod
+    def _utcnow():
+        return utc_now()
+
+    @classmethod
+    def _utcnow_iso(cls) -> str:
+        return utc_now_iso()
+
     def create_workflow(
         self, team_id: str, name: str, definition: Optional[dict[str, Any]] = None
     ) -> dict[str, Any]:
         db = get_db()
+        self._ensure_team_exists(db, team_id)
         workflow_id = str(uuid.uuid4())
         definition = definition or {}
         nodes = definition.get("nodes", {})
         edges = definition.get("edges", [])
         max_iterations = definition.get("maxIterations", 100)
         schedule = definition.get("schedule")
+        self._validate_workflow_definition(
+            {
+                "nodes": nodes,
+                "edges": edges,
+                "schedule": schedule,
+            },
+            require_runnable=bool(schedule and schedule.get("enabled")),
+        )
 
         db.execute(
             "INSERT INTO workflows (id, team_id, name, definition_json, status) VALUES (?, ?, ?, ?, 'draft')",
@@ -53,6 +75,19 @@ class WorkflowEngine:
         )
         db.commit()
         return self.get_workflow(workflow_id)
+
+    @staticmethod
+    def _ensure_team_exists(db: Any, team_id: str) -> None:
+        normalized_team_id = str(team_id or "").strip()
+        if not normalized_team_id:
+            raise WorkflowValidationError("teamId is required")
+
+        row = db.execute(
+            "SELECT 1 FROM teams WHERE id = ?",
+            (normalized_team_id,),
+        ).fetchone()
+        if not row:
+            raise WorkflowValidationError(f"Team not found: {normalized_team_id}")
 
     def get_workflow(self, workflow_id: str) -> dict[str, Any]:
         db = get_db()
@@ -88,6 +123,14 @@ class WorkflowEngine:
             "maxIterations", current.get("maxIterations", 100)
         )
         schedule = updates.get("schedule", current.get("schedule"))
+        self._validate_workflow_definition(
+            {
+                "nodes": nodes,
+                "edges": edges,
+                "schedule": schedule,
+            },
+            require_runnable=bool(schedule and schedule.get("enabled")),
+        )
 
         db.execute(
             "UPDATE workflows SET name = ?, definition_json = ? WHERE id = ?",
@@ -121,11 +164,23 @@ class WorkflowEngine:
     ) -> dict[str, Any]:
         db = get_db()
         workflow = self.get_workflow(workflow_id)
+        self._validate_workflow_definition(workflow, require_runnable=True)
+        if self.has_active_execution(workflow_id):
+            raise WorkflowValidationError(
+                "工作流已有运行中或待审批的执行，不能重复触发"
+            )
         execution_id = str(uuid.uuid4())
 
+        context_json = json.dumps(
+            {
+                "triggerSource": trigger_source,
+                "scheduledFor": scheduled_for,
+            },
+            default=str,
+        )
         db.execute(
-            "INSERT INTO workflow_executions (id, workflow_id, status, logs) VALUES (?, ?, 'running', '[]')",
-            (execution_id, workflow_id),
+            "INSERT INTO workflow_executions (id, workflow_id, status, logs, context_json) VALUES (?, ?, 'running', '[]', ?)",
+            (execution_id, workflow_id, context_json),
         )
         db.commit()
 
@@ -139,7 +194,7 @@ class WorkflowEngine:
         }
         self._running_executions[execution_id] = control
         trigger_log = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": self._utcnow_iso(),
             "nodeId": "__workflow__",
             "message": (
                 f"工作流开始执行（source={trigger_source}"
@@ -149,6 +204,17 @@ class WorkflowEngine:
             "level": "info",
         }
         self._append_log(execution_id, trigger_log)
+        broadcast(
+            {
+                "type": "workflow_update",
+                "payload": self._build_workflow_signal(
+                    execution_id=execution_id,
+                    workflow=workflow,
+                    status="running",
+                ),
+                "timestamp": self._utcnow_iso(),
+            }
+        )
         asyncio.ensure_future(self._run_nodes(execution_id, workflow, control))
         return self.get_execution(execution_id)
 
@@ -171,13 +237,58 @@ class WorkflowEngine:
         if control:
             control["abort"] = True
 
+        workflow = self._safe_get_workflow_by_execution(execution_id)
+        execution = self._safe_get_execution(execution_id)
         db = get_db()
+        pending_approvals = db.execute(
+            """
+            SELECT id, node_id
+            FROM approvals
+            WHERE execution_id = ? AND status = 'pending'
+            """,
+            (execution_id,),
+        ).fetchall()
         db.execute(
             "UPDATE workflow_executions SET status = 'stopped', completed_at = datetime('now') WHERE id = ?",
             (execution_id,),
         )
+        if pending_approvals:
+            db.execute(
+                """
+                UPDATE approvals
+                SET status = 'rejected', reject_reason = ?, resolved_at = datetime('now')
+                WHERE execution_id = ? AND status = 'pending'
+                """,
+                ("Execution stopped", execution_id),
+            )
         db.commit()
-        self._broadcast_workflow_update(execution_id=execution_id, status="stopped")
+        for approval in pending_approvals:
+            broadcast(
+                {
+                    "type": "approval_update",
+                    "payload": {
+                        "id": approval["id"],
+                        "executionId": execution_id,
+                        "nodeId": approval["node_id"],
+                        "status": "rejected",
+                        "rejectReason": "Execution stopped",
+                        "resolvedBy": "system",
+                    },
+                    "timestamp": self._utcnow_iso(),
+                }
+            )
+        broadcast(
+            {
+                "type": "workflow_update",
+                "payload": self._build_workflow_signal(
+                    execution_id=execution_id,
+                    workflow=workflow,
+                    status="stopped",
+                    current_node_id=execution.get("currentNodeId") if execution else None,
+                ),
+                "timestamp": self._utcnow_iso(),
+            }
+        )
 
     def get_execution(self, execution_id: str) -> dict[str, Any]:
         db = get_db()
@@ -195,6 +306,48 @@ class WorkflowEngine:
             (workflow_id,),
         ).fetchall()
         return [self._map_execution_row(row) for row in rows]
+
+    def list_active_execution_signals(self) -> list[dict[str, Any]]:
+        db = get_db()
+        rows = db.execute(
+            """
+            SELECT id, workflow_id, status, current_node_id, started_at, completed_at, logs
+            FROM workflow_executions
+            WHERE status IN ('running', 'waiting_approval')
+            ORDER BY started_at DESC
+            """,
+        ).fetchall()
+
+        signals: list[dict[str, Any]] = []
+        for row in rows:
+            workflow = None
+            try:
+                workflow = self.get_workflow(row["workflow_id"])
+            except Exception:
+                workflow = None
+
+            current_node_id = row["current_node_id"] or None
+            node = (
+                workflow.get("nodes", {}).get(current_node_id)
+                if workflow and current_node_id
+                else None
+            )
+            updated_at = self._resolve_signal_updated_at(
+                row["logs"],
+                row["completed_at"],
+                row["started_at"],
+            )
+            signals.append(
+                self._build_workflow_signal(
+                    execution_id=row["id"],
+                    workflow=workflow,
+                    status=row["status"],
+                    current_node_id=current_node_id,
+                    node=node,
+                    updatedAt=updated_at,
+                )
+            )
+        return signals
 
     async def resume_execution(
         self,
@@ -214,6 +367,8 @@ class WorkflowEngine:
             )
 
         if not approved:
+            workflow = self.get_workflow(row["workflow_id"])
+            current_node_id = row["current_node_id"] or None
             db.execute(
                 "UPDATE workflow_executions SET status = 'failed', completed_at = datetime('now') WHERE id = ?",
                 (execution_id,),
@@ -222,13 +377,24 @@ class WorkflowEngine:
             self._append_log(
                 execution_id,
                 {
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": self._utcnow_iso(),
                     "nodeId": row["current_node_id"] or "__approval__",
                     "message": f"审批被驳回: {reject_reason or '无原因'}",
                     "level": "error",
                 },
             )
-            self._broadcast_workflow_update(execution_id=execution_id, status="failed")
+            broadcast(
+                {
+                    "type": "workflow_update",
+                    "payload": self._build_workflow_signal(
+                        execution_id=execution_id,
+                        workflow=workflow,
+                        status="failed",
+                        current_node_id=current_node_id,
+                    ),
+                    "timestamp": self._utcnow_iso(),
+                }
+            )
             notification_service.create_notification(
                 type="workflow_error",
                 title="工作流审批被驳回",
@@ -259,10 +425,22 @@ class WorkflowEngine:
             (execution_id,),
         )
         db.commit()
+        broadcast(
+            {
+                "type": "workflow_update",
+                "payload": self._build_workflow_signal(
+                    execution_id=execution_id,
+                    workflow=workflow,
+                    status="running",
+                    current_node_id=current_node_id,
+                ),
+                "timestamp": self._utcnow_iso(),
+            }
+        )
         self._append_log(
             execution_id,
             {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": self._utcnow_iso(),
                 "nodeId": current_node_id or "__approval__",
                 "message": "审批通过，工作流继续执行",
                 "level": "info",
@@ -298,6 +476,16 @@ class WorkflowEngine:
             raise ValueError(f"Approval not found: {approval_id}")
         if row["status"] != "pending":
             raise ValueError(f"Approval is already {row['status']}")
+        execution_row = db.execute(
+            "SELECT status FROM workflow_executions WHERE id = ?",
+            (row["execution_id"],),
+        ).fetchone()
+        if not execution_row:
+            raise ValueError(f"Execution not found: {row['execution_id']}")
+        if execution_row["status"] != "waiting_approval":
+            raise ValueError(
+                f"Execution {row['execution_id']} is not waiting for approval (status={execution_row['status']})"
+            )
 
         next_status = "approved" if approved else "rejected"
         db.execute(
@@ -313,7 +501,7 @@ class WorkflowEngine:
         self._append_log(
             row["execution_id"],
             {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": self._utcnow_iso(),
                 "nodeId": row["node_id"],
                 "message": f"审批已由 {resolved_by} {next_status}",
                 "level": "info" if approved else "warn",
@@ -330,7 +518,7 @@ class WorkflowEngine:
                     "rejectReason": reject_reason or None,
                     "resolvedBy": resolved_by,
                 },
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": self._utcnow_iso(),
             }
         )
         execution = await self.resume_execution(
@@ -370,9 +558,7 @@ class WorkflowEngine:
     def _resolve_start_nodes(
         self, nodes: dict[str, Any], edges: list[dict[str, str]]
     ) -> list[str]:
-        targets = {edge.get("to") for edge in edges if edge.get("to")}
-        start_nodes = [node_id for node_id in nodes if node_id not in targets]
-        return start_nodes or ([next(iter(nodes))] if nodes else [])
+        return self._find_start_nodes(nodes, edges)
 
     def _resolve_next_targets(
         self,
@@ -420,6 +606,14 @@ class WorkflowEngine:
     ) -> None:
         node_artifacts: dict[str, list[dict[str, Any]]] = {}
         start_nodes = self._resolve_start_nodes(workflow["nodes"], workflow["edges"])
+        if not start_nodes:
+            control["failed"] = True
+            await self._mark_failed(
+                execution_id,
+                "工作流没有可执行起点，已终止",
+            )
+            return
+
         await self._run_targets(
             execution_id,
             workflow,
@@ -438,13 +632,12 @@ class WorkflowEngine:
         node_artifacts: dict[str, list[dict[str, Any]]],
     ) -> None:
         if control["paused"] or control["abort"] or control["failed"]:
-            if control["failed"]:
-                self._running_executions.pop(execution_id, None)
+            self._running_executions.pop(execution_id, None)
             return
 
         db = get_db()
         row = db.execute(
-            "SELECT status FROM workflow_executions WHERE id = ?",
+            "SELECT workflow_id, status, current_node_id, context_json FROM workflow_executions WHERE id = ?",
             (execution_id,),
         ).fetchone()
         if not row or row["status"] != "running":
@@ -456,27 +649,52 @@ class WorkflowEngine:
         )
         db.commit()
 
-        total_artifacts = sum(len(items) for items in node_artifacts.values())
+        total_artifacts = self._count_materialized_artifacts(node_artifacts)
+        completion_message = (
+            f"工作流执行完成，共产出 {total_artifacts} 个产物"
+            if total_artifacts > 0
+            else "工作流执行完成，未产生产物"
+        )
         self._append_log(
             execution_id,
             {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": self._utcnow_iso(),
                 "nodeId": "__workflow__",
-                "message": f"工作流执行完成，共产出 {total_artifacts} 个产物",
+                "message": completion_message,
                 "level": "info",
             },
         )
-        self._broadcast_workflow_update(
-            execution_id=execution_id,
-            status="completed",
-            extra={"totalArtifacts": total_artifacts},
+        broadcast(
+            {
+                "type": "workflow_update",
+                "payload": self._build_workflow_signal(
+                    execution_id=execution_id,
+                    workflow=self.get_workflow(row["workflow_id"]) if row and row["workflow_id"] else None,
+                    status="completed",
+                    current_node_id=row["current_node_id"] if row else None,
+                    totalArtifacts=total_artifacts,
+                ),
+                "timestamp": self._utcnow_iso(),
+            }
         )
-        notification_service.create_notification(
-            type="workflow_completed",
-            title="工作流执行完成",
-            message=f"工作流已成功完成，共产出 {total_artifacts} 个产物",
-            execution_id=execution_id,
+        execution_context = self._parse_execution_context(
+            row["context_json"] if row else None
         )
+        trigger_source = str(execution_context.get("triggerSource") or "manual").strip().lower()
+        should_notify_completion = not (
+            trigger_source == "schedule" and total_artifacts == 0
+        )
+        if should_notify_completion:
+            notification_service.create_notification(
+                type="workflow_completed",
+                title="工作流执行完成",
+                message=(
+                    f"工作流已成功完成，共产出 {total_artifacts} 个产物"
+                    if total_artifacts > 0
+                    else "工作流已完成，但本次没有产生产物"
+                ),
+                execution_id=execution_id,
+            )
         self._running_executions.pop(execution_id, None)
 
     async def _run_targets(
@@ -505,7 +723,7 @@ class WorkflowEngine:
         self._append_log(
             execution_id,
             {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": self._utcnow_iso(),
                 "nodeId": previous_node_id or "__start__",
                 "message": f"普通节点触发并行分发，下游分支数: {len(targets)}",
                 "level": "info",
@@ -552,7 +770,7 @@ class WorkflowEngine:
                 self._append_log(
                     execution_id,
                     {
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": self._utcnow_iso(),
                         "nodeId": current_node_id,
                         "message": f"节点 {current_node_id} 未在工作流定义中找到，跳过",
                         "level": "warn",
@@ -578,7 +796,7 @@ class WorkflowEngine:
                     self._append_log(
                         execution_id,
                         {
-                            "timestamp": datetime.utcnow().isoformat(),
+                            "timestamp": self._utcnow_iso(),
                             "nodeId": current_node_id,
                             "message": "汇合节点按当前模式丢弃该分支，不再向下游继续",
                             "level": "info",
@@ -597,6 +815,9 @@ class WorkflowEngine:
             if result == "__paused__":
                 control["paused"] = True
                 return
+            if result == "__failed__":
+                control["failed"] = True
+                return
 
             next_targets = self._resolve_next_targets(
                 current_node_id,
@@ -610,7 +831,7 @@ class WorkflowEngine:
                     self._append_log(
                         execution_id,
                         {
-                            "timestamp": datetime.utcnow().isoformat(),
+                            "timestamp": self._utcnow_iso(),
                             "nodeId": current_node_id,
                             "message": f"条件节点结果为 {branch_label or 'unknown'}，但该分支未连接下游节点",
                             "level": "warn",
@@ -689,7 +910,7 @@ class WorkflowEngine:
         self._append_log(
             execution_id,
             {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": self._utcnow_iso(),
                 "nodeId": "__workflow__",
                 "message": message,
                 "level": "error",
@@ -701,7 +922,20 @@ class WorkflowEngine:
             (execution_id,),
         )
         db.commit()
-        self._broadcast_workflow_update(execution_id=execution_id, status="failed")
+        broadcast(
+            {
+                "type": "workflow_update",
+                "payload": self._build_workflow_signal(
+                    execution_id=execution_id,
+                    workflow=self._safe_get_workflow_by_execution(execution_id),
+                    status="failed",
+                    current_node_id=self._safe_get_execution(execution_id).get("currentNodeId")
+                    if self._safe_get_execution(execution_id)
+                    else None,
+                ),
+                "timestamp": self._utcnow_iso(),
+            }
+        )
         notification_service.create_notification(
             type="workflow_error",
             title="工作流执行失败",
@@ -753,7 +987,7 @@ class WorkflowEngine:
         self._append_log(
             execution_id,
             {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": self._utcnow_iso(),
                 "nodeId": node_id,
                 "message": f"未知节点类型: {node_type}，跳过",
                 "level": "warn",
@@ -795,7 +1029,7 @@ class WorkflowEngine:
             self._append_log(
                 execution_id,
                 {
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": self._utcnow_iso(),
                     "nodeId": node_id,
                     "message": f"接收上游产物 {len(upstream_artifacts)} 个: {artifact_names}",
                     "level": "info",
@@ -805,12 +1039,27 @@ class WorkflowEngine:
         self._append_log(
             execution_id,
             {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": self._utcnow_iso(),
                 "nodeId": node_id,
                 "message": f"执行任务节点: {label} (Agent: {agent_id})",
                 "level": "info",
             },
         )
+        broadcast(
+            {
+                "type": "workflow_update",
+                "payload": self._build_workflow_signal(
+                    execution_id=execution_id,
+                    workflow=self._safe_get_workflow_by_execution(execution_id),
+                    status="running",
+                    current_node_id=node_id,
+                    node=node,
+                    upstreamArtifactCount=len(upstream_artifacts),
+                ),
+                "timestamp": self._utcnow_iso(),
+            }
+        )
+
         full_prompt = self._build_task_prompt(
             label, task_prompt, upstream_artifacts, execution_id, node_id
         )
@@ -843,7 +1092,7 @@ class WorkflowEngine:
                     self._append_log(
                         execution_id,
                         {
-                            "timestamp": datetime.utcnow().isoformat(),
+                            "timestamp": self._utcnow_iso(),
                             "nodeId": node_id,
                             "message": f"Agent {agent_id} 响应 ({result.get('elapsed', '?')}s): {result['content'][:120]}...",
                             "level": "info",
@@ -857,7 +1106,7 @@ class WorkflowEngine:
                     self._append_log(
                         execution_id,
                         {
-                            "timestamp": datetime.utcnow().isoformat(),
+                            "timestamp": self._utcnow_iso(),
                             "nodeId": node_id,
                             "message": f"节点执行失败（已重试 {max_retries} 次）: {err}",
                             "level": "error",
@@ -874,7 +1123,7 @@ class WorkflowEngine:
                 self._append_log(
                     execution_id,
                     {
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": self._utcnow_iso(),
                         "nodeId": node_id,
                         "message": f"节点执行失败，第 {attempt}/{max_retries} 次重试...",
                         "level": "warn",
@@ -884,7 +1133,11 @@ class WorkflowEngine:
 
         if not result.get("success"):
             node_artifacts[node_id] = []
-            return None
+            await self._mark_failed(
+                execution_id,
+                f"节点执行失败: {label} (agent={agent_id})，未产生有效输出",
+            )
+            return "__failed__"
 
         node_artifacts[node_id] = result.get("artifacts", [])
         return None
@@ -942,9 +1195,42 @@ class WorkflowEngine:
             return False, "Agent returned no usable output", normalized_artifacts
         if success_pattern and success_pattern.lower() not in content.lower():
             return False, f"Output did not match success pattern: {success_pattern}", normalized_artifacts
-        if require_artifacts and not normalized_artifacts:
+        if require_artifacts and not WorkflowEngine._has_materialized_artifacts(
+            normalized_artifacts
+        ):
             return False, "Task requires at least one artifact", normalized_artifacts
         return True, "", normalized_artifacts
+
+    @staticmethod
+    def _is_materialized_artifact(artifact: dict[str, Any]) -> bool:
+        if not isinstance(artifact, dict):
+            return False
+
+        artifact_type = str(artifact.get("type") or "").strip().lower()
+        if artifact_type != "agent_response":
+            return True
+
+        content = str(artifact.get("content") or "").strip()
+        return bool(content)
+
+    @classmethod
+    def _has_materialized_artifacts(cls, artifacts: list[dict[str, Any]]) -> bool:
+        return any(cls._is_materialized_artifact(artifact) for artifact in artifacts)
+
+    @classmethod
+    def _count_materialized_artifacts(
+        cls, node_artifacts: dict[str, list[dict[str, Any]]]
+    ) -> int:
+        total = 0
+        for artifacts in node_artifacts.values():
+            if not isinstance(artifacts, list):
+                continue
+            total += sum(
+                1
+                for artifact in artifacts
+                if cls._is_materialized_artifact(artifact)
+            )
+        return total
 
     @staticmethod
     def _build_task_prompt(
@@ -981,7 +1267,7 @@ class WorkflowEngine:
         self._append_log(
             execution_id,
             {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": self._utcnow_iso(),
                 "nodeId": node_id,
                 "message": f"评估条件节点: {label} (表达式: {expression})",
                 "level": "info",
@@ -1000,7 +1286,27 @@ class WorkflowEngine:
         upstream_text: str,
         branches: dict[str, str],
     ) -> str:
-        if not expression or not upstream_text:
+        normalized_expression = expression.strip().lower()
+        if not normalized_expression:
+            return "no"
+        if not upstream_text:
+            if normalized_expression in {"true", "yes", "1", "always"}:
+                if "yes" in branches:
+                    return "yes"
+                if "true" in branches:
+                    return "true"
+                non_boolean = [
+                    key
+                    for key in branches
+                    if key not in {"yes", "true", "no", "false"}
+                ]
+                return non_boolean[0] if non_boolean else ""
+            if normalized_expression in {"false", "no", "0", "never"}:
+                if "no" in branches:
+                    return "no"
+                if "false" in branches:
+                    return "false"
+                return ""
             return "no"
         if ";;" in expression:
             segments = [segment.strip() for segment in expression.split(";;") if segment.strip()]
@@ -1079,7 +1385,7 @@ class WorkflowEngine:
         self._append_log(
             execution_id,
             {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": self._utcnow_iso(),
                 "nodeId": node_id,
                 "message": f"汇合节点放行，模式 {join_mode}，合并上游产物 {len(upstream_artifacts)} 个",
                 "level": "info",
@@ -1113,7 +1419,7 @@ class WorkflowEngine:
             self._append_log(
                 execution_id,
                 {
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": self._utcnow_iso(),
                     "nodeId": node_id,
                     "message": "会议/辩论节点缺少参与者配置，已跳过",
                     "level": "error",
@@ -1137,7 +1443,7 @@ class WorkflowEngine:
         self._append_log(
             execution_id,
             {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": self._utcnow_iso(),
                 "nodeId": node_id,
                 "message": f"执行{'辩论' if meeting_type == 'debate' else '会议'}节点: {label} ({meeting_type}，{len(participants)} 人)",
                 "level": "info",
@@ -1159,7 +1465,7 @@ class WorkflowEngine:
             self._append_log(
                 execution_id,
                 {
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": self._utcnow_iso(),
                     "nodeId": node_id,
                     "message": f"会议已结束: {summary[:120]}...",
                     "level": "info",
@@ -1180,7 +1486,7 @@ class WorkflowEngine:
             self._append_log(
                 execution_id,
                 {
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": self._utcnow_iso(),
                     "nodeId": node_id,
                     "message": f"会议/辩论节点执行失败: {err}",
                     "level": "error",
@@ -1212,7 +1518,7 @@ class WorkflowEngine:
         self._append_log(
             execution_id,
             {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": self._utcnow_iso(),
                 "nodeId": node_id,
                 "message": f"审批节点: {title}，工作流已暂停等待审批",
                 "level": "info",
@@ -1220,10 +1526,9 @@ class WorkflowEngine:
         )
 
         control = self._running_executions.get(execution_id, {})
-        context_json = json.dumps(
-            {"node_artifacts": node_artifacts, "control": control},
-            default=str,
-        )
+        execution_context = self._get_execution_context(execution_id)
+        execution_context.update({"node_artifacts": node_artifacts, "control": control})
+        context_json = json.dumps(execution_context, default=str)
 
         db = get_db()
         db.execute(
@@ -1248,12 +1553,19 @@ class WorkflowEngine:
             execution_id=execution_id,
             node_id=node_id,
         )
-        self._broadcast_workflow_update(
-            execution_id=execution_id,
-            status="waiting_approval",
-            node_id=node_id,
-            node=node,
-            extra={"approvalId": approval_id},
+        broadcast(
+            {
+                "type": "workflow_update",
+                "payload": self._build_workflow_signal(
+                    execution_id=execution_id,
+                    workflow=self._safe_get_workflow_by_execution(execution_id),
+                    status="waiting_approval",
+                    current_node_id=node_id,
+                    node=node,
+                    approvalId=approval_id,
+                ),
+                "timestamp": self._utcnow_iso(),
+            }
         )
 
         approver_agent_id = self._resolve_approval_agent_id(node.get("approver"))
@@ -1269,6 +1581,103 @@ class WorkflowEngine:
                 )
             )
         return "__paused__"
+
+    def _safe_get_execution(self, execution_id: str) -> dict[str, Any] | None:
+        try:
+            return self.get_execution(execution_id)
+        except Exception:
+            return None
+
+    def _safe_get_workflow_by_execution(
+        self, execution_id: str
+    ) -> dict[str, Any] | None:
+        execution = self._safe_get_execution(execution_id)
+        workflow_id = execution.get("workflowId") if execution else None
+        if not workflow_id:
+            return None
+        try:
+            return self.get_workflow(str(workflow_id))
+        except Exception:
+            return None
+
+    def _build_workflow_signal(
+        self,
+        *,
+        execution_id: str,
+        workflow: dict[str, Any] | None,
+        status: str,
+        current_node_id: str | None = None,
+        node: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "executionId": execution_id,
+            "status": status,
+        }
+        if workflow:
+            payload["workflowId"] = workflow.get("id")
+            payload["workflowName"] = workflow.get("name")
+        if current_node_id:
+            payload["currentNodeId"] = current_node_id
+
+        effective_node = node
+        if effective_node is None and workflow and current_node_id:
+            effective_node = workflow.get("nodes", {}).get(current_node_id)
+
+        if isinstance(effective_node, dict):
+            payload["nodeType"] = effective_node.get("type")
+            payload["nodeLabel"] = effective_node.get("label") or current_node_id
+            if effective_node.get("agentId"):
+                payload["agentId"] = effective_node.get("agentId")
+            participants = effective_node.get("participants")
+            if isinstance(participants, list):
+                payload["participantIds"] = [
+                    item for item in participants if isinstance(item, str)
+                ]
+            approver_agent_id = self._resolve_approval_agent_id(
+                effective_node.get("approver")
+            )
+            if approver_agent_id:
+                payload["approverAgentId"] = approver_agent_id
+                payload["approvalMode"] = "agent"
+            elif effective_node.get("type") == "approval":
+                payload["approvalMode"] = "human"
+
+        payload.update({key: value for key, value in extra.items() if value is not None})
+        return payload
+
+    @classmethod
+    def _normalize_signal_timestamp(cls, value: Any) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return utc_now_iso()
+        if "T" not in raw and " " in raw:
+            raw = raw.replace(" ", "T", 1)
+        if raw.endswith("Z") or "+" in raw[10:]:
+            return raw
+        return raw + "Z"
+
+    @classmethod
+    def _resolve_signal_updated_at(
+        cls,
+        raw_logs: Any,
+        completed_at: Any,
+        started_at: Any,
+    ) -> str:
+        try:
+            logs = json.loads(raw_logs or "[]")
+        except (TypeError, json.JSONDecodeError):
+            logs = []
+
+        if isinstance(logs, list):
+            for item in reversed(logs):
+                if not isinstance(item, dict):
+                    continue
+                timestamp = item.get("timestamp")
+                if str(timestamp or "").strip():
+                    return cls._normalize_signal_timestamp(timestamp)
+
+        return cls._normalize_signal_timestamp(completed_at or started_at)
 
     def _collect_upstream_artifacts(
         self,
@@ -1380,6 +1789,180 @@ class WorkflowEngine:
             (json.dumps(logs, ensure_ascii=False), execution_id),
         )
         db.commit()
+
+    def _get_execution_context(self, execution_id: str) -> dict[str, Any]:
+        db = get_db()
+        row = db.execute(
+            "SELECT context_json FROM workflow_executions WHERE id = ?",
+            (execution_id,),
+        ).fetchone()
+        if not row:
+            return {}
+        return self._parse_execution_context(row["context_json"])
+
+    @staticmethod
+    def _parse_execution_context(raw: Any) -> dict[str, Any]:
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    @staticmethod
+    def _collect_branch_targets(node: dict[str, Any]) -> list[str]:
+        branches = node.get("branches")
+        if not isinstance(branches, dict):
+            return []
+        return [
+            value.strip()
+            for value in branches.values()
+            if isinstance(value, str) and value.strip()
+        ]
+
+    @classmethod
+    def _collect_outgoing_targets(
+        cls,
+        node_id: str,
+        node: dict[str, Any],
+        edges: list[dict[str, str]],
+    ) -> list[str]:
+        seen: set[str] = set()
+        targets: list[str] = []
+
+        for edge in edges:
+            if not isinstance(edge, dict) or edge.get("from") != node_id:
+                continue
+            target = str(edge.get("to") or "").strip()
+            if target and target not in seen:
+                seen.add(target)
+                targets.append(target)
+
+        for target in cls._collect_branch_targets(node):
+            if target not in seen:
+                seen.add(target)
+                targets.append(target)
+
+        return targets
+
+    @classmethod
+    def _find_start_nodes(
+        cls,
+        nodes: dict[str, Any],
+        edges: list[dict[str, str]],
+    ) -> list[str]:
+        targets: set[str] = set()
+        for edge in edges:
+            if not isinstance(edge, dict):
+                continue
+            target = str(edge.get("to") or "").strip()
+            if target:
+                targets.add(target)
+
+        for node in nodes.values():
+            if isinstance(node, dict):
+                targets.update(cls._collect_branch_targets(node))
+
+        return [node_id for node_id in nodes if node_id not in targets]
+
+    @classmethod
+    def _has_reachable_actionable_path(
+        cls,
+        nodes: dict[str, Any],
+        edges: list[dict[str, str]],
+        start_nodes: list[str],
+    ) -> bool:
+        if not start_nodes:
+            return False
+
+        visited: set[str] = set()
+        queue = list(start_nodes)
+        while queue:
+            node_id = queue.pop(0)
+            if node_id in visited:
+                continue
+            visited.add(node_id)
+
+            node = nodes.get(node_id)
+            if not isinstance(node, dict):
+                continue
+
+            node_type = str(node.get("type") or "task").strip().lower()
+            if node_type in ACTIONABLE_NODE_TYPES:
+                return True
+
+            for target in cls._collect_outgoing_targets(node_id, node, edges):
+                if target in nodes and target not in visited:
+                    queue.append(target)
+
+        return False
+
+    @classmethod
+    def _validate_workflow_definition(
+        cls,
+        workflow: dict[str, Any], *, require_runnable: bool
+    ) -> None:
+        if not require_runnable:
+            return
+
+        nodes = workflow.get("nodes")
+        edges = workflow.get("edges")
+        if not isinstance(nodes, dict) or not nodes:
+            raise WorkflowValidationError("工作流没有任何节点，不能执行或启用定时")
+
+        if not isinstance(edges, list):
+            edges = []
+
+        errors: list[str] = []
+        actionable_node_ids: list[str] = []
+
+        for node_id, raw_node in nodes.items():
+            if not isinstance(raw_node, dict):
+                continue
+            node_type = str(raw_node.get("type") or "task").strip().lower()
+            node_label = str(raw_node.get("label") or node_id).strip() or node_id
+
+            if node_type in ACTIONABLE_NODE_TYPES:
+                actionable_node_ids.append(node_id)
+
+            if node_type == "task":
+                agent_id = str(raw_node.get("agentId") or "").strip()
+                if not agent_id:
+                    errors.append(f"任务节点“{node_label}”未选择 agent")
+
+            if node_type in {"meeting", "debate"}:
+                participants = raw_node.get("participants")
+                valid_participants = (
+                    [item for item in participants if isinstance(item, str) and item.strip()]
+                    if isinstance(participants, list)
+                    else []
+                )
+                if not valid_participants:
+                    errors.append(f"{'辩论' if node_type == 'debate' else '会议'}节点“{node_label}”未配置参与者")
+
+            if node_type == "condition":
+                branch_targets = cls._collect_branch_targets(raw_node)
+                has_outgoing_edge = any(
+                    isinstance(edge, dict)
+                    and edge.get("from") == node_id
+                    and str(edge.get("to") or "").strip()
+                    for edge in edges
+                )
+                if not branch_targets and not has_outgoing_edge:
+                    errors.append(f"条件节点“{node_label}”未连接任何分支")
+
+        if not actionable_node_ids:
+            errors.append("工作流没有任何可执行节点（task / meeting / debate）")
+
+        start_nodes = cls._find_start_nodes(nodes, edges)
+        if not start_nodes:
+            errors.append("工作流没有起始节点，无法开始执行")
+        elif not cls._has_reachable_actionable_path(nodes, edges, start_nodes):
+            errors.append("从起始节点无法到达任何可执行节点（task / meeting / debate）")
+
+        if errors:
+            raise WorkflowValidationError("；".join(errors))
 
     @staticmethod
     def _map_workflow_row(row: Any) -> dict[str, Any]:
@@ -1555,7 +2138,7 @@ class WorkflowEngine:
         self._append_log(
             execution_id,
             {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": self._utcnow_iso(),
                 "nodeId": node_id,
                 "message": f"已请求 agent {approver_agent_id} 处理审批",
                 "level": "info",
@@ -1574,7 +2157,7 @@ class WorkflowEngine:
             self._append_log(
                 execution_id,
                 {
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": self._utcnow_iso(),
                     "nodeId": node_id,
                     "message": f"agent 审批调用失败: {exc}",
                     "level": "warn",
@@ -1587,7 +2170,7 @@ class WorkflowEngine:
             self._append_log(
                 execution_id,
                 {
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": self._utcnow_iso(),
                     "nodeId": node_id,
                     "message": f"agent {approver_agent_id} 未返回可解析审批结果，保留人工审批",
                     "level": "warn",

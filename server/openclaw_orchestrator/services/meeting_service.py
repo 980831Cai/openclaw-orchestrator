@@ -23,11 +23,11 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime
 from enum import Enum
 from typing import Any, Optional
 
 from openclaw_orchestrator.database.db import get_db
+from openclaw_orchestrator.utils.time import utc_now, utc_now_iso
 from openclaw_orchestrator.services.file_manager import file_manager
 from openclaw_orchestrator.services.notification_service import notification_service
 from openclaw_orchestrator.websocket.ws_handler import broadcast
@@ -201,7 +201,7 @@ class MeetingService:
             MEETING_MD_TEMPLATE.format(
                 topic=topic,
                 meeting_type=meeting_type,
-                date=datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+                date=utc_now().strftime("%Y-%m-%d %H:%M"),
                 lead_agent_id=lead_agent_id,
                 participants=", ".join(participants),
                 topic_description=topic_description or topic,
@@ -238,7 +238,7 @@ class MeetingService:
                 "meetingType": meeting_type,
                 "topic": topic,
             },
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utc_now_iso(),
         })
 
         return self.get_meeting(meeting_id)
@@ -346,7 +346,7 @@ class MeetingService:
                     "speakerIndex": i,
                     "totalSpeakers": len(participants),
                 },
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": utc_now_iso(),
             })
 
         # Conclude
@@ -397,7 +397,7 @@ class MeetingService:
                     "agentA": agent_a,
                     "agentB": agent_b,
                 },
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": utc_now_iso(),
             })
 
         # Lead concludes as judge
@@ -500,7 +500,7 @@ class MeetingService:
                 "teamId": team_id,
                 "summary": summary[:200],
             },
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utc_now_iso(),
         })
 
         notification_service.create_notification(
@@ -517,7 +517,7 @@ class MeetingService:
         broadcast({
             "type": "meeting_cancelled",
             "payload": {"meetingId": meeting_id},
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utc_now_iso(),
         })
         return self.get_meeting(meeting_id)
 
@@ -535,7 +535,7 @@ class MeetingService:
             return
 
         current = file_manager.read_file(file_path)
-        timestamp = datetime.utcnow().strftime("%H:%M")
+        timestamp = utc_now().strftime("%H:%M")
         header = f"### {agent_id}" + (f" ({tag})" if tag else "") + f" — {timestamp}"
         speech = f"\n\n{header}\n\n{content}\n"
 
@@ -596,7 +596,7 @@ class MeetingService:
             return
 
         content = file_manager.read_file(team_md_path)
-        date_str = datetime.utcnow().strftime("%Y-%m-%d")
+        date_str = utc_now().strftime("%Y-%m-%d")
         meeting_type_labels = {
             "standup": "站会", "kickoff": "启动会", "review": "评审会",
             "brainstorm": "头脑风暴", "decision": "决策会", "retro": "复盘会",
