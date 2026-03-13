@@ -194,7 +194,8 @@ class WorkflowEngine:
             "join_arrivals": {},
             "join_release_count": {},
         }
-        self._running_executions[execution_id] = control
+        with self._execution_lock:
+            self._running_executions[execution_id] = control
         trigger_log = {
             "timestamp": self._utcnow_iso(),
             "nodeId": "__workflow__",
@@ -698,7 +699,8 @@ class WorkflowEngine:
                 ),
                 execution_id=execution_id,
             )
-        self._running_executions.pop(execution_id, None)
+        with self._execution_lock:
+            self._running_executions.pop(execution_id, None)
 
     async def _run_targets(
         self,
