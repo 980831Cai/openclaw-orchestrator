@@ -299,8 +299,8 @@ export function useWebSocket() {
       applyAgentStatus(event.agentId, event.status, event.timestamp)
     })
 
-    const unsubComm = wsClient.on('communication', (data) => {
-      addEvent(data as any)
+    const unsubComm = wsClient.on('communication', (raw) => {
+      addEvent(raw as any)
     })
 
     const unsubMessage = wsClient.on('new_message', (data) => {
