@@ -4,23 +4,15 @@ import ReactFlow, {
   Controls,
   MiniMap,
   Panel,
-  addEdge,
   useEdgesState,
   useNodesState,
   type Connection,
   type Edge,
   type Node,
-  type NodeTypes,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import { GitBranch, Loader2, Merge, MessageSquare, Play, Plus, Save, Split, Square, Swords, Trash2, UserCheck, Zap } from 'lucide-react'
 
-import { TaskNodeComponent } from '@/components/workflow/TaskNode'
-import { ConditionNodeComponent } from '@/components/workflow/ConditionNode'
-import { ApprovalNodeComponent } from '@/components/workflow/ApprovalNode'
-import { JoinNodeComponent } from '@/components/workflow/JoinNode'
-import { MeetingNodeComponent } from '@/components/workflow/MeetingNode'
-import { DebateNodeComponent } from '@/components/workflow/DebateNode'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -30,225 +22,69 @@ import { toast } from '@/hooks/use-toast'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { MEETING_TYPE_LABELS } from '@/types'
-import type { AgentListItem, MeetingType, WorkflowDefinition, WorkflowExecution, WorkflowLog, WorkflowNodeData, WorkflowSchedule } from '@/types'
+import type { AgentListItem, WorkflowDefinition, WorkflowExecution, WorkflowLog, WorkflowNodeData, WorkflowSchedule } from '@/types'
+import { ACTIVE_EXECUTION_STATUSES, findLatestActiveExecution, isExecutionActive, reconcileExecutionSelection } from '@/pages/workflow-editor/execution-state'
+import {
+  EDGE_STYLE,
+  DEBATE_ROUND_OPTIONS,
+  DEFAULT_WORKFLOW_TIMEZONE,
+  MEETING_WORKFLOW_TYPES,
+  createDefaultSchedule,
+  fromDateTimeLocalValue,
+  getExecutionBadge,
+  normalizeConditionHandle,
+  normalizeSchedule,
+  serializeEdges,
+  serializeNodes,
+  toDateTimeLocalValue,
+  toFlowEdges,
+  toFlowNodes,
+  upsertConnectedEdge,
+} from '@/pages/workflow-editor/graph'
+import { WORKFLOW_NODE_BUTTONS, workflowNodeTypes } from '@/pages/workflow-editor/shared'
 
-const nodeTypes: NodeTypes = {
-  task: TaskNodeComponent,
-  condition: ConditionNodeComponent,
-  join: JoinNodeComponent,
-  parallel: JoinNodeComponent,
-  approval: ApprovalNodeComponent,
-  meeting: MeetingNodeComponent,
-  debate: DebateNodeComponent,
-}
-
-const EDGE_STYLE = { stroke: '#6366F1', strokeWidth: 2 }
-const MEETING_WORKFLOW_TYPES: Exclude<MeetingType, 'debate'>[] = ['standup', 'kickoff', 'review', 'brainstorm', 'decision', 'retro']
-const DEBATE_ROUND_OPTIONS = [2, 3, 4, 5] as const
-const WORKFLOW_NODE_BUTTONS = [
-  { type: 'task', label: '任务', icon: Zap, hoverClassName: 'hover:border-cyber-blue/30', iconClassName: 'text-cyber-blue' },
-  { type: 'condition', label: '条件', icon: Split, hoverClassName: 'hover:border-cyber-amber/30', iconClassName: 'text-cyber-amber' },
-  { type: 'approval', label: '审批', icon: UserCheck, hoverClassName: 'hover:border-yellow-500/30', iconClassName: 'text-yellow-400' },
-  { type: 'join', label: '汇合', icon: Merge, hoverClassName: 'hover:border-cyber-green/30', iconClassName: 'text-cyber-green' },
-  { type: 'meeting', label: '会议', icon: MessageSquare, hoverClassName: 'hover:border-purple-400/30', iconClassName: 'text-purple-400' },
-  { type: 'debate', label: '辩论', icon: Swords, hoverClassName: 'hover:border-orange-400/30', iconClassName: 'text-orange-400' },
-] as const satisfies ReadonlyArray<{
-  type: Extract<WorkflowNodeData['type'], 'task' | 'condition' | 'approval' | 'join' | 'meeting' | 'debate'>
+function ScheduleToggle({
+  checked,
+  onCheckedChange,
+  label,
+}: {
+  checked: boolean
+  onCheckedChange: (checked: boolean) => void
   label: string
-  icon: typeof Zap
-  hoverClassName: string
-  iconClassName: string
-}>
-
-const DEFAULT_WORKFLOW_TIMEZONE =
-  typeof Intl !== 'undefined' ? Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai' : 'Asia/Shanghai'
-
-function normalizeConditionHandle(value?: string | null): 'yes' | 'no' | undefined {
-  const normalized = String(value || '').trim().toLowerCase()
-  if (normalized === 'yes' || normalized === 'true') return 'yes'
-  if (normalized === 'no' || normalized === 'false') return 'no'
-  return undefined
-}
-
-function resolveConditionBranchTarget(nodeData: WorkflowNodeData | undefined, targetId: string): 'yes' | 'no' | undefined {
-  if (!nodeData || nodeData.type !== 'condition') return undefined
-  const branches = nodeData.branches || {}
-  if (branches.yes === targetId || branches.true === targetId) return 'yes'
-  if (branches.no === targetId || branches.false === targetId) return 'no'
-  if (!branches.yes && !branches.no && !branches.true && !branches.false && branches.default === targetId) return 'yes'
-  return undefined
-}
-
-function normalizeNodeData(data: WorkflowNodeData): WorkflowNodeData {
-  if (data.type === 'condition') {
-    const branches = data.branches || {}
-    const hasExplicitBranch = Boolean(branches.yes || branches.no || branches.true || branches.false)
-
-    if (!hasExplicitBranch && branches.default) {
-      return {
-        ...data,
-        expression: !data.expression || data.expression === 'default' ? 'true' : data.expression,
-        branches: { yes: branches.default },
-      }
-    }
-  }
-
-  return data
-}
-
-function createDefaultSchedule(): WorkflowSchedule {
-  return {
-    enabled: false,
-    cron: '',
-    timezone: DEFAULT_WORKFLOW_TIMEZONE,
-    window: null,
-    activeFrom: null,
-    activeUntil: null,
-  }
-}
-
-function normalizeSchedule(schedule?: WorkflowSchedule | null): WorkflowSchedule {
-  return {
-    ...createDefaultSchedule(),
-    ...(schedule || {}),
-    timezone: schedule?.timezone || DEFAULT_WORKFLOW_TIMEZONE,
-    window: schedule?.window
-      ? {
-          start: schedule.window.start || '',
-          end: schedule.window.end || '',
-          timezone: schedule.window.timezone || schedule.timezone || DEFAULT_WORKFLOW_TIMEZONE,
-        }
-      : null,
-  }
-}
-
-function toDateTimeLocalValue(value?: string | null): string {
-  if (!value) return ''
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
-  return local.toISOString().slice(0, 16)
-}
-
-function fromDateTimeLocalValue(value: string): string | null {
-  if (!value.trim()) return null
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? null : date.toISOString()
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onCheckedChange(!checked)}
+      className={cn(
+        'inline-flex items-center gap-2 rounded-full border px-2 py-1 text-xs transition-colors',
+        checked
+          ? 'border-cyber-green/40 bg-cyber-green/15 text-cyber-green'
+          : 'border-white/10 bg-white/5 text-white/50 hover:border-white/20 hover:text-white/70'
+      )}
+    >
+      <span
+        className={cn(
+          'flex h-5 w-9 items-center rounded-full px-0.5 transition-colors',
+          checked ? 'bg-cyber-green/70' : 'bg-white/15'
+        )}
+      >
+        <span
+          className={cn(
+            'h-4 w-4 rounded-full bg-white shadow-[0_0_10px_rgba(255,255,255,0.18)] transition-all',
+            checked ? 'ml-auto' : 'ml-0'
+          )}
+        />
+      </span>
+      <span>{label}</span>
+    </button>
+  )
 }
 
 interface TeamWorkflowEditorProps {
   teamId: string
-}
-
-function toFlowNodes(workflow: WorkflowDefinition): Node[] {
-  return Object.entries(workflow.nodes).map(([id, rawData], index) => {
-    const data = normalizeNodeData(rawData)
-    return {
-      id,
-      type: data.type === 'parallel' ? 'join' : data.type,
-      position: data.position ?? { x: 120 + index * 40, y: 120 + index * 30 },
-      data: data.type === 'parallel'
-        ? { ...data, type: 'join', label: data.label || '汇合节点', joinMode: data.joinMode || 'and' }
-        : data,
-    }
-  })
-}
-
-function toFlowEdges(workflow: WorkflowDefinition): Edge[] {
-  return workflow.edges.map((edge, index) => {
-    const sourceNode = workflow.nodes[edge.from]
-    const normalizedHandle =
-      resolveConditionBranchTarget(sourceNode, edge.to)
-      ?? normalizeConditionHandle(edge.condition)
-
-    return {
-      id: `${edge.from}-${edge.to}-${index}`,
-      source: edge.from,
-      target: edge.to,
-      label: normalizedHandle ?? (edge.condition && edge.condition !== 'default' ? edge.condition : undefined),
-      sourceHandle: normalizedHandle,
-      style: EDGE_STYLE,
-      reconnectable: 'source',
-    }
-  })
-}
-
-function serializeNodes(nodes: Node[], edges: Edge[]): Record<string, WorkflowNodeData> {
-  return Object.fromEntries(
-    nodes.map((node) => {
-      const data = {
-        ...(node.data as WorkflowNodeData),
-        position: node.position,
-      } as WorkflowNodeData
-
-      if (data.type === 'condition') {
-        const branches = edges
-          .filter((edge) => edge.source === node.id)
-          .reduce<Record<string, string>>((acc, edge) => {
-            const handle = String(edge.sourceHandle || edge.label || '').toLowerCase()
-            if (handle === 'yes' || handle === 'true') acc.yes = edge.target
-            if (handle === 'no' || handle === 'false') acc.no = edge.target
-            return acc
-          }, {})
-        ;(data as any).branches = branches
-      }
-
-      return [node.id, data]
-    })
-  )
-}
-
-function serializeEdges(edges: Edge[]) {
-  return edges.map((edge) => ({
-    from: edge.source,
-    to: edge.target,
-    condition: normalizeConditionHandle(
-      typeof edge.sourceHandle === 'string'
-        ? edge.sourceHandle
-        : typeof edge.label === 'string'
-          ? edge.label
-          : undefined
-    ),
-  }))
-}
-
-function buildEdge(connection: Connection): Edge {
-  if (!connection.source || !connection.target) {
-    throw new Error('Invalid edge connection')
-  }
-
-  const normalizedHandle = normalizeConditionHandle(connection.sourceHandle)
-
-  return {
-    id: `edge-${connection.source}-${normalizedHandle || connection.sourceHandle || 'default'}-${connection.target}-${connection.targetHandle || 'default'}-${Date.now()}`,
-    source: connection.source,
-    target: connection.target,
-    sourceHandle: normalizedHandle ?? connection.sourceHandle ?? null,
-    targetHandle: connection.targetHandle ?? null,
-    label: normalizedHandle ?? undefined,
-    style: EDGE_STYLE,
-    reconnectable: 'source',
-  }
-}
-
-function upsertConnectedEdge(current: Edge[], connection: Connection, nodes: Node[], replaceEdgeId?: string): Edge[] {
-  if (!connection.source || !connection.target) return current
-
-  const nextEdge = buildEdge(connection)
-  const sourceNode = nodes.find((node) => node.id === connection.source)
-  const sourceType = (sourceNode?.data as WorkflowNodeData | undefined)?.type
-  const branchHandle = normalizeConditionHandle(nextEdge.sourceHandle ? String(nextEdge.sourceHandle) : undefined)
-
-  let nextEdges = current.filter((edge) => edge.id !== replaceEdgeId)
-
-  if (sourceType === 'condition' && branchHandle) {
-    nextEdges = nextEdges.filter((edge) => {
-      if (edge.source !== connection.source) return true
-      return normalizeConditionHandle(String(edge.sourceHandle || edge.label || '')) !== branchHandle
-    })
-  }
-
-  return addEdge(replaceEdgeId ? { ...nextEdge, id: replaceEdgeId } : nextEdge, nextEdges)
 }
 
 export function TeamWorkflowEditor({ teamId }: TeamWorkflowEditorProps) {
@@ -257,6 +93,7 @@ export function TeamWorkflowEditor({ teamId }: TeamWorkflowEditorProps) {
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
   const [execution, setExecution] = useState<WorkflowExecution | null>(null)
+  const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState('')
   const [saving, setSaving] = useState(false)
@@ -266,6 +103,7 @@ export function TeamWorkflowEditor({ teamId }: TeamWorkflowEditorProps) {
   const [edgeReconnectSuccessful, setEdgeReconnectSuccessful] = useState(true)
 
   const selectedNode = useMemo(() => nodes.find((node) => node.id === selectedNodeId) ?? null, [nodes, selectedNodeId])
+  const executionIsActive = useMemo(() => isExecutionActive(execution?.status), [execution?.status])
   const selectedNodeUpstreamOptions = useMemo(() => {
     if (!selectedNodeId) return []
     const upstreamIds = edges.filter((edge) => edge.target === selectedNodeId).map((edge) => edge.source)
@@ -300,7 +138,7 @@ export function TeamWorkflowEditor({ teamId }: TeamWorkflowEditorProps) {
     return {
       nodes: nodes.map((node) => {
         const executionState =
-          execution?.currentNodeId === node.id && execution.status === 'running'
+          execution?.currentNodeId === node.id && executionIsActive
             ? 'running'
             : failedNodeIds.has(node.id)
               ? 'failed'
@@ -318,7 +156,7 @@ export function TeamWorkflowEditor({ teamId }: TeamWorkflowEditorProps) {
       }),
       edges: edges.map((edge) => {
         const sourceState =
-          execution?.currentNodeId === edge.source && execution.status === 'running'
+          execution?.currentNodeId === edge.source && executionIsActive
             ? 'running'
             : failedNodeIds.has(edge.source)
               ? 'failed'
@@ -340,7 +178,7 @@ export function TeamWorkflowEditor({ teamId }: TeamWorkflowEditorProps) {
         }
       }),
     }
-  }, [edges, execution, nodes])
+  }, [edges, execution, executionIsActive, nodes])
 
   const loadWorkflow = useCallback((workflow: WorkflowDefinition) => {
     setSelected(workflow)
@@ -386,9 +224,32 @@ export function TeamWorkflowEditor({ teamId }: TeamWorkflowEditorProps) {
     }
   }, [])
 
+  const restoreLatestExecution = useCallback(async (workflowId: string) => {
+    try {
+      const executions = await api.get<WorkflowExecution[]>(`/workflows/${workflowId}/executions`)
+      setExecution((current) => reconcileExecutionSelection({
+        workflowId,
+        currentExecution: current,
+        executions,
+        preserveCurrentExecution: true,
+      }))
+    } catch {
+      // ignore restore errors; manual execute/poll can still recover later
+    }
+  }, [])
+
   useEffect(() => {
     void fetchWorkflows()
   }, [fetchWorkflows])
+
+  useEffect(() => {
+    if (!selected?.id) {
+      setExecution(null)
+      return
+    }
+
+    void restoreLatestExecution(selected.id)
+  }, [restoreLatestExecution, selected?.id])
 
   useEffect(() => {
     const fetchAgentOptions = async () => {
@@ -404,7 +265,7 @@ export function TeamWorkflowEditor({ teamId }: TeamWorkflowEditorProps) {
   }, [])
 
   useEffect(() => {
-    if (!execution || !['running', 'waiting_approval'].includes(execution.status)) {
+    if (!execution || !ACTIVE_EXECUTION_STATUSES.includes(execution.status)) {
       return undefined
     }
 
@@ -414,6 +275,51 @@ export function TeamWorkflowEditor({ teamId }: TeamWorkflowEditorProps) {
 
     return () => window.clearInterval(timer)
   }, [execution, refreshExecution])
+
+  useEffect(() => {
+    if (!selected?.id) {
+      setExecution(null)
+      return undefined
+    }
+
+    if (
+      execution?.workflowId === selected.id &&
+      ACTIVE_EXECUTION_STATUSES.includes(execution.status)
+    ) {
+      return undefined
+    }
+
+    let cancelled = false
+
+    void api
+      .get<WorkflowExecution[]>(`/workflows/${selected.id}/executions`)
+      .then((executions) => {
+        if (cancelled) return
+
+        setExecution((current) => {
+          return reconcileExecutionSelection({
+            workflowId: selected.id,
+            currentExecution: current,
+            executions,
+            preserveCurrentExecution: true,
+          })
+        })
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setExecution((current) =>
+            current?.workflowId === selected.id &&
+            (isExecutionActive(current.status) || Boolean(current.id))
+              ? current
+              : null
+          )
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [execution?.status, execution?.workflowId, selected?.id])
 
   const onConnect = useCallback((params: Connection) => {
     setEdges((current) => upsertConnectedEdge(current, params, nodes))
@@ -437,12 +343,13 @@ export function TeamWorkflowEditor({ teamId }: TeamWorkflowEditorProps) {
 
   const handleCreate = async () => {
     if (!newName.trim()) return
+    setCreating(true)
     try {
       const workflow = await api.post<WorkflowDefinition>('/workflows', { teamId, name: newName.trim(), nodes: {}, edges: [] })
       setWorkflows((prev) => [workflow, ...prev])
       loadWorkflow(workflow)
       setNewName('')
-      setCreating(false)
+      setCreateDialogOpen(false)
       toast({ title: '工作流已创建' })
     } catch (error) {
       toast({
@@ -450,6 +357,8 @@ export function TeamWorkflowEditor({ teamId }: TeamWorkflowEditorProps) {
         description: error instanceof Error ? error.message : '未知错误',
         variant: 'destructive',
       })
+    } finally {
+      setCreating(false)
     }
   }
 
@@ -661,7 +570,7 @@ export function TeamWorkflowEditor({ teamId }: TeamWorkflowEditorProps) {
           <GitBranch className="h-4 w-4 text-cyber-amber" />
           {workflows.length} 个工作流
         </h3>
-        <Dialog open={creating} onOpenChange={setCreating}>
+        <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
           <DialogTrigger asChild>
             <Button size="sm" className="border border-cyber-amber/30 bg-cyber-amber/20 text-cyber-amber hover:bg-cyber-amber/30">
               <Plus className="mr-1 h-3.5 w-3.5" /> 新工作流
@@ -671,7 +580,10 @@ export function TeamWorkflowEditor({ teamId }: TeamWorkflowEditorProps) {
             <DialogHeader><DialogTitle>新建工作流</DialogTitle></DialogHeader>
             <div className="space-y-4 pt-4">
               <Input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="工作流名称" className="border-white/10 bg-cyber-bg text-white" onKeyDown={(e) => e.key === 'Enter' && void handleCreate()} autoFocus />
-              <Button onClick={() => void handleCreate()} className="w-full bg-gradient-to-r from-cyber-amber/80 to-cyber-amber" disabled={!newName.trim()}>创建</Button>
+              <Button onClick={() => void handleCreate()} className="w-full bg-gradient-to-r from-cyber-amber/80 to-cyber-amber" disabled={creating || !newName.trim()}>
+                {creating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                创建
+              </Button>
             </div>
           </DialogContent>
         </Dialog>
@@ -704,8 +616,8 @@ export function TeamWorkflowEditor({ teamId }: TeamWorkflowEditorProps) {
           </div>
 
           {selected && (
-            <div className="flex h-[520px] overflow-hidden rounded-xl border border-white/10">
-              <div className="relative h-full flex-1">
+            <div className="flex h-[520px] min-h-0 overflow-hidden rounded-xl border border-white/10">
+              <div className="relative h-full min-w-0 flex-1 overflow-hidden">
                 <ReactFlow
                   nodes={executionDecorations.nodes}
                   edges={executionDecorations.edges}
@@ -717,7 +629,7 @@ export function TeamWorkflowEditor({ teamId }: TeamWorkflowEditorProps) {
                   onEdgeUpdateEnd={handleEdgeUpdateEnd}
                   onNodeClick={(_, node) => setSelectedNodeId(node.id)}
                   onPaneClick={() => setSelectedNodeId(null)}
-                  nodeTypes={nodeTypes}
+                  nodeTypes={workflowNodeTypes}
                   defaultEdgeOptions={{ style: EDGE_STYLE, reconnectable: 'source' }}
                   edgesUpdatable
                   fitView
@@ -743,11 +655,11 @@ export function TeamWorkflowEditor({ teamId }: TeamWorkflowEditorProps) {
                   </Panel>
 
                   <Panel position="bottom-center" className="glass flex items-center gap-3 rounded-xl px-4 py-2">
-                    <Button size="sm" onClick={() => void handleExecute()} disabled={execution?.status === 'running'} className="h-8 border border-cyber-green/30 bg-cyber-green/20 text-cyber-green hover:bg-cyber-green/30">
-                      {execution?.status === 'running' ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Play className="mr-1 h-3.5 w-3.5" />}
+                    <Button size="sm" onClick={() => void handleExecute()} disabled={executionIsActive} className="h-8 border border-cyber-green/30 bg-cyber-green/20 text-cyber-green hover:bg-cyber-green/30">
+                      {executionIsActive ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Play className="mr-1 h-3.5 w-3.5" />}
                       执行
                     </Button>
-                    <Button size="sm" onClick={() => void handleStop()} disabled={!execution || execution.status !== 'running'} variant="destructive" className="h-8">
+                    <Button size="sm" onClick={() => void handleStop()} disabled={!executionIsActive} variant="destructive" className="h-8">
                       <Square className="mr-1 h-3.5 w-3.5" /> 停止
                     </Button>
                     <div className="h-5 w-px bg-white/10" />
@@ -756,19 +668,19 @@ export function TeamWorkflowEditor({ teamId }: TeamWorkflowEditorProps) {
                       保存
                     </Button>
                     {execution ? (
-                      <span className={cn('rounded-full px-2 py-0.5 text-[10px]', execution.status === 'running' ? 'bg-cyber-green/20 text-cyber-green' : execution.status === 'completed' ? 'bg-cyber-blue/20 text-cyber-blue' : execution.status === 'failed' ? 'bg-red-500/20 text-red-300' : 'bg-white/10 text-white/50')}>
-                        {execution.status}
+                      <span className={cn('rounded-full px-2 py-0.5 text-[10px]', getExecutionBadge(execution.status).tone)}>
+                        {getExecutionBadge(execution.status).label}
                       </span>
                     ) : null}
                   </Panel>
                 </ReactFlow>
               </div>
 
-              <div className="w-96 overflow-y-auto border-l border-white/5 bg-cyber-surface/30">
+              <div className="flex h-full min-h-0 w-96 flex-shrink-0 flex-col overflow-hidden border-l border-white/5 bg-cyber-surface/30">
                 <div className="border-b border-white/5 p-4">
                   <h3 className="text-sm font-semibold text-white">节点配置</h3>
                 </div>
-                <div className="space-y-4 p-4">
+                <div className="flex-1 overflow-y-auto space-y-4 p-4">
                   {selectedNode ? (
                     <>
                       <div className="flex items-start justify-between gap-3">
@@ -1120,131 +1032,128 @@ export function TeamWorkflowEditor({ teamId }: TeamWorkflowEditorProps) {
                   <p className="text-sm text-white/35">点击画布节点后可编辑字段。</p>
                 )}
               </div>
-
-                <div className="space-y-4 border-t border-white/5 p-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-sm font-semibold text-white">定时执行</h3>
-                    <label className="flex items-center gap-2 text-xs text-white/60">
-                      <input
-                        type="checkbox"
-                        checked={schedule.enabled}
-                        onChange={(event) => setSchedule((current) => ({ ...current, enabled: event.target.checked }))}
-                      />
-                      启用
-                    </label>
-                  </div>
-                  <div className="space-y-2">
-                    <Label className="text-xs text-white/60">Cron 表达式</Label>
-                    <Input
-                      value={schedule.cron}
-                      onChange={(event) => setSchedule((current) => ({ ...current, cron: event.target.value }))}
-                      placeholder="例如：*/15 * * * *"
-                      className="border-white/10 bg-cyber-bg text-white"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label className="text-xs text-white/60">时区</Label>
-                    <Input
-                      value={schedule.timezone}
-                      onChange={(event) => setSchedule((current) => ({ ...current, timezone: event.target.value }))}
-                      placeholder="例如：Asia/Shanghai"
-                      className="border-white/10 bg-cyber-bg text-white"
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-4 border-t border-white/5 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <h3 className="text-sm font-semibold text-white">定时执行</h3>
+                  <ScheduleToggle
+                    checked={schedule.enabled}
+                    onCheckedChange={(checked) => setSchedule((current) => ({ ...current, enabled: checked }))}
+                    label={schedule.enabled ? '已启用' : '已关闭'}
+                  />
+                </div>
+                {schedule.enabled ? (
+                  <>
                     <div className="space-y-2">
-                      <Label className="text-xs text-white/60">生效开始</Label>
+                      <Label className="text-xs text-white/60">Cron 表达式</Label>
                       <Input
-                        type="datetime-local"
-                        value={toDateTimeLocalValue(schedule.activeFrom)}
-                        onChange={(event) => setSchedule((current) => ({ ...current, activeFrom: fromDateTimeLocalValue(event.target.value) }))}
+                        value={schedule.cron}
+                        onChange={(event) => setSchedule((current) => ({ ...current, cron: event.target.value }))}
+                        placeholder="例如：*/15 * * * *"
                         className="border-white/10 bg-cyber-bg text-white"
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label className="text-xs text-white/60">生效截止</Label>
+                      <Label className="text-xs text-white/60">时区</Label>
                       <Input
-                        type="datetime-local"
-                        value={toDateTimeLocalValue(schedule.activeUntil)}
-                        onChange={(event) => setSchedule((current) => ({ ...current, activeUntil: fromDateTimeLocalValue(event.target.value) }))}
+                        value={schedule.timezone}
+                        onChange={(event) => setSchedule((current) => ({ ...current, timezone: event.target.value }))}
+                        placeholder="例如：Asia/Shanghai"
                         className="border-white/10 bg-cyber-bg text-white"
                       />
                     </div>
-                  </div>
-                  <div className="space-y-3 rounded-lg border border-white/5 bg-cyber-bg/30 p-3">
-                    <div className="flex items-center justify-between">
-                      <Label className="text-xs text-white/60">每日时间段限制</Label>
-                      <label className="flex items-center gap-2 text-[11px] text-white/50">
-                        <input
-                          type="checkbox"
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-2">
+                        <Label className="text-xs text-white/60">生效开始</Label>
+                        <Input
+                          type="datetime-local"
+                          value={toDateTimeLocalValue(schedule.activeFrom)}
+                          onChange={(event) => setSchedule((current) => ({ ...current, activeFrom: fromDateTimeLocalValue(event.target.value) }))}
+                          className="border-white/10 bg-cyber-bg text-white"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label className="text-xs text-white/60">生效截止</Label>
+                        <Input
+                          type="datetime-local"
+                          value={toDateTimeLocalValue(schedule.activeUntil)}
+                          onChange={(event) => setSchedule((current) => ({ ...current, activeUntil: fromDateTimeLocalValue(event.target.value) }))}
+                          className="border-white/10 bg-cyber-bg text-white"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-3 rounded-lg border border-white/5 bg-cyber-bg/30 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <Label className="text-xs text-white/60">每日时间段限制</Label>
+                        <ScheduleToggle
                           checked={Boolean(schedule.window)}
-                          onChange={(event) =>
+                          onCheckedChange={(checked) =>
                             setSchedule((current) => ({
                               ...current,
-                              window: event.target.checked
+                              window: checked
                                 ? { start: '09:00', end: '18:00', timezone: current.timezone || DEFAULT_WORKFLOW_TIMEZONE }
                                 : null,
                             }))
                           }
+                          label={schedule.window ? '已启用' : '已关闭'}
                         />
-                        启用时间段
-                      </label>
+                      </div>
+                      {schedule.window ? (
+                        <>
+                          <div className="grid grid-cols-2 gap-3">
+                            <div className="space-y-2">
+                              <Label className="text-[11px] text-white/45">开始时间</Label>
+                              <Input
+                                type="time"
+                                value={schedule.window.start}
+                                onChange={(event) =>
+                                  setSchedule((current) => ({
+                                    ...current,
+                                    window: current.window ? { ...current.window, start: event.target.value } : null,
+                                  }))
+                                }
+                                className="border-white/10 bg-cyber-bg text-white"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label className="text-[11px] text-white/45">结束时间</Label>
+                              <Input
+                                type="time"
+                                value={schedule.window.end}
+                                onChange={(event) =>
+                                  setSchedule((current) => ({
+                                    ...current,
+                                    window: current.window ? { ...current.window, end: event.target.value } : null,
+                                  }))
+                                }
+                                className="border-white/10 bg-cyber-bg text-white"
+                              />
+                            </div>
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-[11px] text-white/45">时间段时区</Label>
+                            <Input
+                              value={schedule.window.timezone || schedule.timezone}
+                              onChange={(event) =>
+                                setSchedule((current) => ({
+                                  ...current,
+                                  window: current.window ? { ...current.window, timezone: event.target.value } : null,
+                                }))
+                              }
+                              placeholder="例如：Asia/Shanghai"
+                              className="border-white/10 bg-cyber-bg text-white"
+                            />
+                          </div>
+                        </>
+                      ) : (
+                        <p className="text-xs text-white/40">关闭后仅按 Cron 触发，不限制每天的可执行时段。</p>
+                      )}
                     </div>
-                    {schedule.window ? (
-                      <>
-                        <div className="grid grid-cols-2 gap-3">
-                          <div className="space-y-2">
-                            <Label className="text-[11px] text-white/45">开始时间</Label>
-                            <Input
-                              type="time"
-                              value={schedule.window.start}
-                              onChange={(event) =>
-                                setSchedule((current) => ({
-                                  ...current,
-                                  window: current.window ? { ...current.window, start: event.target.value } : null,
-                                }))
-                              }
-                              className="border-white/10 bg-cyber-bg text-white"
-                            />
-                          </div>
-                          <div className="space-y-2">
-                            <Label className="text-[11px] text-white/45">结束时间</Label>
-                            <Input
-                              type="time"
-                              value={schedule.window.end}
-                              onChange={(event) =>
-                                setSchedule((current) => ({
-                                  ...current,
-                                  window: current.window ? { ...current.window, end: event.target.value } : null,
-                                }))
-                              }
-                              className="border-white/10 bg-cyber-bg text-white"
-                            />
-                          </div>
-                        </div>
-                        <div className="space-y-2">
-                          <Label className="text-[11px] text-white/45">时间段时区</Label>
-                          <Input
-                            value={schedule.window.timezone || schedule.timezone}
-                            onChange={(event) =>
-                              setSchedule((current) => ({
-                                ...current,
-                                window: current.window ? { ...current.window, timezone: event.target.value } : null,
-                              }))
-                            }
-                            placeholder="例如：Asia/Shanghai"
-                            className="border-white/10 bg-cyber-bg text-white"
-                          />
-                        </div>
-                      </>
-                    ) : (
-                      <p className="text-xs text-white/40">关闭后仅按 Cron 触发，不限制每天的可执行时段。</p>
-                    )}
-                  </div>
-                  <p className="text-xs text-white/40">启用后由后端调度器轮询执行；若当前已有运行中的流程，会跳过该次触发。</p>
-                </div>
+                    <p className="text-xs text-white/40">启用后由后端调度器轮询执行；若当前已有运行中的流程，会跳过该次触发。</p>
+                  </>
+                ) : null}
+              </div>
 
-                <div className="space-y-3 border-t border-white/5 p-4">
+              <div className="space-y-3 border-t border-white/5 p-4">
                   <div className="flex items-center justify-between">
                     <h3 className="text-sm font-semibold text-white">执行日志</h3>
                     {execution ? <span className="text-[10px] text-white/35">{execution.id}</span> : null}

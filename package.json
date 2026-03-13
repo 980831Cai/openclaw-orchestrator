@@ -8,10 +8,13 @@
     "dev:server": "cd server && python -m openclaw_orchestrator serve --reload",
     "dev:web": "pnpm --filter @openclaw/web dev",
     "build:web": "pnpm --filter @openclaw/web build",
-    "build:frontend": "bash scripts/build_frontend.sh"
+    "build:frontend": "bash scripts/build_frontend.sh",
+    "plugin:install": "powershell -ExecutionPolicy Bypass -File ./scripts/install_openclaw_plugin.ps1",
+    "plugin:test": "tsx --test extensions/openclaw-orchestrator/tests/tools.test.ts"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "concurrently": "^8.2.2",
+    "tsx": "^4.21.0"
   },
   "engines": {
     "node": ">=18.0.0",

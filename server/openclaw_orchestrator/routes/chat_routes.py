@@ -3,7 +3,8 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from openclaw_orchestrator.services.chat_service import chat_service
+from openclaw_orchestrator.services.chat_service import ChatDeliveryError, chat_service
+from openclaw_orchestrator.services.live_feed_service import live_feed_service
 from openclaw_orchestrator.services.session_watcher import session_watcher
 
 router = APIRouter()
@@ -14,27 +15,36 @@ class SendMessageRequest(BaseModel):
 
 
 @router.get("/agents/{agent_id}/sessions")
-def list_sessions(agent_id: str):
-    return chat_service.list_sessions(agent_id)
+async def list_sessions(agent_id: str):
+    return await chat_service.list_sessions(agent_id)
 
 
 @router.get("/agents/{agent_id}/sessions/{session_id}/messages")
-def get_messages(
+async def get_messages(
     agent_id: str,
     session_id: str,
     limit: int = 100,
     offset: int = 0,
 ):
-    return chat_service.get_messages(agent_id, session_id, limit, offset)
+    return await chat_service.get_messages(agent_id, session_id, limit, offset)
 
 
 @router.post("/agents/{agent_id}/sessions/{session_id}/send")
 async def send_message(agent_id: str, session_id: str, req: SendMessageRequest):
     if not req.content:
         raise HTTPException(status_code=400, detail="content is required")
-    return await chat_service.send_message(agent_id, session_id, req.content)
+    try:
+        return await chat_service.send_message(agent_id, session_id, req.content)
+    except (ChatDeliveryError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.get("/monitor/statuses")
 def get_statuses():
     return session_watcher.get_all_statuses()
+
+
+@router.get("/monitor/live-feed-snapshot")
+def get_live_feed_snapshot(limit: int = 50):
+    normalized_limit = max(1, min(limit, 200))
+    return live_feed_service.get_snapshot(limit=normalized_limit)

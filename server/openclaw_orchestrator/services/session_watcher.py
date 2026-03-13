@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from openclaw_orchestrator.config import settings
+from openclaw_orchestrator.services.live_feed_service import live_feed_service
+from openclaw_orchestrator.utils.time import utc_now_iso
 from openclaw_orchestrator.websocket.ws_handler import broadcast
 
 logger = logging.getLogger(__name__)
@@ -119,6 +121,7 @@ class SessionWatcher:
                 continue
             self._mark_seen(msg_id)
 
+            live_feed_service.record_message(parsed)
             broadcast(
                 {
                     "type": "new_message",
@@ -219,21 +222,21 @@ class SessionWatcher:
             return
 
         if from_agent and from_agent != current_agent_id:
-            from datetime import datetime
-
+            event_payload = {
+                "id": f"comm-{parsed.get('id', '')}",
+                "fromAgentId": from_agent,
+                "toAgentId": current_agent_id,
+                "type": "message",
+                "eventType": "message",
+                "content": (parsed.get("content", "") or "")[:200],
+                "message": (parsed.get("content", "") or "")[:200],
+                "timestamp": utc_now_iso(),
+            }
+            live_feed_service.record_event(event_payload)
             broadcast({
                 "type": "communication",
-                "payload": {
-                    "id": f"comm-{parsed.get('id', '')}",
-                    "fromAgentId": from_agent,
-                    "toAgentId": current_agent_id,
-                    "type": "message",
-                    "eventType": "message",
-                    "content": (parsed.get("content", "") or "")[:200],
-                    "message": (parsed.get("content", "") or "")[:200],
-                    "timestamp": datetime.utcnow().isoformat(),
-                },
-                "timestamp": datetime.utcnow().isoformat(),
+                "payload": event_payload,
+                "timestamp": utc_now_iso(),
             })
 
     def _update_agent_status(
@@ -339,17 +342,15 @@ class SessionWatcher:
         }
 
     def _broadcast_status(self, agent_id: str, status: str) -> None:
-        from datetime import datetime
-
         broadcast(
             {
                 "type": "agent_status",
                 "payload": {
                     "agentId": agent_id,
                     "status": status,
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": utc_now_iso(),
                 },
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": utc_now_iso(),
             }
         )
 

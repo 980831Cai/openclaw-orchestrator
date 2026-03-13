@@ -201,10 +201,19 @@ function buildRoomMarkdown(room: TeamRoom) {
 
 interface EmpireLiveFeedProps {
   items: LiveFeedItem[]
-  gatewayConnected: boolean
+  gatewayRpcConnected: boolean
+  gatewayRuntimeRunning: boolean
 }
 
-export function EmpireLiveFeed({ items, gatewayConnected }: EmpireLiveFeedProps) {
+export function EmpireLiveFeed({ items, gatewayRpcConnected, gatewayRuntimeRunning }: EmpireLiveFeedProps) {
+  const gatewayLabel = gatewayRpcConnected
+    ? gatewayRuntimeRunning
+      ? 'RPC 在线 / 进程运行中'
+      : 'RPC 在线 / 进程未运行'
+    : gatewayRuntimeRunning
+      ? 'RPC 离线 / 进程运行中'
+      : 'RPC 离线 / 进程未运行'
+
   return (
     <div className="game-panel p-5">
       <div className="mb-4 flex items-center justify-between">
@@ -218,10 +227,10 @@ export function EmpireLiveFeed({ items, gatewayConnected }: EmpireLiveFeedProps)
         <span
           className={cn(
             'rounded-md border px-2 py-1 text-[10px] font-bold',
-            gatewayConnected ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-300' : 'border-rose-400/30 bg-rose-500/10 text-rose-300',
+            gatewayRpcConnected ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-300' : 'border-rose-400/30 bg-rose-500/10 text-rose-300',
           )}
         >
-          {gatewayConnected ? 'Gateway 在线' : 'Gateway 离线'}
+          {gatewayLabel}
         </span>
       </div>
 
@@ -238,7 +247,13 @@ export function EmpireLiveFeed({ items, gatewayConnected }: EmpireLiveFeedProps)
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className={cn('rounded-md border px-2 py-0.5 text-[9px] font-black uppercase tracking-wider', item.accentClass)}>
-                      {item.kind === 'communication' ? 'COMM' : 'MSG'}
+                      {item.kind === 'communication'
+                        ? 'COMM'
+                        : item.kind === 'workflow'
+                          ? 'FLOW'
+                          : item.kind === 'notification'
+                            ? 'ALERT'
+                            : 'MSG'}
                     </span>
                     <p className="truncate text-sm font-bold text-white/90">{item.title}</p>
                   </div>

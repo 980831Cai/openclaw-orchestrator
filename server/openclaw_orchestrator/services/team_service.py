@@ -293,17 +293,27 @@ class TeamService:
             return
 
         oc_config = file_manager.read_json("openclaw.json")
-        if "agentToAgent" not in oc_config:
-            oc_config["agentToAgent"] = {}
-        if "allow" not in oc_config["agentToAgent"]:
-            oc_config["agentToAgent"]["allow"] = []
+        tools = oc_config.get("tools")
+        if not isinstance(tools, dict):
+            tools = {}
+            oc_config["tools"] = tools
+
+        agent_to_agent = tools.get("agentToAgent")
+        if not isinstance(agent_to_agent, dict):
+            agent_to_agent = {}
+            tools["agentToAgent"] = agent_to_agent
+
+        allow = agent_to_agent.get("allow")
+        if not isinstance(allow, list):
+            allow = []
+            agent_to_agent["allow"] = allow
 
         for aid in agent_ids:
             for other in agent_ids:
                 if aid != other:
                     pair = f"{aid}:{other}"
-                    if pair not in oc_config["agentToAgent"]["allow"]:
-                        oc_config["agentToAgent"]["allow"].append(pair)
+                    if pair not in allow:
+                        allow.append(pair)
 
         file_manager.write_json("openclaw.json", oc_config)
 

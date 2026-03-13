@@ -126,6 +126,7 @@ export function renderDeskAgentAndSubClones({
     particles,
     agentId: agent.id,
     cliProvider: agent.cli_provider,
+    empireStatus: agent.empire_status,
     deskG,
     bedG,
     blanketG,

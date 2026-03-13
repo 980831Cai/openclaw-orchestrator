@@ -9,10 +9,10 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from datetime import datetime
 from typing import Any, Optional
 
 from openclaw_orchestrator.database.db import get_db
+from openclaw_orchestrator.utils.time import utc_now, utc_now_iso
 from openclaw_orchestrator.services.file_manager import file_manager
 from openclaw_orchestrator.websocket.ws_handler import broadcast
 
@@ -70,7 +70,7 @@ def _empty_manifest(task_id: str) -> dict[str, Any]:
     return {
         "taskId": task_id,
         "artifacts": [],
-        "updatedAt": datetime.utcnow().isoformat(),
+        "updatedAt": utc_now_iso(),
     }
 
 
@@ -287,7 +287,7 @@ class TaskService:
             "type": _infer_artifact_type(ext),
             "description": description or "",
             "size": len(content.encode("utf-8")),
-            "createdAt": datetime.utcnow().isoformat(),
+            "createdAt": utc_now_iso(),
         }
 
         # Update manifest
@@ -296,7 +296,7 @@ class TaskService:
             a for a in manifest["artifacts"] if a["filename"] != filename
         ]
         manifest["artifacts"].append(artifact)
-        manifest["updatedAt"] = datetime.utcnow().isoformat()
+        manifest["updatedAt"] = utc_now_iso()
         file_manager.write_json(manifest_path, manifest)
 
         # Update DB count
@@ -315,7 +315,7 @@ class TaskService:
             {
                 "type": "task_update",
                 "payload": {"taskId": task_id, "event": "artifact_added", "artifact": artifact},
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": utc_now_iso(),
             }
         )
 
@@ -358,7 +358,7 @@ class TaskService:
             manifest["artifacts"] = [
                 a for a in manifest["artifacts"] if a["filename"] != filename
             ]
-            manifest["updatedAt"] = datetime.utcnow().isoformat()
+            manifest["updatedAt"] = utc_now_iso()
             file_manager.write_json(manifest_path, manifest)
 
             db = get_db()
@@ -372,7 +372,7 @@ class TaskService:
             {
                 "type": "task_update",
                 "payload": {"taskId": task_id, "event": "artifact_deleted", "filename": filename},
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": utc_now_iso(),
             }
         )
 
@@ -420,7 +420,7 @@ class TaskService:
         if not file_manager.file_exists(task_md_path):
             return
         content = file_manager.read_file(task_md_path)
-        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = utc_now().strftime("%Y-%m-%d %H:%M:%S")
         reference = f"\n📦 [{artifact['agentId']}] {artifact['filename']} - {artifact.get('description') or artifact['name']} ({timestamp})"
         file_manager.write_file(task_md_path, content + reference)
 
@@ -431,7 +431,7 @@ class TaskService:
         if not file_manager.file_exists(team_md_path):
             return
         content = file_manager.read_file(team_md_path)
-        date_str = datetime.utcnow().strftime("%Y-%m-%d")
+        date_str = utc_now().strftime("%Y-%m-%d")
         entry = f"\n\n### [{date_str}] 任务「{task_title}」总结\n\n{summary}"
         file_manager.write_file(team_md_path, content + entry)
 
