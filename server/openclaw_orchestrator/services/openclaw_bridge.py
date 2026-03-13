@@ -23,13 +23,22 @@ import logging
 import os
 import re
 import uuid
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
 from openclaw_orchestrator.config import settings
+from openclaw_orchestrator.utils.time import utc_from_timestamp, utc_now, utc_now_iso
 
 logger = logging.getLogger(__name__)
+
+TRANSIENT_SESSION_PREFIXES = (
+    "wf-",
+    "approval-",
+    "meeting-",
+    "meeting-conclude-",
+    "debate-",
+    "orchestrator-",
+)
 
 
 class OpenClawBridge:
@@ -38,6 +47,15 @@ class OpenClawBridge:
     def __init__(self) -> None:
         self._http_client: Any = None  # Lazy-init httpx.AsyncClient
         self._simulation_mode = False
+        self._cleanup_tasks: set[asyncio.Task[Any]] = set()
+
+    @staticmethod
+    def _utcnow():
+        return utc_now()
+
+    @staticmethod
+    def _utcnow_iso() -> str:
+        return utc_now_iso()
 
     @property
     def _home(self) -> Path:
@@ -98,6 +116,11 @@ class OpenClawBridge:
     @staticmethod
     def _main_session_key(agent_id: str) -> str:
         return f"agent:{agent_id}:main"
+
+    @staticmethod
+    def is_transient_session_id(session_id: str | None) -> bool:
+        normalized = str(session_id or "").strip().lower()
+        return bool(normalized) and normalized.startswith(TRANSIENT_SESSION_PREFIXES)
 
     @staticmethod
     def _extract_text_content(content: Any) -> str:
@@ -237,11 +260,30 @@ class OpenClawBridge:
         """
         correlation_id = correlation_id or str(uuid.uuid4())[:8]
         session_id = session_id or f"orchestrator-{correlation_id}"
-        start_time = datetime.utcnow()
+        cleanup_transient_session = self.is_transient_session_id(session_id)
+        start_time = utc_now()
+
+        async def finalize(payload: dict[str, Any]) -> dict[str, Any]:
+            if cleanup_transient_session:
+                cleaned = await self._cleanup_transient_session(
+                    agent_id=agent_id,
+                    session_id=session_id,
+                    session_key=gateway_session_key,
+                    expect_gateway_session=gateway_used,
+                )
+                if not cleaned:
+                    self._schedule_transient_cleanup_retry(
+                        agent_id=agent_id,
+                        session_id=session_id,
+                        session_key=gateway_session_key,
+                        expect_gateway_session=gateway_used,
+                    )
+            return payload
 
         gateway_session_key: str | None = None
         gateway_run_id: str | None = None
         gateway_used = False
+        gateway_request_label: str | None = None
         assistant_count_before = 0
         try:
             from openclaw_orchestrator.services.gateway_connector import gateway_connector
@@ -251,6 +293,11 @@ class OpenClawBridge:
                     session_id=session_id,
                 )
                 if gateway_session_key:
+                    if not (
+                        cleanup_transient_session
+                        and gateway_session_key == self._main_session_key(agent_id)
+                    ):
+                        gateway_request_label = session_id if session_id else None
                     history_before = await gateway_connector.get_chat_history(
                         session_key=gateway_session_key,
                         limit=1000,
@@ -260,17 +307,19 @@ class OpenClawBridge:
                         for msg in history_before
                         if isinstance(msg, dict) and msg.get("role") == "assistant"
                     )
+                    params = {
+                        "agentId": agent_id,
+                        "sessionKey": gateway_session_key,
+                        "message": message,
+                        "deliver": False,
+                        "timeout": max(0, int(timeout_seconds * 1000)),
+                        "idempotencyKey": correlation_id,
+                    }
+                    if gateway_request_label:
+                        params["label"] = gateway_request_label
                     agent_result = await gateway_connector.call_rpc(
                         "agent",
-                        {
-                            "agentId": agent_id,
-                            "sessionKey": gateway_session_key,
-                            "message": message,
-                            "deliver": False,
-                            "timeout": max(0, int(timeout_seconds * 1000)),
-                            "idempotencyKey": correlation_id,
-                            "label": session_id if session_id else None,
-                        },
+                        params,
                         timeout=10.0,
                     )
                     if isinstance(agent_result, dict):
@@ -298,7 +347,7 @@ class OpenClawBridge:
                 # Fallback: write directly to JSONL (manual trigger)
                 self._write_user_message(agent_id, session_id, message, correlation_id)
 
-        elapsed = (datetime.utcnow() - start_time).total_seconds()
+        elapsed = (utc_now() - start_time).total_seconds()
 
         if gateway_used and gateway_run_id and gateway_session_key:
             try:
@@ -322,7 +371,7 @@ class OpenClawBridge:
                         session_key=gateway_session_key,
                         assistant_count_before=assistant_count_before,
                     )
-                    return {
+                    return await finalize({
                         "success": True,
                         "content": response,
                         "sessionId": session_id,
@@ -331,14 +380,14 @@ class OpenClawBridge:
                         "elapsed": round(elapsed, 2),
                         "channel": "gateway",
                         "runId": gateway_run_id,
-                    }
+                    })
                 if status == "error":
                     error_message = (
                         str(wait_result.get("error") or "").strip()
                         if isinstance(wait_result, dict)
                         else ""
                     )
-                    return {
+                    return await finalize({
                         "success": False,
                         "content": error_message or f"Agent {agent_id} execution failed",
                         "sessionId": session_id,
@@ -347,9 +396,9 @@ class OpenClawBridge:
                         "elapsed": round(elapsed, 2),
                         "channel": "gateway",
                         "runId": gateway_run_id,
-                    }
+                    })
             except Exception as exc:
-                return {
+                return await finalize({
                     "success": False,
                     "content": f"Gateway wait failed: {exc}",
                     "sessionId": session_id,
@@ -358,29 +407,29 @@ class OpenClawBridge:
                     "elapsed": round(elapsed, 2),
                     "channel": "gateway",
                     "runId": gateway_run_id,
-                }
+                })
 
         response = await self._poll_for_response(
             agent_id, session_id, pre_offset, timeout_seconds
         )
 
         if response:
-            return {
+            return await finalize({
                 "success": True,
                 "content": response,
                 "sessionId": session_id,
                 "correlationId": correlation_id,
                 "elapsed": round(elapsed, 2),
                 "channel": "webhook+jsonl",
-            }
+            })
 
-        return {
+        return await finalize({
             "success": False,
             "content": f"Agent {agent_id} did not respond within {timeout_seconds}s",
             "sessionId": session_id,
             "correlationId": correlation_id,
             "elapsed": round(elapsed, 2),
-        }
+        })
 
     async def send_agent_message(
         self,
@@ -594,17 +643,17 @@ class OpenClawBridge:
 
         try:
             content = hb_path.read_text(encoding="utf-8")
-            mtime = datetime.fromtimestamp(hb_path.stat().st_mtime)
+            mtime = utc_from_timestamp(hb_path.stat().st_mtime)
 
             # Count checklist items (lines starting with - [ ] or - [x])
             checklist_items = len(re.findall(r"^- \[[ x]\]", content, re.MULTILINE))
 
             # Consider alive if modified within last 60 minutes
-            age_minutes = (datetime.utcnow() - mtime).total_seconds() / 60
+            age_minutes = (utc_now() - mtime).total_seconds() / 60
 
             return {
                 "alive": age_minutes < 60,
-                "lastCheck": mtime.isoformat(),
+                "lastCheck": mtime.isoformat().replace("+00:00", "Z"),
                 "content": content,
                 "checklistItems": checklist_items,
                 "ageMinutes": round(age_minutes, 1),
@@ -632,7 +681,7 @@ class OpenClawBridge:
         hb_path = self._home / "agents" / agent_id / "HEARTBEAT.md"
         try:
             hb_path.parent.mkdir(parents=True, exist_ok=True)
-            timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+            timestamp = utc_now().strftime("%Y-%m-%d %H:%M:%S UTC")
             lines = [
                 f"# Heartbeat Checklist",
                 f"",
@@ -753,6 +802,186 @@ class OpenClawBridge:
         except OSError:
             return 0
 
+    def _cleanup_session_file(self, agent_id: str, session_id: str) -> bool:
+        """Delete transient session transcript files after internal orchestration use."""
+        session_file = self._agent_session_path(agent_id, session_id)
+        if not os.path.exists(session_file):
+            return True
+        try:
+            os.remove(session_file)
+            logger.info("Cleaned transient session file %s/%s.jsonl", agent_id, session_id)
+            return True
+        except OSError as exc:
+            logger.warning(
+                "Failed to clean transient session file %s/%s.jsonl: %s",
+                agent_id,
+                session_id,
+                exc,
+            )
+            return False
+
+    def _schedule_transient_cleanup_retry(
+        self,
+        *,
+        agent_id: str,
+        session_id: str,
+        session_key: str | None = None,
+        expect_gateway_session: bool = False,
+    ) -> None:
+        task = asyncio.create_task(
+            self._retry_transient_cleanup(
+                agent_id=agent_id,
+                session_id=session_id,
+                session_key=session_key,
+                expect_gateway_session=expect_gateway_session,
+            )
+        )
+        self._cleanup_tasks.add(task)
+
+        def _finalize_cleanup_task(done_task: asyncio.Task[Any]) -> None:
+            self._cleanup_tasks.discard(done_task)
+            try:
+                done_task.result()
+            except Exception as exc:
+                logger.warning(
+                    "Deferred transient cleanup crashed for %s/%s: %s",
+                    agent_id,
+                    session_id,
+                    exc,
+                )
+
+        task.add_done_callback(_finalize_cleanup_task)
+
+    async def _retry_transient_cleanup(
+        self,
+        *,
+        agent_id: str,
+        session_id: str,
+        session_key: str | None = None,
+        expect_gateway_session: bool = False,
+    ) -> None:
+        for delay_seconds in (0.5, 1.0, 2.0, 4.0, 8.0):
+            await asyncio.sleep(delay_seconds)
+            cleaned = await self._cleanup_transient_session(
+                agent_id=agent_id,
+                session_id=session_id,
+                session_key=session_key,
+                expect_gateway_session=expect_gateway_session,
+            )
+            if cleaned:
+                return
+
+        logger.warning(
+            "Transient cleanup remained inconclusive after retries: %s/%s",
+            agent_id,
+            session_id,
+        )
+
+    async def _resolve_transient_session_key_for_cleanup(
+        self,
+        *,
+        agent_id: str,
+        session_id: str,
+        session_key: str | None = None,
+    ) -> str | None:
+        resolved_session_key = (session_key or "").strip()
+        main_session_key = self._main_session_key(agent_id)
+        if resolved_session_key and resolved_session_key != main_session_key:
+            return resolved_session_key
+
+        try:
+            from openclaw_orchestrator.services.gateway_connector import (
+                gateway_connector,
+            )
+        except Exception:
+            return None
+
+        if not gateway_connector.connected:
+            return None
+
+        for attempt in range(3):
+            resolved = await gateway_connector.resolve_session_key(
+                key=session_id,
+                session_id=session_id,
+                label=session_id,
+                agent_id=agent_id,
+            )
+            if resolved and resolved != main_session_key:
+                return resolved
+
+            list_active_sessions = getattr(gateway_connector, "list_active_sessions", None)
+            if callable(list_active_sessions):
+                sessions = await list_active_sessions(agent_id)
+                for session in sessions:
+                    candidate_key = str(session.get("key") or "").strip()
+                    candidate_session_id = str(session.get("sessionId") or "").strip()
+                    if not candidate_key or candidate_key == main_session_key:
+                        continue
+                    if candidate_session_id == session_id:
+                        return candidate_key
+                    if candidate_key.startswith(f"agent:{agent_id}:") and candidate_key.split(":", 2)[-1] == session_id:
+                        return candidate_key
+
+            if attempt < 2:
+                await asyncio.sleep(0.2 * (attempt + 1))
+        return None
+
+    async def _cleanup_transient_session(
+        self,
+        *,
+        agent_id: str,
+        session_id: str,
+        session_key: str | None = None,
+        expect_gateway_session: bool = False,
+    ) -> bool:
+        main_session_key = self._main_session_key(agent_id)
+        resolved_session_key = await self._resolve_transient_session_key_for_cleanup(
+            agent_id=agent_id,
+            session_id=session_id,
+            session_key=session_key,
+        )
+        gateway_session_cleaned = not expect_gateway_session
+
+        if resolved_session_key and resolved_session_key != main_session_key:
+            try:
+                from openclaw_orchestrator.services.gateway_connector import (
+                    gateway_connector,
+                )
+
+                if gateway_connector.connected:
+                    deleted = await gateway_connector.delete_session(
+                        session_key=resolved_session_key,
+                        delete_transcript=True,
+                    )
+                    if deleted:
+                        gateway_session_cleaned = True
+                        logger.info(
+                            "Cleaned transient Gateway session %s (%s/%s)",
+                            resolved_session_key,
+                            agent_id,
+                            session_id,
+                        )
+                    else:
+                        gateway_session_cleaned = False
+                else:
+                    gateway_session_cleaned = not expect_gateway_session
+            except Exception as exc:
+                gateway_session_cleaned = False
+                logger.warning(
+                    "Failed to clean transient Gateway session %s (%s/%s): %s",
+                    resolved_session_key,
+                    agent_id,
+                    session_id,
+                    exc,
+                )
+        elif resolved_session_key == main_session_key:
+            gateway_session_cleaned = not expect_gateway_session
+        else:
+            gateway_session_cleaned = not expect_gateway_session
+
+        file_cleaned = self._cleanup_session_file(agent_id, session_id)
+        return gateway_session_cleaned and file_cleaned
+
     def _write_user_message(
         self,
         agent_id: str,
@@ -769,7 +998,7 @@ class OpenClawBridge:
         session_dir = os.path.dirname(session_file)
         os.makedirs(session_dir, exist_ok=True)
 
-        timestamp = datetime.utcnow().isoformat()
+        timestamp = utc_now_iso()
         message = {
             "type": "message",
             "id": f"orch-{correlation_id}",
@@ -794,6 +1023,15 @@ class OpenClawBridge:
 
     async def close(self) -> None:
         """Close the HTTP client on shutdown."""
+        cleanup_tasks = list(self._cleanup_tasks)
+        for task in cleanup_tasks:
+            task.cancel()
+        for task in cleanup_tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self._cleanup_tasks.clear()
         if self._http_client is not None:
             await self._http_client.aclose()
             self._http_client = None

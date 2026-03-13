@@ -7,10 +7,10 @@ via WebSocket broadcast in real-time.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
 from typing import Any
 
 from openclaw_orchestrator.database.db import get_db
+from openclaw_orchestrator.utils.time import utc_now_iso
 from openclaw_orchestrator.websocket.ws_handler import broadcast
 
 
@@ -41,7 +41,7 @@ class NotificationService:
             The created notification as a dict.
         """
         notification_id = str(uuid.uuid4())
-        now = datetime.utcnow().isoformat()
+        now = utc_now_iso()
 
         db = get_db()
         db.execute(

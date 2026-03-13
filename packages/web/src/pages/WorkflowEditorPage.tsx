@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import ReactFlow, {
-  addEdge,
   Background,
   Controls,
   MiniMap,
@@ -13,23 +13,51 @@ import ReactFlow, {
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import { GitBranch, Loader2, Merge, MessageSquare, Play, Plus, Save, Square, Split, Swords, Trash2, UserCheck, Zap } from 'lucide-react'
+import { EmptyState } from '@/components/brand/EmptyState'
+import { ApprovalNodeComponent } from '@/components/workflow/ApprovalNode'
+import { ConditionNodeComponent } from '@/components/workflow/ConditionNode'
+import { DebateNodeComponent } from '@/components/workflow/DebateNode'
+import { JoinNodeComponent } from '@/components/workflow/JoinNode'
+import { MeetingNodeComponent } from '@/components/workflow/MeetingNode'
+import { TaskNodeComponent } from '@/components/workflow/TaskNode'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
-import { EmptyState } from '@/components/brand/EmptyState'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { toast } from '@/hooks/use-toast'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import { toast } from '@/hooks/use-toast'
-import { TaskNodeComponent } from '@/components/workflow/TaskNode'
-import { ConditionNodeComponent } from '@/components/workflow/ConditionNode'
-import { ApprovalNodeComponent } from '@/components/workflow/ApprovalNode'
-import { JoinNodeComponent } from '@/components/workflow/JoinNode'
-import { MeetingNodeComponent } from '@/components/workflow/MeetingNode'
-import { DebateNodeComponent } from '@/components/workflow/DebateNode'
+import { useMonitorStore } from '@/stores/monitor-store'
 import { MEETING_TYPE_LABELS } from '@/types'
-import type { WorkflowDefinition, WorkflowExecution, WorkflowNodeData, WorkflowEdge, WorkflowSchedule, AgentListItem, MeetingType } from '@/types'
+import type { AgentListItem, ApprovalRecord, MeetingType, TeamListItem, WorkflowDefinition, WorkflowExecution, WorkflowNodeData, WorkflowSchedule } from '@/types'
+import {
+  ACTIVE_EXECUTION_STATUSES,
+  findLatestActiveExecution,
+  isExecutionActive,
+  mergeExecutionWithSignal,
+  reconcileExecutionSelection,
+  resolveWaitingApprovalFocusNodeId,
+} from './workflow-editor/execution-state'
+import {
+  EDGE_STYLE,
+  DEBATE_ROUND_OPTIONS,
+  DEFAULT_WORKFLOW_TIMEZONE,
+  MEETING_WORKFLOW_TYPES,
+  createDefaultSchedule,
+  fromDateTimeLocalValue,
+  getExecutionBadge,
+  normalizeConditionHandle,
+  normalizeSchedule,
+  serializeEdges,
+  serializeNodes,
+  toDateTimeLocalValue,
+  toFlowEdges,
+  toFlowNodes,
+  upsertConnectedEdge,
+} from './workflow-editor/graph'
+import { resolveApprovalQueryId, selectPendingApproval } from './workflow-editor/approval-selection'
+import { workflowNodeTypes } from './workflow-editor/shared'
 
 const nodeTypes = {
   task: TaskNodeComponent,
@@ -41,212 +69,75 @@ const nodeTypes = {
   debate: DebateNodeComponent,
 }
 
-const EDGE_STYLE = { stroke: '#6366F1', strokeWidth: 2 }
-
-const DEFAULT_WORKFLOW_TIMEZONE =
-  typeof Intl !== 'undefined' ? Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai' : 'Asia/Shanghai'
-
-function normalizeConditionHandle(value?: string | null): 'yes' | 'no' | undefined {
-  const normalized = String(value || '').trim().toLowerCase()
-  if (normalized === 'yes' || normalized === 'true') return 'yes'
-  if (normalized === 'no' || normalized === 'false') return 'no'
-  return undefined
-}
-
-function resolveConditionBranchTarget(nodeData: WorkflowNodeData | undefined, targetId: string): 'yes' | 'no' | undefined {
-  if (!nodeData || nodeData.type !== 'condition') return undefined
-  const branches = nodeData.branches || {}
-  if (branches.yes === targetId || branches.true === targetId) return 'yes'
-  if (branches.no === targetId || branches.false === targetId) return 'no'
-  if (!branches.yes && !branches.no && !branches.true && !branches.false && branches.default === targetId) return 'yes'
-  return undefined
-}
-
-function normalizeNodeData(data: WorkflowNodeData): WorkflowNodeData {
-  if (data.type === 'condition') {
-    const branches = data.branches || {}
-    const hasExplicitBranch = Boolean(branches.yes || branches.no || branches.true || branches.false)
-
-    if (!hasExplicitBranch && branches.default) {
-      return {
-        ...data,
-        expression: !data.expression || data.expression === 'default' ? 'true' : data.expression,
-        branches: { yes: branches.default },
-      }
-    }
-  }
-
-  return data
-}
-
-function createDefaultSchedule(): WorkflowSchedule {
-  return {
-    enabled: false,
-    cron: '',
-    timezone: DEFAULT_WORKFLOW_TIMEZONE,
-    window: null,
-    activeFrom: null,
-    activeUntil: null,
-  }
-}
-
-function normalizeSchedule(schedule?: WorkflowSchedule | null): WorkflowSchedule {
-  return {
-    ...createDefaultSchedule(),
-    ...(schedule || {}),
-    timezone: schedule?.timezone || DEFAULT_WORKFLOW_TIMEZONE,
-    window: schedule?.window
-      ? {
-          start: schedule.window.start || '',
-          end: schedule.window.end || '',
-          timezone: schedule.window.timezone || schedule.timezone || DEFAULT_WORKFLOW_TIMEZONE,
-        }
-      : null,
-  }
-}
-
-function toDateTimeLocalValue(value?: string | null): string {
-  if (!value) return ''
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
-  return local.toISOString().slice(0, 16)
-}
-
-function fromDateTimeLocalValue(value: string): string | null {
-  if (!value.trim()) return null
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? null : date.toISOString()
-}
-
-function toFlowNodes(workflow: WorkflowDefinition): Node[] {
-  return Object.entries(workflow.nodes).map(([id, rawData], index) => {
-    const data = normalizeNodeData(rawData)
-    return {
-      id,
-      type: data.type === 'parallel' ? 'join' : data.type,
-      position: data.position ?? { x: 120 + index * 40, y: 120 + index * 30 },
-      data: data.type === 'parallel'
-        ? { ...data, type: 'join', label: data.label || '汇合节点', joinMode: data.joinMode || 'and' }
-        : data,
-    }
-  })
-}
-
-function toFlowEdges(workflow: WorkflowDefinition): Edge[] {
-  return workflow.edges.map((edge, index) => {
-    const sourceNode = workflow.nodes[edge.from]
-    const normalizedHandle =
-      resolveConditionBranchTarget(sourceNode, edge.to)
-      ?? normalizeConditionHandle(edge.condition)
-
-    return {
-      id: `${edge.from}-${edge.to}-${index}`,
-      source: edge.from,
-      target: edge.to,
-      label: normalizedHandle ?? (edge.condition && edge.condition !== 'default' ? edge.condition : undefined),
-      sourceHandle: normalizedHandle,
-      style: EDGE_STYLE,
-      reconnectable: 'source',
-    }
-  })
-}
-
-function serializeNodes(nodes: Node[], edges: Edge[]): Record<string, WorkflowNodeData> {
-  return Object.fromEntries(
-    nodes.map((node) => {
-      const data = {
-        ...(node.data as WorkflowNodeData),
-        position: node.position,
-      } as WorkflowNodeData
-
-      if (data.type === 'condition') {
-        const branches = edges
-          .filter((edge) => edge.source === node.id)
-          .reduce<Record<string, string>>((acc, edge) => {
-            const handle = String(edge.sourceHandle || edge.label || '').toLowerCase()
-            if (handle === 'yes' || handle === 'true') acc.yes = edge.target
-            if (handle === 'no' || handle === 'false') acc.no = edge.target
-            return acc
-          }, {})
-        ;(data as any).branches = branches
-      }
-
-      return [node.id, data]
-    })
+function ScheduleToggle({
+  checked,
+  onCheckedChange,
+  label,
+}: {
+  checked: boolean
+  onCheckedChange: (checked: boolean) => void
+  label: string
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onCheckedChange(!checked)}
+      className={cn(
+        'inline-flex items-center gap-2 rounded-full border px-2 py-1 text-xs transition-colors',
+        checked
+          ? 'border-cyber-green/40 bg-cyber-green/15 text-cyber-green'
+          : 'border-white/10 bg-white/5 text-white/50 hover:border-white/20 hover:text-white/70'
+      )}
+    >
+      <span
+        className={cn(
+          'flex h-5 w-9 items-center rounded-full px-0.5 transition-colors',
+          checked ? 'bg-cyber-green/70' : 'bg-white/15'
+        )}
+      >
+        <span
+          className={cn(
+            'h-4 w-4 rounded-full bg-white shadow-[0_0_10px_rgba(255,255,255,0.18)] transition-all',
+            checked ? 'ml-auto' : 'ml-0'
+          )}
+        />
+      </span>
+      <span>{label}</span>
+    </button>
   )
 }
 
-function serializeEdges(edges: Edge[]): WorkflowEdge[] {
-  return edges.map((edge) => ({
-    from: edge.source,
-    to: edge.target,
-    condition: normalizeConditionHandle(
-      typeof edge.sourceHandle === 'string'
-        ? edge.sourceHandle
-        : typeof edge.label === 'string'
-          ? edge.label
-          : undefined
-    ),
-  }))
-}
-
-function buildEdge(connection: Connection): Edge {
-  if (!connection.source || !connection.target) {
-    throw new Error('Invalid edge connection')
-  }
-
-  const normalizedHandle = normalizeConditionHandle(connection.sourceHandle)
-
-  return {
-    id: `edge-${connection.source}-${normalizedHandle || connection.sourceHandle || 'default'}-${connection.target}-${connection.targetHandle || 'default'}-${Date.now()}`,
-    source: connection.source,
-    target: connection.target,
-    sourceHandle: normalizedHandle ?? connection.sourceHandle ?? null,
-    targetHandle: connection.targetHandle ?? null,
-    label: normalizedHandle ?? undefined,
-    style: EDGE_STYLE,
-    reconnectable: 'source',
-  }
-}
-
-function upsertConnectedEdge(current: Edge[], connection: Connection, nodes: Node[], replaceEdgeId?: string): Edge[] {
-  if (!connection.source || !connection.target) return current
-
-  const nextEdge = buildEdge(connection)
-  const sourceNode = nodes.find((node) => node.id === connection.source)
-  const sourceType = (sourceNode?.data as WorkflowNodeData | undefined)?.type
-  const branchHandle = normalizeConditionHandle(nextEdge.sourceHandle ? String(nextEdge.sourceHandle) : undefined)
-
-  let nextEdges = current.filter((edge) => edge.id !== replaceEdgeId)
-
-  if (sourceType === 'condition' && branchHandle) {
-    nextEdges = nextEdges.filter((edge) => {
-      if (edge.source !== connection.source) return true
-      return normalizeConditionHandle(String(edge.sourceHandle || edge.label || '')) !== branchHandle
-    })
-  }
-
-  return addEdge(replaceEdgeId ? { ...nextEdge, id: replaceEdgeId } : nextEdge, nextEdges)
-}
-
 export function WorkflowEditorPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([])
   const [selected, setSelected] = useState<WorkflowDefinition | null>(null)
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
   const [saving, setSaving] = useState(false)
   const [execution, setExecution] = useState<WorkflowExecution | null>(null)
+  const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState('')
   const [newTeamId, setNewTeamId] = useState('default')
+  const [teamOptions, setTeamOptions] = useState<TeamListItem[]>([])
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [agents, setAgents] = useState<AgentListItem[]>([])
   const [schedule, setSchedule] = useState<WorkflowSchedule>(createDefaultSchedule())
-  const selectedWorkflowId = selected?.id ?? null
+  const [pendingApproval, setPendingApproval] = useState<ApprovalRecord | null>(null)
+  const [approvalBusy, setApprovalBusy] = useState<'approve' | 'reject' | null>(null)
+  const approvalPanelRef = useRef<HTMLDivElement | null>(null)
+  const lastApprovalFocusKeyRef = useRef<string | null>(null)
+  const requestedWorkflowId = searchParams.get('workflowId')
+  const requestedExecutionId = searchParams.get('executionId')
+  const requestedApprovalId = searchParams.get('approvalId')
+  const selectedWorkflowId = requestedWorkflowId || selected?.id || null
   const [edgeReconnectSuccessful, setEdgeReconnectSuccessful] = useState(true)
+  const workflowSignals = useMonitorStore((state) => state.workflowSignals)
 
   const selectedNode = useMemo(() => nodes.find((node) => node.id === selectedNodeId) ?? null, [nodes, selectedNodeId])
+  const executionIsActive = useMemo(() => isExecutionActive(execution?.status), [execution?.status])
   const selectedNodeUpstreamOptions = useMemo(() => {
     if (!selectedNodeId) return []
     const upstreamIds = edges.filter((edge) => edge.target === selectedNodeId).map((edge) => edge.source)
@@ -280,7 +171,7 @@ export function WorkflowEditorPage() {
     return {
       nodes: nodes.map((node) => {
         const executionState =
-          execution?.currentNodeId === node.id && execution.status === 'running'
+          execution?.currentNodeId === node.id && executionIsActive
             ? 'running'
             : failedNodeIds.has(node.id)
               ? 'failed'
@@ -298,7 +189,7 @@ export function WorkflowEditorPage() {
       }),
       edges: edges.map((edge) => {
         const sourceState =
-          execution?.currentNodeId === edge.source && execution.status === 'running'
+          execution?.currentNodeId === edge.source && executionIsActive
             ? 'running'
             : failedNodeIds.has(edge.source)
               ? 'failed'
@@ -320,7 +211,7 @@ export function WorkflowEditorPage() {
         }
       }),
     }
-  }, [edges, execution, nodes])
+  }, [edges, execution, executionIsActive, nodes])
 
   const loadWorkflow = useCallback((workflow: WorkflowDefinition) => {
     setSelected(workflow)
@@ -330,6 +221,47 @@ export function WorkflowEditorPage() {
     setSelectedNodeId(null)
     setExecution(null)
   }, [setEdges, setNodes])
+
+  const openWorkflow = useCallback((workflow: WorkflowDefinition, executionId?: string | null, approvalId?: string | null) => {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      next.set('workflowId', workflow.id)
+      if (executionId) {
+        next.set('executionId', executionId)
+      } else {
+        next.delete('executionId')
+      }
+      if (approvalId) {
+        next.set('approvalId', approvalId)
+      } else {
+        next.delete('approvalId')
+      }
+      return next
+    })
+    loadWorkflow(workflow)
+  }, [loadWorkflow, setSearchParams])
+
+  const replaceSelectionQuery = useCallback((workflowId?: string | null, executionId?: string | null, approvalId?: string | null) => {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      if (workflowId) {
+        next.set('workflowId', workflowId)
+      } else {
+        next.delete('workflowId')
+      }
+      if (executionId) {
+        next.set('executionId', executionId)
+      } else {
+        next.delete('executionId')
+      }
+      if (approvalId) {
+        next.set('approvalId', approvalId)
+      } else {
+        next.delete('approvalId')
+      }
+      return next
+    })
+  }, [setSearchParams])
 
   const fetchWorkflows = useCallback(async () => {
     try {
@@ -345,12 +277,29 @@ export function WorkflowEditorPage() {
           setEdges(toFlowEdges(next))
           setSchedule(normalizeSchedule(next.schedule))
           setSelectedNodeId((current) => (current && next.nodes[current] ? current : null))
+        } else if (data[0]) {
+          const fallbackWorkflow =
+            (selected?.id ? data.find((workflow) => workflow.id === selected.id) : null) ?? data[0]
+          toast({
+            title: '无效工作流链接',
+            description: `未找到工作流 ${requestedWorkflowId || selectedWorkflowId}，已切换到 ${fallbackWorkflow.name}`,
+            variant: 'destructive',
+          })
+          replaceSelectionQuery(fallbackWorkflow.id, null)
+          loadWorkflow(fallbackWorkflow)
+        } else {
+          replaceSelectionQuery(null, null)
+          setSelected(null)
+          setNodes([])
+          setEdges([])
+          setSelectedNodeId(null)
+          setExecution(null)
         }
       }
     } catch (error) {
       toast({ title: '工作流加载失败', description: error instanceof Error ? error.message : '未知错误', variant: 'destructive' })
     }
-  }, [loadWorkflow, selectedWorkflowId, setEdges, setNodes])
+  }, [loadWorkflow, replaceSelectionQuery, requestedWorkflowId, selected?.id, selectedWorkflowId, setEdges, setNodes])
 
   const refreshExecution = useCallback(async (executionId: string) => {
     try {
@@ -361,9 +310,50 @@ export function WorkflowEditorPage() {
     }
   }, [])
 
+  const restoreExecution = useCallback(async (workflowId: string, executionId?: string | null) => {
+    try {
+      const executions = await api.get<WorkflowExecution[]>(`/workflows/${workflowId}/executions`)
+      const requested = executionId
+        ? executions.find((item) => item.id === executionId && item.workflowId === workflowId) ?? null
+        : null
+
+      if (executionId && !requested) {
+        toast({
+          title: '无效执行链接',
+          description: `执行 ${executionId} 不存在或不属于当前工作流，已清除无效执行定位。`,
+          variant: 'destructive',
+        })
+        replaceSelectionQuery(workflowId, null)
+      }
+
+      if (requested) {
+        setExecution(requested)
+        return
+      }
+
+      setExecution((current) => reconcileExecutionSelection({
+        workflowId,
+        requestedExecutionId: requested ? executionId : undefined,
+        currentExecution: current,
+        executions,
+      }))
+    } catch {
+      // ignore restore errors; only clear query when the workflow execution list proves it is invalid
+    }
+  }, [replaceSelectionQuery])
+
   useEffect(() => {
     fetchWorkflows()
   }, [fetchWorkflows])
+
+  useEffect(() => {
+    if (!selected?.id) {
+      setExecution(null)
+      return
+    }
+
+    void restoreExecution(selected.id, requestedExecutionId)
+  }, [requestedExecutionId, restoreExecution, selected?.id])
 
   useEffect(() => {
     const fetchAgentOptions = async () => {
@@ -379,7 +369,27 @@ export function WorkflowEditorPage() {
   }, [])
 
   useEffect(() => {
-    if (!execution || !['running', 'waiting_approval'].includes(execution.status)) {
+    const fetchTeams = async () => {
+      try {
+        const data = await api.get<TeamListItem[]>('/teams')
+        setTeamOptions(data)
+        setNewTeamId((current) => {
+          const normalized = current.trim()
+          if (normalized && data.some((team) => team.id === normalized)) {
+            return normalized
+          }
+          return data[0]?.id || ''
+        })
+      } catch {
+        setTeamOptions([])
+      }
+    }
+
+    void fetchTeams()
+  }, [])
+
+  useEffect(() => {
+    if (!execution || !ACTIVE_EXECUTION_STATUSES.includes(execution.status)) {
       return undefined
     }
 
@@ -389,6 +399,142 @@ export function WorkflowEditorPage() {
 
     return () => window.clearInterval(timer)
   }, [execution, refreshExecution])
+
+  useEffect(() => {
+    if (!execution?.id || execution.status !== 'waiting_approval') {
+      setPendingApproval(null)
+      return undefined
+    }
+
+    let cancelled = false
+
+    const syncPendingApproval = async () => {
+      try {
+        const approvals = await api.get<ApprovalRecord[]>(`/approvals?execution_id=${execution.id}`)
+        if (cancelled) return
+        const nextPending = selectPendingApproval(approvals, requestedApprovalId)
+        const nextApprovalQueryId = resolveApprovalQueryId(approvals, requestedApprovalId)
+        setPendingApproval(nextPending)
+        if (nextApprovalQueryId !== requestedApprovalId) {
+          replaceSelectionQuery(selected?.id ?? execution.workflowId, execution.id, nextApprovalQueryId)
+        }
+      } catch {
+        if (!cancelled) {
+          setPendingApproval(null)
+        }
+      }
+    }
+
+    void syncPendingApproval()
+    const timer = window.setInterval(() => {
+      void syncPendingApproval()
+    }, 2500)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [execution?.id, execution?.status, execution?.workflowId, replaceSelectionQuery, requestedApprovalId, selected?.id])
+
+  useEffect(() => {
+    if (execution?.status !== 'waiting_approval') {
+      lastApprovalFocusKeyRef.current = null
+      return
+    }
+
+    const focusKey = requestedApprovalId || pendingApproval?.id || execution.id
+    if (!focusKey || lastApprovalFocusKeyRef.current === focusKey) {
+      return
+    }
+
+    lastApprovalFocusKeyRef.current = focusKey
+    approvalPanelRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [execution?.id, execution?.status, pendingApproval?.id, requestedApprovalId])
+
+  useEffect(() => {
+    const focusNodeId = resolveWaitingApprovalFocusNodeId({
+      status: execution?.status,
+      currentNodeId: execution?.currentNodeId,
+      pendingApprovalNodeId: pendingApproval?.nodeId,
+      availableNodeIds: nodes.map((node) => node.id),
+    })
+
+    if (focusNodeId && focusNodeId !== selectedNodeId) {
+      setSelectedNodeId(focusNodeId)
+    }
+  }, [execution?.currentNodeId, execution?.status, nodes, pendingApproval?.nodeId, selectedNodeId])
+
+  useEffect(() => {
+    if (!execution?.id) {
+      return
+    }
+
+    const signal = workflowSignals.get(execution.id)
+    if (!signal) {
+      return
+    }
+
+    setExecution((current) => (current ? mergeExecutionWithSignal(current, signal) : current))
+  }, [execution?.id, workflowSignals])
+
+  useEffect(() => {
+    if (!selected?.id) {
+      setExecution(null)
+      return undefined
+    }
+
+    if (
+      execution?.workflowId === selected.id &&
+      ACTIVE_EXECUTION_STATUSES.includes(execution.status)
+    ) {
+      return undefined
+    }
+
+    let cancelled = false
+
+    void api
+      .get<WorkflowExecution[]>(`/workflows/${selected.id}/executions`)
+      .then((executions) => {
+        if (cancelled) return
+
+        const requestedExecution =
+          requestedExecutionId
+            ? executions.find((item) => item.id === requestedExecutionId && item.workflowId === selected.id) ?? null
+            : null
+
+        if (requestedExecutionId && !requestedExecution) {
+          toast({
+            title: '无效执行链接',
+            description: `执行 ${requestedExecutionId} 不存在或不属于当前工作流，已清除无效执行定位。`,
+            variant: 'destructive',
+          })
+          replaceSelectionQuery(selected.id, null)
+        }
+
+        setExecution((current) => {
+          return reconcileExecutionSelection({
+            workflowId: selected.id,
+            requestedExecutionId: requestedExecution ? requestedExecutionId : undefined,
+            currentExecution: current,
+            executions,
+          })
+        })
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setExecution((current) =>
+            current?.workflowId === selected.id &&
+            ((requestedExecutionId && current.id === requestedExecutionId) || isExecutionActive(current.status))
+              ? current
+              : null
+          )
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [execution?.status, execution?.workflowId, replaceSelectionQuery, requestedExecutionId, selected?.id])
 
   const onConnect = useCallback((connection: Connection) => {
     setEdges((current) => upsertConnectedEdge(current, connection, nodes))
@@ -458,6 +604,12 @@ export function WorkflowEditorPage() {
     try {
       const nextExecution = await api.post<WorkflowExecution>(`/workflows/${selected.id}/execute`)
       setExecution(nextExecution)
+      setSearchParams((current) => {
+        const next = new URLSearchParams(current)
+        next.set('workflowId', selected.id)
+        next.set('executionId', nextExecution.id)
+        return next
+      })
       window.setTimeout(() => {
         void refreshExecution(nextExecution.id)
       }, 800)
@@ -478,14 +630,50 @@ export function WorkflowEditorPage() {
     }
   }
 
+  const handleResolveApproval = async (approved: boolean) => {
+    if (!pendingApproval) return
+
+    setApprovalBusy(approved ? 'approve' : 'reject')
+    try {
+      if (approved) {
+        await api.post(`/approvals/${pendingApproval.id}/approve`)
+      } else {
+        await api.post(`/approvals/${pendingApproval.id}/reject`, {
+          reject_reason: '通过工作流页面驳回',
+        })
+      }
+
+      setPendingApproval(null)
+      if (execution?.id) {
+        await refreshExecution(execution.id)
+      }
+      toast({ title: approved ? '审批已通过' : '审批已驳回' })
+    } catch (error) {
+      toast({
+        title: approved ? '审批通过失败' : '审批驳回失败',
+        description: error instanceof Error ? error.message : '未知错误',
+        variant: 'destructive',
+      })
+    } finally {
+      setApprovalBusy(null)
+    }
+  }
+
   const handleCreate = async () => {
     if (!newName.trim()) return
+    const resolvedTeamId = newTeamId.trim() || teamOptions[0]?.id || ''
+    if (!resolvedTeamId) {
+      toast({ title: '创建失败', description: '请先创建至少一个工作室', variant: 'destructive' })
+      return
+    }
     setCreating(true)
     try {
-      const workflow = await api.post<WorkflowDefinition>('/workflows', { teamId: newTeamId.trim() || 'default', name: newName.trim(), nodes: {}, edges: [] })
+      const workflow = await api.post<WorkflowDefinition>('/workflows', { teamId: resolvedTeamId, name: newName.trim(), nodes: {}, edges: [] })
       setWorkflows((current) => [workflow, ...current])
-      loadWorkflow(workflow)
+      openWorkflow(workflow)
       setNewName('')
+      setNewTeamId(teamOptions[0]?.id || '')
+      setCreateDialogOpen(false)
       toast({ title: '工作流已创建' })
     } catch (error) {
       toast({ title: '创建失败', description: error instanceof Error ? error.message : '未知错误', variant: 'destructive' })
@@ -606,9 +794,9 @@ export function WorkflowEditorPage() {
   }, [selectedNode, selectedNodeUpstreamOptions])
 
   return (
-    <div className="min-h-screen flex">
+    <div className="flex h-full min-h-0 overflow-hidden">
       {/* ── Sidebar: Workflow list ── */}
-      <div className="w-64 border-r border-white/5 flex flex-col bg-cyber-surface/20">
+      <div className="flex h-full min-h-0 w-64 flex-shrink-0 flex-col overflow-hidden border-r border-white/5 bg-cyber-surface/20">
         <div className="p-4 border-b border-white/5 flex items-center justify-between">
           <div>
             <h2 className="text-white font-bold text-sm flex items-center gap-2">
@@ -617,7 +805,7 @@ export function WorkflowEditorPage() {
             </h2>
             <p className="text-white/20 text-[10px] mt-0.5">编排 Agent 协作任务</p>
           </div>
-          <Dialog open={creating} onOpenChange={setCreating}>
+          <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
             <DialogTrigger asChild>
               <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-white/30 hover:text-white cursor-pointer">
                 <Plus className="w-4 h-4" />
@@ -636,9 +824,16 @@ export function WorkflowEditorPage() {
                 <Input
                   value={newTeamId}
                   onChange={(e) => setNewTeamId(e.target.value)}
-                  placeholder="Team ID（默认 default）"
+                  placeholder="Team ID（默认首个工作室）"
                   className="bg-cyber-bg border-white/10 text-white"
                 />
+                {teamOptions[0] ? (
+                  <p className="text-xs text-white/45">
+                    默认工作室：{teamOptions[0].name}（{teamOptions[0].id}）
+                  </p>
+                ) : (
+                  <p className="text-xs text-amber-300/80">当前没有工作室，先去“工作室”页创建一个。</p>
+                )}
                 <Button onClick={handleCreate} className="w-full bg-gradient-to-r from-cyber-amber/80 to-cyber-amber" disabled={creating || !newName.trim()}>
                   {creating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
                   创建
@@ -654,7 +849,7 @@ export function WorkflowEditorPage() {
             workflows.map((wf, i) => (
               <button
                 key={wf.id}
-                onClick={() => loadWorkflow(wf)}
+                onClick={() => openWorkflow(wf)}
                 className={cn(
                   'w-full flex items-center gap-2 p-3 rounded-xl transition-all cursor-pointer text-left animate-fade-in group',
                   selected?.id === wf.id
@@ -683,7 +878,7 @@ export function WorkflowEditorPage() {
       </div>
 
       {/* ── Canvas ── */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {!selected ? (
           <div className="flex-1 flex flex-col items-center justify-center">
             <EmptyState
@@ -693,8 +888,8 @@ export function WorkflowEditorPage() {
             />
           </div>
         ) : (
-          <div className="flex h-full">
-            <div className="flex-1 h-full relative">
+          <div className="flex h-full min-h-0 overflow-hidden">
+            <div className="relative h-full min-w-0 flex-1 overflow-hidden">
               <ReactFlow
                 nodes={executionDecorations.nodes}
                 edges={executionDecorations.edges}
@@ -706,7 +901,7 @@ export function WorkflowEditorPage() {
                 onEdgeUpdateEnd={handleEdgeUpdateEnd}
                 onNodeClick={(_, node) => setSelectedNodeId(node.id)}
                 onPaneClick={() => setSelectedNodeId(null)}
-                nodeTypes={nodeTypes}
+                nodeTypes={workflowNodeTypes}
                 defaultEdgeOptions={{ style: EDGE_STYLE, reconnectable: 'source' }}
                 edgesUpdatable
                 fitView
@@ -758,10 +953,10 @@ export function WorkflowEditorPage() {
                   <Button
                     size="sm"
                     onClick={handleExecute}
-                    disabled={execution?.status === 'running'}
+                    disabled={executionIsActive}
                     className="bg-cyber-green/15 text-cyber-green border border-cyber-green/25 hover:bg-cyber-green/25 h-8 rounded-lg"
                   >
-                    {execution?.status === 'running'
+                    {executionIsActive
                       ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" />
                       : <Play className="w-3.5 h-3.5 mr-1" />
                     }
@@ -770,7 +965,7 @@ export function WorkflowEditorPage() {
                   <Button
                     size="sm"
                     onClick={handleStop}
-                    disabled={!execution || execution.status !== 'running'}
+                    disabled={!executionIsActive}
                     variant="destructive"
                     className="h-8 rounded-lg"
                   >
@@ -792,26 +987,68 @@ export function WorkflowEditorPage() {
                   {execution && (
                     <span className={cn(
                       'text-[10px] px-2 py-0.5 rounded-full border',
-                      execution.status === 'running'
-                        ? 'bg-cyber-green/10 text-cyber-green border-cyber-green/20 animate-pulse'
-                        : execution.status === 'completed'
-                          ? 'bg-cyber-blue/10 text-cyber-blue border-cyber-blue/20'
-                          : execution.status === 'failed'
-                            ? 'bg-red-500/10 text-red-300 border-red-500/20'
-                            : 'bg-white/5 text-white/40 border-white/10'
+                      getExecutionBadge(execution.status).tone
                     )}>
-                      {execution.status === 'running' ? '运行中' : execution.status === 'completed' ? '已完成' : execution.status === 'failed' ? '失败' : execution.status}
+                      {getExecutionBadge(execution.status).label}
                     </span>
                   )}
                 </Panel>
               </ReactFlow>
             </div>
 
-            <div className="w-96 border-l border-white/5 bg-cyber-surface/30 overflow-y-auto">
+            <div className="flex h-full min-h-0 w-96 flex-shrink-0 flex-col overflow-hidden border-l border-white/5 bg-cyber-surface/30">
               <div className="p-4 border-b border-white/5">
                 <h3 className="text-white font-semibold text-sm">节点配置</h3>
               </div>
-              <div className="p-4 space-y-4">
+              <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                {execution?.status === 'waiting_approval' ? (
+                  <div ref={approvalPanelRef} className="rounded-xl border border-yellow-500/20 bg-yellow-500/8 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 space-y-1">
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-yellow-300/90">等待审批</p>
+                        <p className="text-sm font-medium text-white/90">{pendingApproval?.title || '当前执行正在等待审批'}</p>
+                        <p className="text-xs text-white/50">
+                          执行：{execution.id}
+                          {execution.currentNodeId ? ` · 节点：${execution.currentNodeId}` : ''}
+                        </p>
+                      </div>
+                      <span className="rounded-md border border-yellow-500/20 bg-yellow-500/10 px-2 py-1 text-[10px] font-medium text-yellow-200">
+                        waiting_approval
+                      </span>
+                    </div>
+                    <div className="mt-3 rounded-lg border border-white/8 bg-black/20 px-3 py-2 text-xs text-white/70">
+                      {pendingApproval?.description?.trim() || '当前执行已暂停，等待人工审批后继续。'}
+                    </div>
+                    {pendingApproval ? (
+                      <div className="mt-3 flex items-center gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={() => void handleResolveApproval(true)}
+                          disabled={approvalBusy !== null}
+                          className="border border-green-500/25 bg-green-500/15 text-green-300 hover:bg-green-500/25"
+                        >
+                          {approvalBusy === 'approve' ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : null}
+                          通过
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => void handleResolveApproval(false)}
+                          disabled={approvalBusy !== null}
+                        >
+                          {approvalBusy === 'reject' ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : null}
+                          驳回
+                        </Button>
+                      </div>
+                    ) : (
+                      <p className="mt-3 text-xs text-yellow-100/70">
+                        当前执行状态显示为等待审批，但没有查到可操作的 pending approval 记录。
+                      </p>
+                    )}
+                  </div>
+                ) : null}
                 {selectedNode ? (
                   <>
                     <div className="flex items-start justify-between gap-3">
@@ -1163,128 +1400,125 @@ export function WorkflowEditorPage() {
                   <p className="text-sm text-white/35">点击画布中的节点后可编辑其字段。</p>
                 )}
               </div>
-
               <div className="p-4 border-t border-white/5 space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-white font-semibold text-sm">定时执行</h3>
-                  <label className="flex items-center gap-2 text-xs text-white/60">
-                    <input
-                      type="checkbox"
-                      checked={schedule.enabled}
-                      onChange={(event) => setSchedule((current) => ({ ...current, enabled: event.target.checked }))}
-                    />
-                    启用
-                  </label>
-                </div>
-                <div className="space-y-2">
-                  <Label className="text-xs text-white/60">Cron 表达式</Label>
-                  <Input
-                    value={schedule.cron}
-                    onChange={(event) => setSchedule((current) => ({ ...current, cron: event.target.value }))}
-                    placeholder="例如：*/15 * * * *"
-                    className="bg-cyber-bg border-white/10 text-white"
+                <div className="flex items-center justify-between gap-3">
+                  <h3 className="text-sm font-semibold text-white">定时执行</h3>
+                  <ScheduleToggle
+                    checked={schedule.enabled}
+                    onCheckedChange={(checked) => setSchedule((current) => ({ ...current, enabled: checked }))}
+                    label={schedule.enabled ? '已启用' : '已关闭'}
                   />
                 </div>
-                <div className="space-y-2">
-                  <Label className="text-xs text-white/60">时区</Label>
-                  <Input
-                    value={schedule.timezone}
-                    onChange={(event) => setSchedule((current) => ({ ...current, timezone: event.target.value }))}
-                    placeholder="例如：Asia/Shanghai"
-                    className="bg-cyber-bg border-white/10 text-white"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-2">
-                    <Label className="text-xs text-white/60">生效开始</Label>
-                    <Input
-                      type="datetime-local"
-                      value={toDateTimeLocalValue(schedule.activeFrom)}
-                      onChange={(event) => setSchedule((current) => ({ ...current, activeFrom: fromDateTimeLocalValue(event.target.value) }))}
-                      className="bg-cyber-bg border-white/10 text-white"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label className="text-xs text-white/60">生效截止</Label>
-                    <Input
-                      type="datetime-local"
-                      value={toDateTimeLocalValue(schedule.activeUntil)}
-                      onChange={(event) => setSchedule((current) => ({ ...current, activeUntil: fromDateTimeLocalValue(event.target.value) }))}
-                      className="bg-cyber-bg border-white/10 text-white"
-                    />
-                  </div>
-                </div>
-                <div className="rounded-lg border border-white/5 bg-cyber-bg/30 p-3 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <Label className="text-xs text-white/60">每日时间段限制</Label>
-                    <label className="flex items-center gap-2 text-[11px] text-white/50">
-                      <input
-                        type="checkbox"
-                        checked={Boolean(schedule.window)}
-                        onChange={(event) =>
-                          setSchedule((current) => ({
-                            ...current,
-                            window: event.target.checked
-                              ? { start: '09:00', end: '18:00', timezone: current.timezone || DEFAULT_WORKFLOW_TIMEZONE }
-                              : null,
-                          }))
-                        }
+                {schedule.enabled ? (
+                  <>
+                    <div className="space-y-2">
+                      <Label className="text-xs text-white/60">Cron 表达式</Label>
+                      <Input
+                        value={schedule.cron}
+                        onChange={(event) => setSchedule((current) => ({ ...current, cron: event.target.value }))}
+                        placeholder="例如：*/15 * * * *"
+                        className="bg-cyber-bg border-white/10 text-white"
                       />
-                      启用时间段
-                    </label>
-                  </div>
-                  {schedule.window ? (
-                    <>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="space-y-2">
-                          <Label className="text-[11px] text-white/45">开始时间</Label>
-                          <Input
-                            type="time"
-                            value={schedule.window.start}
-                            onChange={(event) =>
-                              setSchedule((current) => ({
-                                ...current,
-                                window: current.window ? { ...current.window, start: event.target.value } : null,
-                              }))
-                            }
-                            className="bg-cyber-bg border-white/10 text-white"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label className="text-[11px] text-white/45">结束时间</Label>
-                          <Input
-                            type="time"
-                            value={schedule.window.end}
-                            onChange={(event) =>
-                              setSchedule((current) => ({
-                                ...current,
-                                window: current.window ? { ...current.window, end: event.target.value } : null,
-                              }))
-                            }
-                            className="bg-cyber-bg border-white/10 text-white"
-                          />
-                        </div>
-                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-xs text-white/60">时区</Label>
+                      <Input
+                        value={schedule.timezone}
+                        onChange={(event) => setSchedule((current) => ({ ...current, timezone: event.target.value }))}
+                        placeholder="例如：Asia/Shanghai"
+                        className="bg-cyber-bg border-white/10 text-white"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
                       <div className="space-y-2">
-                        <Label className="text-[11px] text-white/45">时间段时区</Label>
+                        <Label className="text-xs text-white/60">生效开始</Label>
                         <Input
-                          value={schedule.window.timezone || schedule.timezone}
-                          onChange={(event) =>
-                            setSchedule((current) => ({
-                              ...current,
-                              window: current.window ? { ...current.window, timezone: event.target.value } : null,
-                            }))
-                          }
-                          placeholder="例如：Asia/Shanghai"
+                          type="datetime-local"
+                          value={toDateTimeLocalValue(schedule.activeFrom)}
+                          onChange={(event) => setSchedule((current) => ({ ...current, activeFrom: fromDateTimeLocalValue(event.target.value) }))}
                           className="bg-cyber-bg border-white/10 text-white"
                         />
                       </div>
-                    </>
-                  ) : (
-                    <p className="text-xs text-white/40">关闭后仅按 Cron 触发，不限制每天的可执行时段。</p>
-                  )}
-                </div>
-                <p className="text-xs text-white/40">启用后由后端调度器轮询执行；若当前已有运行中的流程，会跳过该次触发。</p>
+                      <div className="space-y-2">
+                        <Label className="text-xs text-white/60">生效截止</Label>
+                        <Input
+                          type="datetime-local"
+                          value={toDateTimeLocalValue(schedule.activeUntil)}
+                          onChange={(event) => setSchedule((current) => ({ ...current, activeUntil: fromDateTimeLocalValue(event.target.value) }))}
+                          className="bg-cyber-bg border-white/10 text-white"
+                        />
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-white/5 bg-cyber-bg/30 p-3 space-y-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <Label className="text-xs text-white/60">每日时间段限制</Label>
+                        <ScheduleToggle
+                          checked={Boolean(schedule.window)}
+                          onCheckedChange={(checked) =>
+                            setSchedule((current) => ({
+                              ...current,
+                              window: checked
+                                ? { start: '09:00', end: '18:00', timezone: current.timezone || DEFAULT_WORKFLOW_TIMEZONE }
+                                : null,
+                            }))
+                          }
+                          label={schedule.window ? '已启用' : '已关闭'}
+                        />
+                      </div>
+                      {schedule.window ? (
+                        <>
+                          <div className="grid grid-cols-2 gap-3">
+                            <div className="space-y-2">
+                              <Label className="text-[11px] text-white/45">开始时间</Label>
+                              <Input
+                                type="time"
+                                value={schedule.window.start}
+                                onChange={(event) =>
+                                  setSchedule((current) => ({
+                                    ...current,
+                                    window: current.window ? { ...current.window, start: event.target.value } : null,
+                                  }))
+                                }
+                                className="bg-cyber-bg border-white/10 text-white"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label className="text-[11px] text-white/45">结束时间</Label>
+                              <Input
+                                type="time"
+                                value={schedule.window.end}
+                                onChange={(event) =>
+                                  setSchedule((current) => ({
+                                    ...current,
+                                    window: current.window ? { ...current.window, end: event.target.value } : null,
+                                  }))
+                                }
+                                className="bg-cyber-bg border-white/10 text-white"
+                              />
+                            </div>
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-[11px] text-white/45">时间段时区</Label>
+                            <Input
+                              value={schedule.window.timezone || schedule.timezone}
+                              onChange={(event) =>
+                                setSchedule((current) => ({
+                                  ...current,
+                                  window: current.window ? { ...current.window, timezone: event.target.value } : null,
+                                }))
+                              }
+                              placeholder="例如：Asia/Shanghai"
+                              className="bg-cyber-bg border-white/10 text-white"
+                            />
+                          </div>
+                        </>
+                      ) : (
+                        <p className="text-xs text-white/40">关闭后仅按 Cron 触发，不限制每天的可执行时段。</p>
+                      )}
+                    </div>
+                    <p className="text-xs text-white/40">启用后由后端调度器轮询执行；若当前已有运行中的流程，会跳过该次触发。</p>
+                  </>
+                ) : null}
               </div>
 
               <div className="p-4 border-t border-white/5 space-y-3">

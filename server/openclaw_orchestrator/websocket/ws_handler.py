@@ -6,18 +6,24 @@ The broadcast() function sends events to all connected clients.
 
 from __future__ import annotations
 
+import asyncio
 import json
+from concurrent.futures import Future
 from typing import Any
 
 from fastapi import WebSocket
 
 # Connected WebSocket clients
 _clients: set[WebSocket] = set()
+_main_loop: asyncio.AbstractEventLoop | None = None
 
 
 async def handle_ws_connection(websocket: WebSocket) -> None:
     """Handle a new WebSocket connection."""
+    global _main_loop
+
     await websocket.accept()
+    _main_loop = asyncio.get_running_loop()
     _clients.add(websocket)
     print("WebSocket client connected")
 
@@ -29,6 +35,23 @@ async def handle_ws_connection(websocket: WebSocket) -> None:
             "timestamp": _now(),
         }
     )
+
+    try:
+        from openclaw_orchestrator.services.gateway_connector import gateway_connector
+        gateway_payload = gateway_connector._build_gateway_status_payload(
+            connected=gateway_connector.connected,
+            error=gateway_connector.last_error,
+        )
+
+        await websocket.send_json(
+            {
+                "type": "gateway_status",
+                "payload": gateway_payload,
+                "timestamp": _now(),
+            }
+        )
+    except Exception:
+        pass
 
     try:
         while True:
@@ -53,24 +76,18 @@ def _handle_client_message(ws: WebSocket, message: Any) -> None:
 def broadcast(event: dict[str, Any]) -> None:
     """Broadcast an event to all connected WebSocket clients.
 
-    This is a sync function that schedules the async sends.
-    Safe to call from synchronous code (e.g., services).
+    Safe to call from both asyncio tasks and worker threads.
     """
-    import asyncio
-
     data = json.dumps(event, default=str)
-
-    # Try to get the running event loop; if none, skip (no clients to send to)
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        # No event loop running - we're in a sync context outside of async
-        # This can happen during startup; just skip the broadcast
-        return
-
-    dead_clients: set[WebSocket] = set()
+    target_loop = _main_loop
+    if target_loop is None or target_loop.is_closed():
+        try:
+            target_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
 
     async def _do_broadcast() -> None:
+        dead_clients: set[WebSocket] = set()
         for client in _clients.copy():
             try:
                 await client.send_text(data)
@@ -78,11 +95,27 @@ def broadcast(event: dict[str, Any]) -> None:
                 dead_clients.add(client)
         _clients.difference_update(dead_clients)
 
-    # Schedule the broadcast coroutine
-    asyncio.ensure_future(_do_broadcast())
+    try:
+        running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        running_loop = None
+
+    if running_loop is target_loop:
+        target_loop.create_task(_do_broadcast())
+        return
+
+    future: Future[None] = asyncio.run_coroutine_threadsafe(_do_broadcast(), target_loop)
+    future.add_done_callback(_consume_future_exception)
+
+
+def _consume_future_exception(future: Future[None]) -> None:
+    try:
+        future.exception()
+    except Exception:
+        pass
 
 
 def _now() -> str:
-    from datetime import datetime
+    from datetime import UTC, datetime
 
-    return datetime.utcnow().isoformat()
+    return datetime.now(UTC).isoformat()

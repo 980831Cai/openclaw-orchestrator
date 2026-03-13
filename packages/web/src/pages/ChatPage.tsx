@@ -1,11 +1,12 @@
 import { useEffect, useState, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { MessageSquare, Send, Loader2, Sparkles } from 'lucide-react'
 import { AgentAvatar } from '@/components/avatar/AgentAvatar'
 import { EmptyState } from '@/components/brand/EmptyState'
 import { Button } from '@/components/ui/button'
 import { useAgents } from '@/hooks/use-agents'
-import { useWebSocket } from '@/hooks/use-websocket'
 import { useMonitorStore } from '@/stores/monitor-store'
+import { toast } from '@/hooks/use-toast'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import type { AgentListItem, SessionMessage } from '@/types'
@@ -17,43 +18,196 @@ interface Session {
   lastActivity: string
 }
 
+interface SendMessageResult {
+  success: boolean
+  message: string
+  method?: string
+  sessionKey?: string | null
+  correlationId?: string | null
+}
+
+function parseSessionKey(value?: string | null): { agentId?: string; sessionId?: string } {
+  if (!value) return {}
+  if (value.startsWith('agent:')) {
+    const parts = value.split(':')
+    if (parts.length >= 3) {
+      return {
+        agentId: parts[1],
+        sessionId: parts.slice(2).join(':'),
+      }
+    }
+  }
+  if (value.startsWith('agent/')) {
+    const parts = value.split('/')
+    if (parts.length >= 3) {
+      return {
+        agentId: parts[1],
+        sessionId: parts.slice(2).join('/'),
+      }
+    }
+  }
+  return {}
+}
+
+function resolveMessageAgentId(message: SessionMessage): string | undefined {
+  if (message.agentId) return message.agentId
+  if (message.sessionKey) {
+    return parseSessionKey(message.sessionKey).agentId
+  }
+  return undefined
+}
+
+function resolveMessageSessionId(message: SessionMessage): string {
+  if (message.sessionId) return message.sessionId
+  if (message.sessionKey) {
+    const parsed = parseSessionKey(message.sessionKey)
+    if (parsed.sessionId) return parsed.sessionId
+  }
+  return 'main'
+}
+
+function sortSessions(items: Session[]): Session[] {
+  return [...items].sort((left, right) => {
+    if (left.id === 'main' && right.id !== 'main') return -1
+    if (right.id === 'main' && left.id !== 'main') return 1
+
+    const leftTime = Date.parse(left.lastActivity || '')
+    const rightTime = Date.parse(right.lastActivity || '')
+    if (!Number.isNaN(leftTime) || !Number.isNaN(rightTime)) {
+      return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime)
+    }
+
+    return left.name.localeCompare(right.name)
+  })
+}
+
+function resolvePreferredSessionId(items: Session[]): string {
+  if (items.length === 0) return 'main'
+  return items.find((session) => session.id === 'main')?.id ?? items[0].id
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
+function hasMessageContent(items: SessionMessage[], role: SessionMessage['role'], content: string): boolean {
+  const normalized = content.trim()
+  return items.some((message) => message.role === role && message.content.trim() === normalized)
+}
+
 export function ChatPage() {
-  const { agents, fetchAgents } = useAgents()
+  const { agents, loading: agentsLoading, fetchAgents } = useAgents()
+  const [searchParams] = useSearchParams()
   const [selectedAgent, setSelectedAgent] = useState<AgentListItem | null>(null)
   const [sessions, setSessions] = useState<Session[]>([])
   const [selectedSession, setSelectedSession] = useState<string | null>(null)
   const [messages, setMessages] = useState<SessionMessage[]>([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
+  const [sessionsLoading, setSessionsLoading] = useState(false)
+  const [messagesLoading, setMessagesLoading] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
-  useWebSocket()
 
   useEffect(() => { fetchAgents() }, [fetchAgents])
 
   // Auto-select agent from URL query ?agent=xxx (e.g., from DeskSlot click)
   useEffect(() => {
     if (agents.length === 0) return
-    const params = new URLSearchParams(window.location.search)
-    const agentParam = params.get('agent')
-    if (agentParam && !selectedAgent) {
-      const match = agents.find((a) => a.id === agentParam || a.name === agentParam)
-      if (match) setSelectedAgent(match)
+    const agentParam = searchParams.get('agent')
+    if (!agentParam) return
+
+    const match = agents.find((a) => a.id === agentParam || a.name === agentParam)
+    if (!match) return
+    if (selectedAgent?.id === match.id) return
+
+    setSelectedAgent(match)
+    setSelectedSession(null)
+    setMessages([])
+  }, [agents, searchParams, selectedAgent])
+
+  useEffect(() => {
+    if (!selectedAgent) return
+    const latest = agents.find((agent) => agent.id === selectedAgent.id)
+    if (!latest) return
+    if (latest !== selectedAgent) {
+      setSelectedAgent(latest)
     }
   }, [agents, selectedAgent])
 
   useEffect(() => {
-    if (selectedAgent) {
-      api.get<Session[]>(`/agents/${selectedAgent.id}/sessions`).then((s) => {
-        const visibleSessions = s.filter((session) => !session.id.startsWith('wf-'))
-        setSessions(visibleSessions)
-        if (visibleSessions.length > 0) setSelectedSession(visibleSessions[0].id)
+    if (!selectedAgent) {
+      setSessions([])
+      setSelectedSession(null)
+      return
+    }
+
+    let disposed = false
+
+    setSessions([])
+    setSelectedSession(null)
+    setMessages([])
+    setSessionsLoading(true)
+
+    api
+      .get<Session[]>(`/agents/${selectedAgent.id}/sessions`)
+      .then((s) => {
+        if (disposed) return
+
+        const normalizedSessions = sortSessions(
+          s.length > 0
+            ? s
+            : [{ id: 'main', name: 'Main', messageCount: 0, lastActivity: new Date().toISOString() }]
+        )
+        setSessions(normalizedSessions)
+        setSelectedSession(resolvePreferredSessionId(normalizedSessions))
       })
+      .catch(() => {
+        if (disposed) return
+        const fallbackSessions = [{ id: 'main', name: 'Main', messageCount: 0, lastActivity: '' }]
+        setSessions(fallbackSessions)
+        setSelectedSession('main')
+      })
+      .finally(() => {
+        if (!disposed) {
+          setSessionsLoading(false)
+        }
+      })
+
+    return () => {
+      disposed = true
     }
   }, [selectedAgent])
 
   useEffect(() => {
-    if (selectedAgent && selectedSession) {
-      api.get<SessionMessage[]>(`/agents/${selectedAgent.id}/sessions/${selectedSession}/messages`).then(setMessages)
+    if (!selectedAgent || !selectedSession) {
+      setMessages([])
+      setMessagesLoading(false)
+      return
+    }
+
+    let disposed = false
+    setMessagesLoading(true)
+
+    api
+      .get<SessionMessage[]>(`/agents/${selectedAgent.id}/sessions/${selectedSession}/messages`)
+      .then((nextMessages) => {
+        if (!disposed) {
+          setMessages(nextMessages)
+        }
+      })
+      .catch(() => {
+        if (!disposed) {
+          setMessages([])
+        }
+      })
+      .finally(() => {
+        if (!disposed) {
+          setMessagesLoading(false)
+        }
+      })
+
+    return () => {
+      disposed = true
     }
   }, [selectedAgent, selectedSession])
 
@@ -61,9 +215,13 @@ export function ChatPage() {
   const { realtimeMessages } = useMonitorStore()
   useEffect(() => {
     if (!selectedAgent || !selectedSession) return
-    const newMsgs = realtimeMessages.filter(
-      (m) => m.agentId === selectedAgent.id && m.sessionId === selectedSession
-    )
+    const newMsgs = realtimeMessages.filter((m) => {
+      const messageAgentId = resolveMessageAgentId(m)
+      if (messageAgentId && messageAgentId !== selectedAgent.id) {
+        return false
+      }
+      return resolveMessageSessionId(m) === selectedSession
+    })
     if (newMsgs.length === 0) return
     setMessages((prev) => {
       const existingIds = new Set(prev.map((m) => m.id))
@@ -78,24 +236,90 @@ export function ChatPage() {
     }
   }, [messages])
 
+  const refreshSessionsForAgent = async (agentId: string, preferredSessionId?: string | null) => {
+    try {
+      const nextSessions = await api.get<Session[]>(`/agents/${agentId}/sessions`)
+      const normalizedSessions = sortSessions(
+        nextSessions.length > 0
+          ? nextSessions
+          : [{ id: 'main', name: 'Main', messageCount: 0, lastActivity: new Date().toISOString() }]
+      )
+      setSessions(normalizedSessions)
+      const nextSelectedSession =
+        preferredSessionId && normalizedSessions.some((session) => session.id === preferredSessionId)
+          ? preferredSessionId
+          : resolvePreferredSessionId(normalizedSessions)
+      setSelectedSession(nextSelectedSession)
+      return nextSelectedSession
+    } catch {
+      const fallbackSessions = [{ id: 'main', name: 'Main', messageCount: 0, lastActivity: '' }]
+      setSessions(fallbackSessions)
+      setSelectedSession('main')
+      return 'main'
+    }
+  }
+
   const handleSend = async () => {
-    if (!input.trim() || !selectedAgent || !selectedSession) return
-    setSending(true)
-    await api.post(`/agents/${selectedAgent.id}/sessions/${selectedSession}/send`, { content: input.trim() })
-    setMessages((prev) => [...prev, {
-      id: `user-${Date.now()}`,
+    const content = input.trim()
+    if (!content || !selectedAgent || !selectedSession) return
+
+    const baselineMessageCount = messages.length
+    const optimisticMessage: SessionMessage = {
+      id: `pending-${Date.now()}`,
       sessionId: selectedSession,
       agentId: selectedAgent.id,
       role: 'user',
-      content: input.trim(),
+      content,
       timestamp: new Date().toISOString(),
-    }])
+    }
+
+    setSending(true)
     setInput('')
-    setSending(false)
+    setMessages((prev) => [...prev, optimisticMessage])
+
+    try {
+      const result = await api.post<SendMessageResult>(
+        `/agents/${selectedAgent.id}/sessions/${selectedSession}/send`,
+        { content }
+      )
+
+      const actualSessionId = result.sessionKey ? (parseSessionKey(result.sessionKey).sessionId ?? selectedSession) : selectedSession
+      const resolvedSessionId = await refreshSessionsForAgent(selectedAgent.id, actualSessionId)
+
+      const pollIntervals = [150, 500, 1200, 2500, 4000]
+      let latestMessages: SessionMessage[] = []
+
+      for (const delay of pollIntervals) {
+        await sleep(delay)
+        latestMessages = await api.get<SessionMessage[]>(
+          `/agents/${selectedAgent.id}/sessions/${resolvedSessionId}/messages`
+        )
+        setMessages(latestMessages)
+
+        const userMessageReady = hasMessageContent(latestMessages, 'user', content)
+        const lastMessage = latestMessages[latestMessages.length - 1]
+        const assistantCaughtUp =
+          latestMessages.length >= baselineMessageCount + 2 || lastMessage?.role === 'assistant'
+
+        if (userMessageReady && assistantCaughtUp) {
+          break
+        }
+      }
+    } catch (error) {
+      setMessages((prev) => prev.filter((message) => message.id !== optimisticMessage.id))
+      const description = error instanceof Error ? error.message : '消息发送失败'
+      toast({
+        title: '发送失败',
+        description,
+        variant: 'destructive',
+      })
+    } finally {
+      setSending(false)
+    }
   }
 
   return (
-    <div className="h-screen overflow-hidden flex">
+    <div className="flex h-full min-h-0 overflow-hidden">
       {/* ── Agent list sidebar ── */}
       <div className="w-64 border-r border-white/5 flex flex-col bg-cyber-surface/20 min-h-0">
         <div className="p-4 border-b border-white/5">
@@ -106,7 +330,11 @@ export function ChatPage() {
           <p className="text-white/20 text-[10px] mt-1">选择 Agent 开始对话</p>
         </div>
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
-          {agents.length === 0 ? (
+          {agentsLoading ? (
+            <div className="py-8">
+              <EmptyState scene="loading" title="加载 Agent 中..." description="正在同步可用会话目标" className="py-4" />
+            </div>
+          ) : agents.length === 0 ? (
             <div className="py-8">
               <EmptyState scene="no-agents" className="py-4" />
             </div>
@@ -114,7 +342,11 @@ export function ChatPage() {
             agents.map((agent) => (
               <button
                 key={agent.id}
-                onClick={() => { setSelectedAgent(agent); setMessages([]) }}
+                onClick={() => {
+                  setSelectedAgent(agent)
+                  setSelectedSession(null)
+                  setMessages([])
+                }}
                 className={cn(
                   'w-full flex items-center gap-3 p-3 rounded-xl transition-all cursor-pointer text-left group',
                   selectedAgent?.id === agent.id
@@ -145,7 +377,11 @@ export function ChatPage() {
 
       {/* ── Chat area ── */}
       <div className="flex-1 flex flex-col min-h-0">
-        {!selectedAgent ? (
+        {agentsLoading ? (
+          <div className="flex-1 flex flex-col items-center justify-center">
+            <EmptyState scene="loading" title="加载通信频道..." description="正在同步 Agent 与会话列表" />
+          </div>
+        ) : !selectedAgent ? (
           <div className="flex-1 flex flex-col items-center justify-center">
             <EmptyState
               scene="no-messages"
@@ -163,9 +399,13 @@ export function ChatPage() {
                 <p className="text-white/25 text-[10px] flex items-center gap-1">
                   <span className={cn(
                     'w-1.5 h-1.5 rounded-full inline-block',
-                    selectedAgent.status === 'busy' ? 'bg-cyber-green animate-pulse' : 'bg-cyber-blue'
+                    selectedAgent.status === 'busy'
+                      ? 'bg-cyber-green animate-pulse'
+                      : selectedAgent.status === 'idle'
+                        ? 'bg-cyber-blue'
+                        : 'bg-white/20'
                   )} />
-                  {sessions.length} 会话
+                  {sessions.length > 1 ? `${sessions.length} 会话` : '主会话'}
                   {selectedAgent.model && (
                     <span className="ml-2 px-1.5 py-0.5 rounded bg-cyber-purple/10 text-cyber-lavender/50 text-[9px] border border-cyber-purple/10">
                       {selectedAgent.model}
@@ -174,7 +414,7 @@ export function ChatPage() {
                 </p>
               </div>
               {/* Session tabs */}
-              {sessions.length > 1 && (
+              {!sessionsLoading && sessions.length > 1 && (
                 <div className="flex gap-1">
                   {sessions.slice(0, 5).map((s) => (
                     <button
@@ -196,7 +436,14 @@ export function ChatPage() {
 
             {/* Messages */}
             <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto p-6 space-y-4">
-              {messages.length === 0 ? (
+              {sessionsLoading || messagesLoading ? (
+                <EmptyState
+                  scene="loading"
+                  title={sessionsLoading ? '加载会话中...' : '加载消息中...'}
+                  description={sessionsLoading ? '正在解析主会话与历史会话' : `正在读取 ${selectedAgent.name} 的消息记录`}
+                  className="h-full"
+                />
+              ) : messages.length === 0 ? (
                 <EmptyState
                   scene="no-messages"
                   title="暂无消息"

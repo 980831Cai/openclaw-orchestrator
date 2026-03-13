@@ -29,7 +29,7 @@ class FileManager:
         full_path = validate_path(str(self._home / relative_path))
         if not os.path.exists(full_path):
             raise FileNotFoundError(f"File not found: {full_path}")
-        with open(full_path, "r", encoding="utf-8") as f:
+        with open(full_path, "r", encoding="utf-8-sig") as f:
             return f.read()
 
     def read_json(self, relative_path: str) -> Any:

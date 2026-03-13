@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import UTC, datetime
 from typing import Any
 
 from openclaw_orchestrator.config import settings
@@ -16,8 +17,33 @@ from openclaw_orchestrator.config import settings
 logger = logging.getLogger(__name__)
 
 
+class ChatDeliveryError(RuntimeError):
+    """Raised when a chat message cannot be delivered to OpenClaw."""
+
+
 class ChatService:
     """Service for reading agent chat sessions."""
+
+    @staticmethod
+    def _normalize_timestamp(value: Any) -> str:
+        if isinstance(value, (int, float)):
+            try:
+                return datetime.fromtimestamp(float(value) / 1000.0, tz=UTC).isoformat()
+            except (OverflowError, OSError, ValueError):
+                return ""
+        if isinstance(value, str):
+            return value
+        return ""
+
+    @staticmethod
+    def _session_key_suffix(session_key: str | None) -> str:
+        value = str(session_key or "").strip()
+        if not value.startswith("agent:"):
+            return ""
+        parts = value.split(":", 2)
+        if len(parts) < 3:
+            return ""
+        return parts[2].strip()
 
     @staticmethod
     def _extract_text_content(content: Any) -> str:
@@ -60,12 +86,105 @@ class ChatService:
             "agentId": agent_id,
             "role": message.get("role", "assistant"),
             "content": cls._extract_text_content(message.get("content", "")),
-            "timestamp": raw.get("timestamp", message.get("timestamp", "")),
+            "timestamp": cls._normalize_timestamp(
+                raw.get("timestamp", message.get("timestamp", ""))
+            ),
             "metadata": message.get("metadata") or raw.get("metadata"),
         }
 
-    def list_sessions(self, agent_id: str) -> list[dict[str, Any]]:
-        """List all sessions for an agent."""
+    @classmethod
+    def _normalize_gateway_message(
+        cls,
+        raw: dict[str, Any],
+        *,
+        agent_id: str,
+        session_id: str,
+        fallback_id: str,
+    ) -> dict[str, Any]:
+        return {
+            "id": str(raw.get("id") or fallback_id),
+            "sessionId": session_id,
+            "agentId": agent_id,
+            "role": str(raw.get("role") or "assistant"),
+            "content": cls._extract_text_content(raw.get("content", "")),
+            "timestamp": cls._normalize_timestamp(raw.get("timestamp")),
+            "metadata": {
+                key: value
+                for key, value in raw.items()
+                if key
+                not in {"id", "role", "content", "timestamp", "agentId", "sessionId"}
+            }
+            or None,
+        }
+
+    @staticmethod
+    def _sort_sessions(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return sorted(
+            sessions,
+            key=lambda session: (
+                0 if str(session.get("id") or "") == "main" else 1,
+                str(session.get("lastActivity") or ""),
+            ),
+            reverse=False,
+        )
+
+    @classmethod
+    def _is_internal_gateway_session(
+        cls, *, session_id: str, session_key: str | None = None
+    ) -> bool:
+        if session_id == "main":
+            return False
+        suffix = cls._session_key_suffix(session_key)
+        return bool(suffix) and suffix.lower().startswith(
+            ("wf-", "approval-", "meeting-", "meeting-conclude-", "debate-", "orchestrator-")
+        )
+
+    async def _list_sessions_from_gateway(self, agent_id: str) -> list[dict[str, Any]]:
+        from openclaw_orchestrator.services.gateway_connector import gateway_connector
+
+        if not gateway_connector.connected:
+            return []
+
+        sessions = await gateway_connector.list_active_sessions(agent_id)
+        normalized: list[dict[str, Any]] = []
+        for index, session in enumerate(sessions):
+            session_id = str(session.get("sessionId") or "").strip()
+            if not session_id:
+                continue
+            if self._is_internal_gateway_session(
+                session_id=session_id,
+                session_key=str(session.get("key") or ""),
+            ):
+                continue
+            normalized.append(
+                {
+                    "id": session_id,
+                    "name": "main" if session_id == "main" else session_id,
+                    "messageCount": int(session.get("messageCount") or 0),
+                    "lastActivity": self._normalize_timestamp(session.get("updatedAt")),
+                }
+            )
+
+        if not any(session["id"] == "main" for session in normalized):
+            normalized.insert(
+                0,
+                {
+                    "id": "main",
+                    "name": "main",
+                    "messageCount": 0,
+                    "lastActivity": "",
+                },
+            )
+
+        deduped: dict[str, dict[str, Any]] = {}
+        for session in normalized:
+            deduped[session["id"]] = session
+        return self._sort_sessions(list(deduped.values()))
+
+    def _list_sessions_from_files(self, agent_id: str) -> list[dict[str, Any]]:
+        """List all sessions for an agent from local JSONL files."""
+        from openclaw_orchestrator.services.openclaw_bridge import OpenClawBridge
+
         sessions_dir = os.path.join(
             settings.openclaw_home, "agents", agent_id, "sessions"
         )
@@ -76,6 +195,9 @@ class ChatService:
         result = []
 
         for file in files:
+            session_id = file.removesuffix(".jsonl")
+            if OpenClawBridge.is_transient_session_id(session_id):
+                continue
             file_path = os.path.join(sessions_dir, file)
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
@@ -91,7 +213,7 @@ class ChatService:
                     normalized = self._normalize_entry(
                         parsed,
                         agent_id=agent_id,
-                        session_id=file.removesuffix(".jsonl"),
+                        session_id=session_id,
                         fallback_id=f"{file}-tail",
                     )
                     if normalized:
@@ -105,12 +227,11 @@ class ChatService:
                     if self._normalize_entry(
                         parsed,
                         agent_id=agent_id,
-                        session_id=file.removesuffix(".jsonl"),
+                        session_id=session_id,
                         fallback_id=f"{file}-{index}",
                     ):
                         message_count += 1
 
-            session_id = file.removesuffix(".jsonl")
             result.append(
                 {
                     "id": session_id,
@@ -120,16 +241,65 @@ class ChatService:
                 }
             )
 
-        return result
+        return self._sort_sessions(result)
 
-    def get_messages(
+    async def list_sessions(self, agent_id: str) -> list[dict[str, Any]]:
+        gateway_sessions = await self._list_sessions_from_gateway(agent_id)
+        if gateway_sessions:
+            return gateway_sessions
+        return self._list_sessions_from_files(agent_id)
+
+    async def _get_messages_from_gateway(
+        self,
+        agent_id: str,
+        session_id: str,
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        from openclaw_orchestrator.services.gateway_connector import gateway_connector
+        from openclaw_orchestrator.services.openclaw_bridge import openclaw_bridge
+
+        if not gateway_connector.connected:
+            return []
+
+        session_key = await openclaw_bridge._resolve_gateway_session_key(
+            agent_id=agent_id,
+            session_id=session_id,
+        )
+        if not session_key:
+            return []
+
+        raw_messages = await gateway_connector.get_chat_history(
+            session_key=session_key,
+            limit=max(1, min(limit + offset, 1000)),
+        )
+        if not raw_messages:
+            return []
+
+        normalized = [
+            self._normalize_gateway_message(
+                message,
+                agent_id=agent_id,
+                session_id=session_id,
+                fallback_id=f"gateway-{index}",
+            )
+            for index, message in enumerate(raw_messages)
+            if isinstance(message, dict)
+        ]
+        if offset:
+            normalized = normalized[:-offset] if offset < len(normalized) else []
+        if limit:
+            normalized = normalized[-limit:]
+        return normalized
+
+    def _get_messages_from_files(
         self,
         agent_id: str,
         session_id: str,
         limit: int = 100,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
-        """Get messages from a session file."""
+        """Get messages from a local session file."""
         file_path = os.path.join(
             settings.openclaw_home,
             "agents",
@@ -174,6 +344,23 @@ class ChatService:
 
         return messages
 
+    async def get_messages(
+        self,
+        agent_id: str,
+        session_id: str,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        gateway_messages = await self._get_messages_from_gateway(
+            agent_id=agent_id,
+            session_id=session_id,
+            limit=limit,
+            offset=offset,
+        )
+        if gateway_messages:
+            return gateway_messages
+        return self._get_messages_from_files(agent_id, session_id, limit, offset)
+
     async def send_message(
         self, agent_id: str, session_id: str, content: str
     ) -> dict[str, Any]:
@@ -212,16 +399,22 @@ class ChatService:
                 model=agent_model,
             )
             method = str(result.get("channel") or "unknown")
+            success = bool(result.get("success", True))
+            message = str(result.get("message") or "Message sent")
+            if not success:
+                raise ChatDeliveryError(message)
             return {
-                "success": bool(result.get("success", True)),
-                "message": str(result.get("message") or "Message sent"),
+                "success": success,
+                "message": message,
                 "method": method,
                 "sessionKey": result.get("sessionKey"),
                 "correlationId": result.get("correlationId"),
             }
+        except ChatDeliveryError:
+            raise
         except Exception as exc:
             logger.error("Failed to send message to %s: %s", agent_id, exc)
-            return {"success": False, "message": f"Delivery failed: {exc}"}
+            raise ChatDeliveryError(f"Delivery failed: {exc}") from exc
 
 
 chat_service = ChatService()
