@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react"
 import { defineConfig } from "vite"
 
 export default defineConfig(() => {
-  const apiTarget = process.env.ORCHESTRATOR_API_URL || 'http://localhost:3721'
+  const apiTarget = process.env.ORCHESTRATOR_API_URL || 'http://127.0.0.1:3721'
   const wsTarget = process.env.ORCHESTRATOR_WS_URL || apiTarget.replace(/^http/i, 'ws')
 
   return {

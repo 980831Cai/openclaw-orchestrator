@@ -150,11 +150,7 @@ app.add_middleware(ApiKeyMiddleware)
 
 # ─── Global exception handlers ───
 @app.exception_handler(ValueError)
-<<<<<<< HEAD
 async def value_error_handler(_request: Request, exc: ValueError):
-=======
-async def value_error_handler(request: Request, exc: ValueError):
->>>>>>> github/master
     """Return 400 for ValueError (validation failures)."""
     return JSONResponse(
         status_code=400,

@@ -13,16 +13,16 @@ export function normalizeAgentStatus(status: AgentStatus | string | undefined): 
   }
 }
 
-export function isGatewayStatusHealthy(gatewayConnected: boolean, gatewayRuntimeRunning: boolean): boolean {
-  return gatewayConnected && gatewayRuntimeRunning
+export function isGatewayStatusHealthy(gatewayConnected: boolean, gatewayRuntimeReady: boolean): boolean {
+  return gatewayConnected && gatewayRuntimeReady
 }
 
 export function resolveEffectiveAgentStatus(
   status: AgentStatus | string | undefined,
   gatewayConnected: boolean,
-  gatewayRuntimeRunning: boolean,
+  gatewayRuntimeReady: boolean,
 ): AgentStatus {
-  if (!isGatewayStatusHealthy(gatewayConnected, gatewayRuntimeRunning)) {
+  if (!isGatewayStatusHealthy(gatewayConnected, gatewayRuntimeReady)) {
     return 'offline'
   }
 

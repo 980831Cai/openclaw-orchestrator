@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { resolveEffectiveAgentStatus } from '@/lib/effective-agent-status'
 import type {
   AgentListItem,
   CommunicationEvent,
@@ -70,7 +71,7 @@ export interface RankedAgent {
 
 export interface LiveFeedItem {
   id: string
-  kind: 'communication' | 'message'
+  kind: 'communication' | 'message' | 'workflow' | 'notification'
   title: string
   summary: string
   timestamp: string
@@ -87,9 +88,9 @@ export const ROOM_COLORS = [
 ] as const
 
 const STATUS_LABELS: Record<AgentListItem['status'], string> = {
-  busy: '执行中',
+  busy: '忙碌',
   idle: '待命',
-  scheduled: '值守中',
+  scheduled: '值守',
   error: '异常',
   offline: '离线',
 }
@@ -103,40 +104,27 @@ const STATUS_SCORES: Record<AgentListItem['status'], number> = {
 }
 
 const EMPIRE_STATUS_LABELS: Record<EmpireStatus, string> = {
-  idle: '待命',
-  working: '专注执行',
-  delegating: '协同分发',
-  reviewing: '复核结果',
-  meeting: '会议协作',
-  approval: '等待审批',
-  returning: '返回工位',
-  break: '暂停恢复',
+  idle: '空闲',
+  working: '执行中',
+  delegating: '分发中',
+  reviewing: '评审中',
+  meeting: '协同中',
+  approval: '待审批',
+  returning: '回传中',
+  break: '阻塞',
   offline: '离线',
 }
 
 const RANK_TIERS = [
-  { name: '待命', minScore: 0, color: '#94A3B8', glow: 'rgba(148,163,184,0.24)', icon: '🥚' },
-  { name: '在线', minScore: 35, color: '#38BDF8', glow: 'rgba(56,189,248,0.24)', icon: '📡' },
-  { name: '活跃', minScore: 60, color: '#A78BFA', glow: 'rgba(167,139,250,0.28)', icon: '⚡' },
-  { name: '高负载', minScore: 90, color: '#22C55E', glow: 'rgba(34,197,94,0.28)', icon: '🚀' },
+  { name: '新兵', minScore: 0, color: '#94A3B8', glow: 'rgba(148,163,184,0.24)', icon: '🥉' },
+  { name: '骨干', minScore: 35, color: '#38BDF8', glow: 'rgba(56,189,248,0.24)', icon: '🥈' },
+  { name: '核心', minScore: 60, color: '#A78BFA', glow: 'rgba(167,139,250,0.28)', icon: '⭐' },
+  { name: '王牌', minScore: 90, color: '#22C55E', glow: 'rgba(34,197,94,0.28)', icon: '👑' },
 ] as const
-
-function normalizeResolvedStatus(status: string | undefined): AgentListItem['status'] {
-  switch (status) {
-    case 'busy':
-    case 'idle':
-    case 'scheduled':
-    case 'error':
-    case 'offline':
-      return status
-    default:
-      return 'offline'
-  }
-}
 
 function containsApprovalKeyword(value?: string | null) {
   if (!value) return false
-  return /(审批|approve|approval|review request|待审核)/i.test(value)
+  return /(审批|approve|approval|review request|review)/i.test(value)
 }
 
 function notificationMatchesAgent(notification: Notification, agent: AgentListItem) {
@@ -146,13 +134,18 @@ function notificationMatchesAgent(notification: Notification, agent: AgentListIt
 
 function recentMsWithin(timestamp: string | number | Date | undefined, thresholdMs: number) {
   if (!timestamp) return false
-  const value = typeof timestamp === 'string' ? new Date(timestamp).getTime() : timestamp instanceof Date ? timestamp.getTime() : timestamp
+  const value =
+    typeof timestamp === 'string'
+      ? new Date(timestamp).getTime()
+      : timestamp instanceof Date
+        ? timestamp.getTime()
+        : timestamp
   if (!Number.isFinite(value)) return false
   return Date.now() - value <= thresholdMs
 }
 
 function formatWorkflowReason(signal: WorkflowRuntimeSignal, fallback: string) {
-  return signal.nodeLabel ? `${fallback}（节点：${signal.nodeLabel}）` : fallback
+  return signal.nodeLabel ? `${fallback} · ${signal.nodeLabel}` : fallback
 }
 
 function deriveEmpireStatus(params: {
@@ -166,11 +159,11 @@ function deriveEmpireStatus(params: {
   const { agent, resolvedStatus, relatedEvents, relatedMessages, notifications, workflowSignals } = params
 
   if (resolvedStatus === 'offline') {
-    return { empireStatus: 'offline', empireLabel: EMPIRE_STATUS_LABELS.offline, empireReason: 'Agent 当前不在线' }
+    return { empireStatus: 'offline', empireLabel: EMPIRE_STATUS_LABELS.offline, empireReason: 'Agent 当前离线' }
   }
 
   if (resolvedStatus === 'error') {
-    return { empireStatus: 'break', empireLabel: EMPIRE_STATUS_LABELS.break, empireReason: '最近出现错误或执行失败' }
+    return { empireStatus: 'break', empireLabel: EMPIRE_STATUS_LABELS.break, empireReason: '最近一次执行出现异常' }
   }
 
   const explicitApprovalSignal = workflowSignals.find(
@@ -180,7 +173,7 @@ function deriveEmpireStatus(params: {
     return {
       empireStatus: 'approval',
       empireLabel: EMPIRE_STATUS_LABELS.approval,
-      empireReason: formatWorkflowReason(explicitApprovalSignal, '工作流正在等待审批'),
+      empireReason: formatWorkflowReason(explicitApprovalSignal, '工作流等待审批'),
     }
   }
 
@@ -189,7 +182,7 @@ function deriveEmpireStatus(params: {
     return {
       empireStatus: 'meeting',
       empireLabel: EMPIRE_STATUS_LABELS.meeting,
-      empireReason: formatWorkflowReason(explicitMeetingSignal, '工作流正在执行会议/辩论节点'),
+      empireReason: formatWorkflowReason(explicitMeetingSignal, '参与协同节点'),
     }
   }
 
@@ -199,12 +192,12 @@ function deriveEmpireStatus(params: {
     || notifications.some((notification) => containsApprovalKeyword(notification.title) || containsApprovalKeyword(notification.message))
 
   if (hasApprovalSignal) {
-    return { empireStatus: 'approval', empireLabel: EMPIRE_STATUS_LABELS.approval, empireReason: '任务或消息中出现审批信号' }
+    return { empireStatus: 'approval', empireLabel: EMPIRE_STATUS_LABELS.approval, empireReason: '存在审批相关上下文' }
   }
 
   const latestMessage = relatedMessages[0]
   if (recentMsWithin(latestMessage?.timestamp, 45_000) && latestMessage?.role === 'assistant' && relatedEvents.length === 0) {
-    return { empireStatus: 'returning', empireLabel: EMPIRE_STATUS_LABELS.returning, empireReason: '刚刚回复消息，正在返回工位' }
+    return { empireStatus: 'returning', empireLabel: EMPIRE_STATUS_LABELS.returning, empireReason: '刚生成回复，正在回传结果' }
   }
 
   const veryRecentEvents = relatedEvents.filter((event) => recentMsWithin(event.timestamp, 120_000))
@@ -212,13 +205,13 @@ function deriveEmpireStatus(params: {
   const outgoingCount = veryRecentEvents.filter((event) => event.fromAgentId === agent.id).length
 
   if (veryRecentEvents.length >= 2 && incomingCount > 0 && outgoingCount > 0) {
-    return { empireStatus: 'meeting', empireLabel: EMPIRE_STATUS_LABELS.meeting, empireReason: '短时间内发生双向协作通信' }
+    return { empireStatus: 'meeting', empireLabel: EMPIRE_STATUS_LABELS.meeting, empireReason: '最近有双向协作事件' }
   }
   if (incomingCount > 0 && outgoingCount === 0) {
-    return { empireStatus: 'reviewing', empireLabel: EMPIRE_STATUS_LABELS.reviewing, empireReason: '最近主要在接收他人结果' }
+    return { empireStatus: 'reviewing', empireLabel: EMPIRE_STATUS_LABELS.reviewing, empireReason: '正在处理上游输入' }
   }
   if (outgoingCount > 0) {
-    return { empireStatus: 'delegating', empireLabel: EMPIRE_STATUS_LABELS.delegating, empireReason: '最近正在向外分发或请求协作' }
+    return { empireStatus: 'delegating', empireLabel: EMPIRE_STATUS_LABELS.delegating, empireReason: '最近向其他 Agent 分发了任务' }
   }
 
   const latestWorkflowSignal = workflowSignals[0]
@@ -226,13 +219,13 @@ function deriveEmpireStatus(params: {
     return {
       empireStatus: 'working',
       empireLabel: EMPIRE_STATUS_LABELS.working,
-      empireReason: formatWorkflowReason(latestWorkflowSignal, agent.currentTask || '工作流任务执行中'),
+      empireReason: formatWorkflowReason(latestWorkflowSignal, agent.currentTask || '正在执行工作流任务'),
     }
   }
 
   const latestNotification = notifications[0]
   if (latestNotification && recentMsWithin(latestNotification.createdAt, 60_000)) {
-    return { empireStatus: 'reviewing', empireLabel: EMPIRE_STATUS_LABELS.reviewing, empireReason: '刚收到最新执行通知' }
+    return { empireStatus: 'reviewing', empireLabel: EMPIRE_STATUS_LABELS.reviewing, empireReason: '最近收到系统通知' }
   }
 
   if (
@@ -243,15 +236,15 @@ function deriveEmpireStatus(params: {
     return {
       empireStatus: 'working',
       empireLabel: EMPIRE_STATUS_LABELS.working,
-      empireReason: agent.currentTask || '存在近期任务或消息活动',
+      empireReason: agent.currentTask || '近期存在活跃上下文',
     }
   }
 
   if (resolvedStatus === 'scheduled') {
-    return { empireStatus: 'idle', empireLabel: '值守中', empireReason: '当前处于排班值守时段，等待新任务' }
+    return { empireStatus: 'idle', empireLabel: '待命中', empireReason: '已编入调度，但当前没有执行任务' }
   }
 
-  return { empireStatus: 'idle', empireLabel: EMPIRE_STATUS_LABELS.idle, empireReason: '没有活跃任务' }
+  return { empireStatus: 'idle', empireLabel: EMPIRE_STATUS_LABELS.idle, empireReason: '暂无活跃任务' }
 }
 
 export function resolveAgents(
@@ -262,18 +255,26 @@ export function resolveAgents(
     messages?: SessionMessage[]
     notifications?: Notification[]
     workflowSignals?: Map<string, WorkflowRuntimeSignal> | WorkflowRuntimeSignal[]
+    gatewayConnected?: boolean
+    gatewayRuntimeReady?: boolean
   },
 ): ResolvedAgent[] {
   const events = context?.events ?? []
   const messages = context?.messages ?? []
   const notifications = context?.notifications ?? []
+  const gatewayConnected = context?.gatewayConnected ?? true
+  const gatewayRuntimeReady = context?.gatewayRuntimeReady ?? true
   const workflowSignals =
     context?.workflowSignals instanceof Map
       ? Array.from(context.workflowSignals.values())
       : context?.workflowSignals ?? []
 
   return agents.map((agent) => {
-    const gatewayStatus = normalizeResolvedStatus(statuses.get(agent.id)?.status ?? agent.status)
+    const gatewayStatus = resolveEffectiveAgentStatus(
+      statuses.get(agent.id)?.status ?? agent.status,
+      gatewayConnected,
+      gatewayRuntimeReady,
+    )
     const relatedEvents = events
       .filter((event) => event.fromAgentId === agent.id || event.toAgentId === agent.id)
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
@@ -345,8 +346,8 @@ export function buildTeamRooms(teams: TeamListItem[], agents: ResolvedAgent[]): 
   if (unassigned.length > 0) {
     rooms.push({
       id: '__unassigned__',
-      name: '未分配房间',
-      description: '暂时未加入任何工作室的 Agent',
+      name: '未分组',
+      description: '尚未加入任何工作室的 Agent',
       memberCount: unassigned.length,
       activeCount: unassigned.filter((agent) => agent.resolvedStatus === 'busy').length,
       agents: unassigned,
@@ -385,7 +386,7 @@ export function buildAgentRooms(teams: TeamListItem[], agents: ResolvedAgent[]):
         ? `当前任务：${agent.currentTask}`
         : teamName
           ? `所属工作室：${teamName}`
-          : '未加入工作室，当前待命'
+          : '暂未加入工作室'
 
       return {
         id: `agent-room:${agent.id}`,
@@ -420,8 +421,13 @@ export function buildRankedAgents(agents: ResolvedAgent[]): RankedAgent[] {
     }))
 }
 
-export function buildLiveFeed(events: CommunicationEvent[], messages: SessionMessage[]): LiveFeedItem[] {
-  const eventItems: LiveFeedItem[] = events.slice(-12).map((event) => ({
+export function buildLiveFeed(
+  events: CommunicationEvent[],
+  messages: SessionMessage[],
+  workflowSignals: WorkflowRuntimeSignal[] = [],
+  notifications: Notification[] = [],
+): LiveFeedItem[] {
+  const eventItems: LiveFeedItem[] = events.map((event) => ({
     id: `evt-${event.id}`,
     kind: 'communication',
     title: `${event.fromAgentId} → ${event.toAgentId}`,
@@ -435,16 +441,52 @@ export function buildLiveFeed(events: CommunicationEvent[], messages: SessionMes
           : 'border-violet-400/30 bg-violet-500/10 text-violet-200',
   }))
 
-  const messageItems: LiveFeedItem[] = messages.slice(-12).map((message, index) => ({
+  const messageItems: LiveFeedItem[] = messages.map((message, index) => ({
     id: `msg-${message.id ?? index}`,
     kind: 'message',
-    title: `${message.agentId ?? '未知 Agent'} · ${message.role === 'assistant' ? '回复' : message.role === 'user' ? '输入' : '系统'}`,
+    title: `${message.agentId ?? '未知 Agent'} · ${message.role === 'assistant' ? '回复' : message.role === 'user' ? '提问' : '系统'}`,
     summary: message.content,
     timestamp: message.timestamp ?? new Date().toISOString(),
     accentClass: 'border-cyan-400/30 bg-cyan-500/10 text-cyan-200',
   }))
 
-  return [...eventItems, ...messageItems]
+  const workflowItems: LiveFeedItem[] = workflowSignals.map((signal) => ({
+    id: `workflow-${signal.executionId}`,
+    kind: 'workflow',
+    title: signal.workflowName ?? signal.workflowId ?? `执行 ${signal.executionId.slice(0, 8)}`,
+    summary: [
+      `状态 ${signal.status}`,
+      signal.currentNodeId ? `节点 ${signal.currentNodeId}` : null,
+      signal.nodeLabel ? signal.nodeLabel : null,
+    ]
+      .filter(Boolean)
+      .join(' · '),
+    timestamp: signal.updatedAt ?? new Date().toISOString(),
+    accentClass:
+      signal.status === 'failed'
+        ? 'border-rose-400/30 bg-rose-500/10 text-rose-200'
+        : signal.status === 'completed'
+          ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200'
+          : signal.status === 'waiting_approval'
+            ? 'border-amber-400/30 bg-amber-500/10 text-amber-200'
+            : 'border-violet-400/30 bg-violet-500/10 text-violet-200',
+  }))
+
+  const notificationItems: LiveFeedItem[] = notifications.map((notification) => ({
+    id: `notification-${notification.id}`,
+    kind: 'notification',
+    title: notification.title,
+    summary: notification.message,
+    timestamp: notification.createdAt,
+    accentClass:
+      notification.type === 'workflow_error'
+        ? 'border-rose-400/30 bg-rose-500/10 text-rose-200'
+        : notification.type === 'workflow_completed'
+          ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200'
+          : 'border-amber-400/30 bg-amber-500/10 text-amber-200',
+  }))
+
+  return [...eventItems, ...messageItems, ...workflowItems, ...notificationItems]
     .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
     .slice(0, 14)
 }
@@ -454,23 +496,34 @@ export function buildHudStats(params: {
   activeCount: number
   roomCount: number
   eventCount: number
-  gatewayConnected: boolean
+  gatewayRpcConnected: boolean
+  gatewayRuntimeRunning: boolean
+  gatewayRuntimeReady?: boolean
   messageCount: number
+  activeWorkflowCount?: number
 }): HudStat[] {
   return [
     {
-      id: 'gateway',
-      label: 'GATEWAY',
-      value: params.gatewayConnected ? '在线' : '离线',
-      sub: params.gatewayConnected ? '实时事件已接入' : '当前不可用',
-      color: params.gatewayConnected ? '#34D399' : '#F87171',
-      icon: params.gatewayConnected ? '📡' : '📴',
+      id: 'gateway-rpc',
+      label: 'GATEWAY RPC',
+      value: params.gatewayRpcConnected ? '在线' : '离线',
+      sub: params.gatewayRpcConnected ? '后端已连上 Gateway RPC' : '后端尚未连上 Gateway RPC',
+      color: params.gatewayRpcConnected ? '#34D399' : '#F87171',
+      icon: params.gatewayRpcConnected ? '🟢' : '🔴',
+    },
+    {
+      id: 'gateway-runtime',
+      label: 'GATEWAY PROC',
+      value: params.gatewayRuntimeReady ? '已就绪' : params.gatewayRuntimeRunning ? '待响应' : '未运行',
+      sub: params.gatewayRuntimeReady ? '本机 Gateway 已通过健康探测' : params.gatewayRuntimeRunning ? '进程已启动，但健康探测尚未通过' : '本机 Gateway 进程未启动',
+      color: params.gatewayRuntimeReady ? '#34D399' : params.gatewayRuntimeRunning ? '#F59E0B' : '#94A3B8',
+      icon: params.gatewayRuntimeReady ? '🟢' : params.gatewayRuntimeRunning ? '🟡' : '⚪',
     },
     {
       id: 'agents',
       label: 'AGENTS',
       value: params.agentCount,
-      sub: `活跃 ${params.activeCount} / 总数 ${params.agentCount}`,
+      sub: `活跃 ${params.activeCount} / 总计 ${params.agentCount}`,
       color: '#8B5CF6',
       icon: '🤖',
     },
@@ -478,17 +531,25 @@ export function buildHudStats(params: {
       id: 'rooms',
       label: 'ROOMS',
       value: params.roomCount,
-      sub: '按工作室分区展示',
+      sub: '当前可视工作室',
       color: '#38BDF8',
       icon: '🏢',
+    },
+    {
+      id: 'workflows',
+      label: 'WORKFLOWS',
+      value: params.activeWorkflowCount ?? 0,
+      sub: '运行中 / 待审批 / 已启用定时',
+      color: '#22D3EE',
+      icon: '🕸️',
     },
     {
       id: 'events',
       label: 'EVENTS',
       value: params.eventCount,
-      sub: `消息 ${params.messageCount} · 通信 ${params.eventCount}`,
+      sub: `消息 ${params.messageCount} · 事件 ${params.eventCount}`,
       color: '#F59E0B',
-      icon: '🛰️',
+      icon: '📡',
     },
   ]
 }

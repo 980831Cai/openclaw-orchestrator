@@ -57,8 +57,19 @@ class RuntimeService:
             "pid": None,
             "source": "unmanaged",
         }
-        responsive = self._probe_gateway(host, port) if manageable else False
+        probe = self._probe_gateway_status(host, port) if manageable else {
+            "responsive": False,
+            "error": None,
+        }
+        responsive = bool(probe["responsive"])
         running = bool(process["running"] or responsive)
+        ready = bool(running and responsive)
+        state = self._gateway_runtime_state(
+            manageable=manageable,
+            running=running,
+            responsive=responsive,
+        )
+        process_command = self._describe_process_command(process.get("pid")) if state == "listening" else None
         log_path = self._gateway_log_dir() / "gateway.log"
         error_log_path = self._gateway_log_dir() / "gateway.err.log"
         should_surface_logs = not running or not responsive
@@ -76,8 +87,12 @@ class RuntimeService:
             "cliPath": cli_path,
             "running": running,
             "responsive": responsive,
+            "ready": ready,
+            "state": state,
+            "probeError": probe.get("error"),
             "pid": process.get("pid"),
             "detectionSource": process.get("source"),
+            "processCommand": process_command,
             "logFile": str(log_path),
             "logTail": log_tail or None,
             "errorLogFile": str(error_log_path),
@@ -89,6 +104,8 @@ class RuntimeService:
                 rpc_gateway_url=rpc_gateway_url,
                 running=running,
                 responsive=responsive,
+                state=state,
+                probe_error=probe.get("error"),
             ),
         }
 
@@ -239,13 +256,20 @@ class RuntimeService:
         rpc_gateway_url: str,
         running: bool,
         responsive: bool,
+        state: str,
+        probe_error: str | None,
     ) -> str | None:
         if not manageable:
             return f"当前运行时 Gateway 目标是 {host}，不是本机地址，面板不能直接启动或停止它。"
         if rpc_host and rpc_host not in _LOCAL_GATEWAY_HOSTS:
             return f"当前 RPC 连接目标是 {rpc_gateway_url}，但运行时管理仍指向本机 Gateway。"
-        if running and not responsive:
-            return "Gateway 进程存在，但 RPC 探测未通过，可能仍在启动或鉴权配置不匹配。"
+        if state == "listening":
+            detail = f"：{probe_error}" if probe_error else ""
+            return f"Gateway 进程存在，但 RPC 探测未通过，可能仍在启动或鉴权配置不匹配{detail}"
+        if state == "stopped":
+            return "Gateway 当前未运行。"
+        if state == "ready" and running and responsive:
+            return "Gateway 已启动且 RPC 可用。"
         return None
 
     def _ensure_runtime_config(self) -> dict[str, Any]:
@@ -428,6 +452,34 @@ class RuntimeService:
             return False
         return self._probe_gateway_health(host, port)
 
+    def _probe_gateway_status(self, host: str, port: int) -> dict[str, Any]:
+        if not self._probe_tcp_port(host, port):
+            return {
+                "responsive": False,
+                "error": f"无法连接 {host}:{port}",
+            }
+
+        responsive = self._probe_gateway(host, port)
+        if responsive:
+            return {
+                "responsive": True,
+                "error": None,
+            }
+
+        return {
+            "responsive": False,
+            "error": "TCP 端口可达，但 Gateway RPC 握手或 health 探测失败",
+        }
+
+    def _gateway_runtime_state(self, *, manageable: bool, running: bool, responsive: bool) -> str:
+        if not manageable:
+            return "remote"
+        if responsive:
+            return "ready"
+        if running:
+            return "listening"
+        return "stopped"
+
     def _probe_tcp_port(self, host: str, port: int) -> bool:
         try:
             with socket.create_connection((host, port), timeout=0.35):
@@ -577,6 +629,41 @@ class RuntimeService:
 
     def _gateway_log_dir(self) -> Path:
         return self._openclaw_home / "logs"
+
+    def _describe_process_command(self, pid: int | None) -> str | None:
+        if pid is None:
+            return None
+
+        try:
+            if os.name == "nt":
+                result = subprocess.run(
+                    [
+                        "powershell",
+                        "-NoProfile",
+                        "-Command",
+                        (
+                            "$p = Get-CimInstance Win32_Process -Filter \"ProcessId = "
+                            f"{int(pid)}\"; if ($p) {{ $p.CommandLine }}"
+                        ),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    creationflags=_WINDOWS_CREATE_NO_WINDOW,
+                )
+                command = (result.stdout or "").strip()
+                return command or None
+
+            result = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "command="],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            command = (result.stdout or "").strip()
+            return command or None
+        except OSError:
+            return None
 
     def _format_gateway_failure(
         self,

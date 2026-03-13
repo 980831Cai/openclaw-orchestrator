@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from 'react'
 import { api } from '@/lib/api'
 import { resolveEffectiveAgentStatus } from '@/lib/effective-agent-status'
+import { isGatewayRuntimeReady } from '@/lib/gateway-status'
 import { useAgentStore } from '@/stores/agent-store'
 import { useMonitorStore } from '@/stores/monitor-store'
 import type { AgentListItem, AgentConfig } from '@/types'
@@ -8,15 +9,15 @@ import type { AgentListItem, AgentConfig } from '@/types'
 export function useAgents() {
   const { agents, loading, setAgents, setLoading, setSelectedAgent } = useAgentStore()
   const gatewayConnected = useMonitorStore((state) => state.gatewayConnected)
-  const gatewayRuntimeRunning = useMonitorStore((state) => state.gatewayRuntime?.running === true)
+  const gatewayRuntimeReady = useMonitorStore((state) => isGatewayRuntimeReady(state.gatewayRuntime))
 
   const effectiveAgents = useMemo(
     () =>
       agents.map((agent) => ({
         ...agent,
-        status: resolveEffectiveAgentStatus(agent.status, gatewayConnected, gatewayRuntimeRunning),
+        status: resolveEffectiveAgentStatus(agent.status, gatewayConnected, gatewayRuntimeReady),
       })),
-    [agents, gatewayConnected, gatewayRuntimeRunning],
+    [agents, gatewayConnected, gatewayRuntimeReady],
   )
 
   const fetchAgents = useCallback(async () => {

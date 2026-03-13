@@ -1,9 +1,22 @@
 import { useEffect } from 'react'
 import { api } from '@/lib/api'
+import {
+  gatewayRuntimeFromHealth,
+  mergeGatewayRuntimeStatus,
+  type GatewayStatusPayload,
+} from '@/lib/gateway-status'
 import { wsClient } from '@/lib/websocket'
 import { useAgentStore } from '@/stores/agent-store'
 import { useMonitorStore } from '@/stores/monitor-store'
-import type { AgentStatus, Notification, SessionMessage, WorkflowRuntimeSignal } from '@/types'
+import type {
+  AgentStatus,
+  ApprovalUpdatePayload,
+  GatewayRuntimeStatus,
+  LiveFeedSnapshot,
+  Notification,
+  SessionMessage,
+  WorkflowRuntimeSignal,
+} from '@/types'
 
 function coerceTimestamp(value: unknown): string {
   if (typeof value === 'string') return value
@@ -73,11 +86,11 @@ function normalizeRealtimeMessage(payload: unknown): SessionMessage | null {
   const role =
     directRole === 'user' || directRole === 'assistant' || directRole === 'system'
       ? directRole
-      : ((envelope.authorRole ??
-          record.authorRole ??
-          envelope.senderRole ??
-          record.senderRole ??
-          'assistant') as SessionMessage['role'])
+      : ((envelope.authorRole
+          ?? record.authorRole
+          ?? envelope.senderRole
+          ?? record.senderRole
+          ?? 'assistant') as SessionMessage['role'])
 
   const nestedSession =
     envelope.session && typeof envelope.session === 'object'
@@ -131,37 +144,37 @@ function normalizeRealtimeMessage(payload: unknown): SessionMessage | null {
   }
 
   const content = coerceContent(
-    envelope.content ??
-      record.content ??
-      envelope.text ??
-      record.text ??
-      envelope.message ??
-      record.message ??
-      envelope.parts ??
-      record.parts ??
-      ''
+    envelope.content
+      ?? record.content
+      ?? envelope.text
+      ?? record.text
+      ?? envelope.message
+      ?? record.message
+      ?? envelope.parts
+      ?? record.parts
+      ?? '',
   )
   if (!content) return null
 
   return {
     id:
-      (typeof envelope.id === 'string' && envelope.id) ||
-      (typeof record.id === 'string' && record.id) ||
-      (typeof envelope.messageId === 'string' && envelope.messageId) ||
-      (typeof record.messageId === 'string' && record.messageId) ||
-      `rt-${agentId || 'unknown'}-${sessionId || 'main'}-${String(record.timestamp ?? Date.now())}`,
+      (typeof envelope.id === 'string' && envelope.id)
+      || (typeof record.id === 'string' && record.id)
+      || (typeof envelope.messageId === 'string' && envelope.messageId)
+      || (typeof record.messageId === 'string' && record.messageId)
+      || `rt-${agentId || 'unknown'}-${sessionId || 'main'}-${String(record.timestamp ?? Date.now())}`,
     sessionId: sessionId || 'main',
     sessionKey: sessionKey || undefined,
     agentId,
     role,
     content,
     timestamp: coerceTimestamp(
-      envelope.timestamp ??
-        record.timestamp ??
-        envelope.createdAt ??
-        record.createdAt ??
-        envelope.updatedAt ??
-        record.updatedAt
+      envelope.timestamp
+        ?? record.timestamp
+        ?? envelope.createdAt
+        ?? record.createdAt
+        ?? envelope.updatedAt
+        ?? record.updatedAt,
     ),
   }
 }
@@ -170,12 +183,19 @@ export function useWebSocket() {
   const {
     setConnected,
     setGatewayConnected,
+    setGatewayError,
+    setGatewayRuntime,
     setAgentStatus,
     addEvent,
+    syncEvents,
     addNotification,
+    syncNotifications,
     addRealtimeMessage,
+    syncRealtimeMessages,
     setWorkflowSignal,
     clearWorkflowSignal,
+    syncWorkflowSignals,
+    syncScheduledWorkflows,
   } = useMonitorStore()
   const updateAgentStatus = useAgentStore((state) => state.updateAgentStatus)
 
@@ -186,11 +206,14 @@ export function useWebSocket() {
 
   useEffect(() => {
     wsClient.connect()
-    setConnected(true)
 
     if ('Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission()
     }
+
+    const unsubConnected = wsClient.on('connected', () => {
+      setConnected(true)
+    })
 
     const unsubStatus = wsClient.on('agent_status', (data) => {
       const event = data as { agentId?: string; status?: AgentStatus; timestamp?: string }
@@ -217,9 +240,20 @@ export function useWebSocket() {
     })
 
     const unsubGateway = wsClient.on('gateway_status', (data) => {
-      const payload = data as any
-      setGatewayConnected(payload?.connected ?? false)
-      setGatewayError(payload?.error ?? null, payload?.authRequired ?? false)
+      const payload = (data ?? {}) as GatewayStatusPayload & {
+        connected?: boolean
+        error?: string | null
+        authRequired?: boolean
+      }
+
+      setGatewayConnected(payload.connected ?? false)
+      setGatewayError(payload.error ?? null, payload.authRequired ?? false)
+
+      const currentRuntime = useMonitorStore.getState().gatewayRuntime
+      const nextRuntime = mergeGatewayRuntimeStatus(currentRuntime, payload)
+      if (nextRuntime !== currentRuntime) {
+        setGatewayRuntime(nextRuntime)
+      }
     })
 
     const unsubWorkflow = wsClient.on('workflow_update', (data) => {
@@ -252,7 +286,7 @@ export function useWebSocket() {
     })
 
     const unsubApproval = wsClient.on('approval_update', (data) => {
-      const approval = data as any
+      const approval = data as ApprovalUpdatePayload
       if (approval.status === 'approved' || approval.status === 'rejected') {
         addNotification({
           id: `approval-${approval.id}-${Date.now()}`,
@@ -260,14 +294,15 @@ export function useWebSocket() {
           title: approval.status === 'approved' ? '审批已通过' : '审批已驳回',
           message: approval.rejectReason || (approval.status === 'approved' ? '工作流将继续执行' : '工作流已终止'),
           executionId: approval.executionId,
-          nodeId: approval.nodeId,
+          nodeId: approval.nodeId ?? undefined,
           read: false,
-          createdAt: new Date().toISOString(),
+          createdAt: approval.updatedAt ?? approval.resolvedAt ?? new Date().toISOString(),
         })
       }
     })
 
     return () => {
+      unsubConnected()
       unsubStatus()
       unsubComm()
       unsubMessage()
@@ -282,13 +317,56 @@ export function useWebSocket() {
   }, [
     setConnected,
     setGatewayConnected,
+    setGatewayError,
+    setGatewayRuntime,
     setAgentStatus,
     updateAgentStatus,
     addEvent,
+    syncEvents,
     addNotification,
+    syncNotifications,
     addRealtimeMessage,
+    syncRealtimeMessages,
     setWorkflowSignal,
     clearWorkflowSignal,
+    syncWorkflowSignals,
+    syncScheduledWorkflows,
+  ])
+
+  useEffect(() => {
+    let disposed = false
+
+    const syncSnapshot = async () => {
+      try {
+        const [snapshot, runtime] = await Promise.all([
+          api.get<LiveFeedSnapshot>('/monitor/live-feed-snapshot'),
+          api.get<GatewayRuntimeStatus>('/runtime/gateway'),
+        ])
+        if (disposed) return
+
+        syncEvents(snapshot.events ?? [])
+        syncRealtimeMessages(snapshot.messages ?? [])
+        syncWorkflowSignals(snapshot.workflowSignals ?? [])
+        syncScheduledWorkflows(snapshot.scheduledWorkflows ?? [])
+        syncNotifications(snapshot.notifications ?? [], snapshot.unreadCount ?? 0)
+        setGatewayRuntime(gatewayRuntimeFromHealth(runtime))
+      } catch {
+        // Ignore initial snapshot failures and rely on websocket / other polling.
+      }
+    }
+
+    void syncSnapshot()
+
+    return () => {
+      disposed = true
+    }
+  }, [
+    setGatewayRuntime,
+    syncEvents,
+    syncNotifications,
+    syncRealtimeMessages,
+    syncScheduledWorkflows,
+    syncWorkflowSignals,
   ])
 
   useEffect(() => {
