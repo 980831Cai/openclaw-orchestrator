@@ -76,17 +76,25 @@ const config: Config = {
         'breathe': 'breathe 4s ease-in-out infinite',
         'slide-in': 'slideIn 0.3s ease-out',
         'fade-in': 'fadeIn 0.5s ease-out',
+        'fade-in-up': 'fadeInUp 0.4s ease-out',
+        'fade-in-down': 'fadeInDown 0.4s ease-out',
+        'scale-in': 'scaleIn 0.3s ease-out',
+        'slide-in-right': 'slideInRight 0.4s ease-out',
+        'slide-in-left': 'slideInLeft 0.4s ease-out',
         'cartoon-bob': 'cartoonBob 3s ease-in-out infinite',
         'cartoon-wave': 'cartoonWave 4s ease-in-out infinite',
         'cartoon-sparkle': 'cartoonSparkle 2s ease-in-out infinite',
         'cartoon-sway': 'cartoonSway 5s ease-in-out infinite',
         'steam-rise': 'steamRise 2s ease-out infinite',
         'invite-glow': 'inviteGlow 2s ease-in-out infinite',
-        'msg-slide-left': 'msgSlideLeft 0.3s ease-out',
-        'msg-slide-right': 'msgSlideRight 0.3s ease-out',
+        'msg-slide-left': 'msgSlideLeft 0.35s cubic-bezier(0.4, 0, 0.2, 1)',
+        'msg-slide-right': 'msgSlideRight 0.35s cubic-bezier(0.4, 0, 0.2, 1)',
         'ring-rotate': 'ringRotate 20s linear infinite',
         'dot-pulse': 'dotPulse 1.4s ease-in-out infinite both',
         'status-breathe': 'statusBreathe 3s ease-in-out infinite',
+        'shimmer': 'shimmer 2s linear infinite',
+        'gradient-x': 'gradientX 3s ease infinite',
+        'bounce-subtle': 'bounceSubtle 0.5s ease-out',
       },
       keyframes: {
         float: {
@@ -117,6 +125,26 @@ const config: Config = {
         fadeIn: {
           '0%': { opacity: '0' },
           '100%': { opacity: '1' },
+        },
+        fadeInUp: {
+          '0%': { opacity: '0', transform: 'translateY(10px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+        fadeInDown: {
+          '0%': { opacity: '0', transform: 'translateY(-10px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+        scaleIn: {
+          '0%': { opacity: '0', transform: 'scale(0.95)' },
+          '100%': { opacity: '1', transform: 'scale(1)' },
+        },
+        slideInRight: {
+          '0%': { opacity: '0', transform: 'translateX(20px)' },
+          '100%': { opacity: '1', transform: 'translateX(0)' },
+        },
+        slideInLeft: {
+          '0%': { opacity: '0', transform: 'translateX(-20px)' },
+          '100%': { opacity: '1', transform: 'translateX(0)' },
         },
         wiggle: {
           '0%, 100%': { transform: 'rotate(0deg)' },
@@ -168,9 +196,24 @@ const config: Config = {
           '0%, 100%': { boxShadow: '0 0 0 0 currentColor', opacity: '0.8' },
           '50%': { boxShadow: '0 0 12px 2px currentColor', opacity: '1' },
         },
+        shimmer: {
+          '0%': { transform: 'translateX(-100%)' },
+          '100%': { transform: 'translateX(100%)' },
+        },
+        gradientX: {
+          '0%, 100%': { backgroundPosition: '0% 50%' },
+          '50%': { backgroundPosition: '100% 50%' },
+        },
+        bounceSubtle: {
+          '0%, 100%': { transform: 'translateY(0)' },
+          '50%': { transform: 'translateY(-4px)' },
+        },
       },
       backdropBlur: {
         xs: '2px',
+      },
+      backgroundSize: {
+        '200%': '200% 200%',
       },
     },
   },

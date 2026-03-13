@@ -290,8 +290,11 @@ openclaw-orchestrator/
 | `OPENCLAW_GATEWAY_URL` | `ws://localhost:18789` | Gateway WebSocket 地址 |
 | `OPENCLAW_GATEWAY_TOKEN` | *(空)* | Gateway 认证 Token |
 | `OPENCLAW_WEBHOOK_URL` | `http://localhost:3578` | Webhook HTTP 地址 |
+| `API_KEY` | *(空)* | API 认证密钥（空=无认证） |
 | `CORS_ORIGIN` | `http://localhost:5173` | CORS 允许源 |
 | `DB_PATH` | `$OPENCLAW_HOME/orchestrator.sqlite` | 数据库路径 |
+
+> 📋 复制 `.env.example` 为 `.env` 并填写配置值。
 
 ---
 

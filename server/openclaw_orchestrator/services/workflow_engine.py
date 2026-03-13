@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import threading
 import uuid
 from typing import Any, Optional
 
@@ -28,6 +29,7 @@ class WorkflowEngine:
 
     def __init__(self) -> None:
         self._running_executions: dict[str, dict[str, Any]] = {}
+        self._execution_lock = threading.Lock()  # 保护 _running_executions 的并发访问
 
     @staticmethod
     def _utcnow():
@@ -233,9 +235,10 @@ class WorkflowEngine:
         return row is not None
 
     def stop_execution(self, execution_id: str) -> None:
-        control = self._running_executions.get(execution_id)
-        if control:
-            control["abort"] = True
+        with self._execution_lock:
+            control = self._running_executions.get(execution_id)
+            if control:
+                control["abort"] = True
 
         workflow = self._safe_get_workflow_by_execution(execution_id)
         execution = self._safe_get_execution(execution_id)
@@ -1525,7 +1528,8 @@ class WorkflowEngine:
             },
         )
 
-        control = self._running_executions.get(execution_id, {})
+        with self._execution_lock:
+            control = self._running_executions.get(execution_id, {})
         execution_context = self._get_execution_context(execution_id)
         execution_context.update({"node_artifacts": node_artifacts, "control": control})
         context_json = json.dumps(execution_context, default=str)

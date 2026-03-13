@@ -36,22 +36,56 @@ const statusLabels: Record<AgentStatus, string> = {
   offline: '离线',
 }
 
+// Animal feature mapping based on emoji
+const EMOJI_ANIMAL_MAP: Record<string, {
+  earStyle: 'round' | 'pointy' | 'floppy' | 'none'
+  noseStyle: 'button' | 'triangle' | 'dot' | 'heart' | 'none'
+  whiskers: boolean
+  tail: boolean
+  furPattern: 'solid' | 'spotted' | 'striped' | 'gradient'
+}> = {
+  // Common animals
+  '🐱': { earStyle: 'pointy', noseStyle: 'triangle', whiskers: true, tail: true, furPattern: 'solid' },
+  '🐶': { earStyle: 'floppy', noseStyle: 'triangle', whiskers: false, tail: true, furPattern: 'spotted' },
+  '🐻': { earStyle: 'round', noseStyle: 'triangle', whiskers: false, tail: true, furPattern: 'solid' },
+  '🐼': { earStyle: 'round', noseStyle: 'triangle', whiskers: false, tail: true, furPattern: 'spotted' },
+  '🦊': { earStyle: 'pointy', noseStyle: 'triangle', whiskers: true, tail: true, furPattern: 'gradient' },
+  '🐰': { earStyle: 'pointy', noseStyle: 'heart', whiskers: false, tail: true, furPattern: 'solid' },
+  '🐨': { earStyle: 'round', noseStyle: 'triangle', whiskers: false, tail: false, furPattern: 'solid' },
+  '🐯': { earStyle: 'round', noseStyle: 'triangle', whiskers: true, tail: true, furPattern: 'striped' },
+  '🦁': { earStyle: 'round', noseStyle: 'triangle', whiskers: false, tail: true, furPattern: 'gradient' },
+  '🐮': { earStyle: 'round', noseStyle: 'triangle', whiskers: false, tail: true, furPattern: 'spotted' },
+  '🐷': { earStyle: 'floppy', noseStyle: 'button', whiskers: false, tail: true, furPattern: 'solid' },
+  '🐸': { earStyle: 'none', noseStyle: 'none', whiskers: false, tail: false, furPattern: 'solid' },
+  '🐵': { earStyle: 'round', noseStyle: 'dot', whiskers: false, tail: true, furPattern: 'solid' },
+  '🦉': { earStyle: 'pointy', noseStyle: 'triangle', whiskers: false, tail: false, furPattern: 'solid' },
+  '🦄': { earStyle: 'pointy', noseStyle: 'dot', whiskers: false, tail: true, furPattern: 'gradient' },
+  // Default for non-animal emojis
+  'default': { earStyle: 'none', noseStyle: 'none', whiskers: false, tail: false, furPattern: 'solid' },
+}
+
 // Generate a deterministic cartoon face based on the emoji character
 function getCartoonTraits(emoji: string): {
   eyeStyle: number
   mouthStyle: number
   accessory: number
   blush: boolean
+  animal: typeof EMOJI_ANIMAL_MAP[string]
 } {
   let hash = 0
   for (let i = 0; i < emoji.length; i++) {
     hash = ((hash << 5) - hash + emoji.charCodeAt(i)) | 0
   }
+
+  // Get animal features if emoji matches, otherwise use default
+  const animal = EMOJI_ANIMAL_MAP[emoji] || EMOJI_ANIMAL_MAP['default']
+
   return {
     eyeStyle: Math.abs(hash % 4),
     mouthStyle: Math.abs((hash >> 4) % 4),
     accessory: Math.abs((hash >> 8) % 5),
     blush: Math.abs(hash % 3) === 0,
+    animal,
   }
 }
 
@@ -106,6 +140,120 @@ function CartoonFace({
         strokeWidth={s * 0.025}
         strokeOpacity="0.5"
       />
+
+      {/* Animal Ears (render before highlight so they appear behind) */}
+      {traits.animal.earStyle === 'pointy' && (
+        <>
+          {/* Left ear */}
+          <path
+            d={`M${cx - r * 0.6} ${cy - r * 0.4}
+                L${cx - r * 0.75} ${cy - r * 1.3}
+                L${cx - r * 0.25} ${cy - r * 0.65}`}
+            fill={theme}
+            fillOpacity="0.3"
+            stroke={theme}
+            strokeWidth={r * 0.04}
+            strokeOpacity="0.4"
+          />
+          {/* Inner ear */}
+          <path
+            d={`M${cx - r * 0.55} ${cy - r * 0.5}
+                L${cx - r * 0.65} ${cy - r * 1.0}
+                L${cx - r * 0.35} ${cy - r * 0.65}`}
+            fill="#EC4899"
+            fillOpacity="0.2"
+          />
+          {/* Right ear */}
+          <path
+            d={`M${cx + r * 0.6} ${cy - r * 0.4}
+                L${cx + r * 0.75} ${cy - r * 1.3}
+                L${cx + r * 0.25} ${cy - r * 0.65}`}
+            fill={theme}
+            fillOpacity="0.3"
+            stroke={theme}
+            strokeWidth={r * 0.04}
+            strokeOpacity="0.4"
+          />
+          {/* Inner ear */}
+          <path
+            d={`M${cx + r * 0.55} ${cy - r * 0.5}
+                L${cx + r * 0.65} ${cy - r * 1.0}
+                L${cx + r * 0.35} ${cy - r * 0.65}`}
+            fill="#EC4899"
+            fillOpacity="0.2"
+          />
+        </>
+      )}
+      {traits.animal.earStyle === 'round' && (
+        <>
+          {/* Left round ear (bear/panda style) */}
+          <circle
+            cx={cx - r * 0.65}
+            cy={cy - r * 0.65}
+            r={r * 0.25}
+            fill={theme}
+            fillOpacity="0.3"
+            stroke={theme}
+            strokeWidth={r * 0.03}
+            strokeOpacity="0.4"
+          />
+          <circle
+            cx={cx - r * 0.65}
+            cy={cy - r * 0.65}
+            r={r * 0.12}
+            fill="#EC4899"
+            fillOpacity="0.15"
+          />
+          {/* Right round ear */}
+          <circle
+            cx={cx + r * 0.65}
+            cy={cy - r * 0.65}
+            r={r * 0.25}
+            fill={theme}
+            fillOpacity="0.3"
+            stroke={theme}
+            strokeWidth={r * 0.03}
+            strokeOpacity="0.4"
+          />
+          <circle
+            cx={cx + r * 0.65}
+            cy={cy - r * 0.65}
+            r={r * 0.12}
+            fill="#EC4899"
+            fillOpacity="0.15"
+          />
+        </>
+      )}
+      {traits.animal.earStyle === 'floppy' && (
+        <>
+          {/* Left floppy ear (dog style) */}
+          <ellipse
+            cx={cx - r * 0.8}
+            cy={cy - r * 0.1}
+            rx={r * 0.25}
+            ry={r * 0.5}
+            fill={theme}
+            fillOpacity="0.3"
+            stroke={theme}
+            strokeWidth={r * 0.03}
+            strokeOpacity="0.4"
+            transform={`rotate(-20, ${cx - r * 0.8}, ${cy - r * 0.1})`}
+          />
+          {/* Right floppy ear */}
+          <ellipse
+            cx={cx + r * 0.8}
+            cy={cy - r * 0.1}
+            rx={r * 0.25}
+            ry={r * 0.5}
+            fill={theme}
+            fillOpacity="0.3"
+            stroke={theme}
+            strokeWidth={r * 0.03}
+            strokeOpacity="0.4"
+            transform={`rotate(20, ${cx + r * 0.8}, ${cy - r * 0.1})`}
+          />
+        </>
+      )}
 
       {/* Highlight on forehead */}
       <ellipse
@@ -244,6 +392,56 @@ function CartoonFace({
       ) : (
         // Small O mouth
         <circle cx={cx} cy={mouthY + r * 0.02} r={r * 0.06} fill="#1a1a2e" opacity="0.5" />
+      )}
+
+      {/* Animal Nose (placed above mouth) */}
+      {traits.animal.noseStyle === 'triangle' && (
+        <path
+          d={`M${cx} ${mouthY - r * 0.2}
+              L${cx - r * 0.08} ${mouthY - r * 0.05}
+              L${cx + r * 0.08} ${mouthY - r * 0.05} Z`}
+          fill="#1a1a2e"
+          opacity="0.7"
+        />
+      )}
+      {traits.animal.noseStyle === 'button' && (
+        <ellipse
+          cx={cx}
+          cy={mouthY - r * 0.15}
+          rx={r * 0.1}
+          ry={r * 0.08}
+          fill="#EC4899"
+          opacity="0.4"
+        />
+      )}
+      {traits.animal.noseStyle === 'dot' && (
+        <circle cx={cx} cy={mouthY - r * 0.15} r={r * 0.05} fill="#1a1a2e" opacity="0.5" />
+      )}
+      {traits.animal.noseStyle === 'heart' && (
+        <text
+          x={cx}
+          y={mouthY - r * 0.08}
+          textAnchor="middle"
+          fontSize={r * 0.15}
+          fill="#EC4899"
+          opacity="0.5"
+        >
+          ♥
+        </text>
+      )}
+
+      {/* Whiskers */}
+      {traits.animal.whiskers && (
+        <>
+          {/* Left whiskers */}
+          <line x1={cx - r * 0.15} y1={mouthY - r * 0.05} x2={cx - r * 0.6} y2={mouthY - r * 0.15} stroke="#1a1a2e" strokeWidth={r * 0.012} strokeOpacity="0.2" strokeLinecap="round" />
+          <line x1={cx - r * 0.15} y1={mouthY} x2={cx - r * 0.65} y2={mouthY} stroke="#1a1a2e" strokeWidth={r * 0.012} strokeOpacity="0.2" strokeLinecap="round" />
+          <line x1={cx - r * 0.15} y1={mouthY + r * 0.05} x2={cx - r * 0.6} y2={mouthY + r * 0.15} stroke="#1a1a2e" strokeWidth={r * 0.012} strokeOpacity="0.2" strokeLinecap="round" />
+          {/* Right whiskers */}
+          <line x1={cx + r * 0.15} y1={mouthY - r * 0.05} x2={cx + r * 0.6} y2={mouthY - r * 0.15} stroke="#1a1a2e" strokeWidth={r * 0.012} strokeOpacity="0.2" strokeLinecap="round" />
+          <line x1={cx + r * 0.15} y1={mouthY} x2={cx + r * 0.65} y2={mouthY} stroke="#1a1a2e" strokeWidth={r * 0.012} strokeOpacity="0.2" strokeLinecap="round" />
+          <line x1={cx + r * 0.15} y1={mouthY + r * 0.05} x2={cx + r * 0.6} y2={mouthY + r * 0.15} stroke="#1a1a2e" strokeWidth={r * 0.012} strokeOpacity="0.2" strokeLinecap="round" />
+        </>
       )}
 
       {/* Accessories */}

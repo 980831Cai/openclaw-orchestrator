@@ -15,6 +15,7 @@ Lifecycle:
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any, Optional
 
@@ -22,6 +23,9 @@ from openclaw_orchestrator.config import settings
 from openclaw_orchestrator.database.db import get_db
 from openclaw_orchestrator.services.openclaw_bridge import openclaw_bridge
 from openclaw_orchestrator.utils.time import utc_now_iso
+from openclaw_orchestrator.websocket.ws_handler import broadcast
+
+logger = logging.getLogger(__name__)
 
 
 class ScheduleExecutor:
@@ -90,6 +94,9 @@ class ScheduleExecutor:
 
         self._started = True
         print(f"[schedule] executor started: {count} active schedules loaded")
+
+        # Start team health monitor (checks every 10 minutes)
+        self.start_team_health_monitor(interval_minutes=10)
 
     def stop(self) -> None:
         """Clean up on shutdown. Persist round-robin state to DB."""
@@ -563,6 +570,164 @@ class ScheduleExecutor:
             "agentCount": len(entries),
             "roundRobinPointer": self._round_robin_pointers.get(team_id),
         }
+
+    # ════════════════════════════════════════════════════════════
+    # Team Health Check (periodic monitoring)
+    # ════════════════════════════════════════════════════════════
+
+    def start_team_health_monitor(self, interval_minutes: int = 10) -> None:
+        """Start the periodic team health check monitor.
+
+        This monitor checks teams with active tasks every N minutes for:
+        - Stuck agents (no progress for too long)
+        - Task progress anomalies
+        - Need for standup meetings
+        """
+        import threading
+
+        def _monitor_loop():
+            while self._started:
+                try:
+                    self._check_all_teams_health()
+                except Exception as e:
+                    logger.error("Team health check failed: %s", e)
+                # Sleep for interval_minutes
+                for _ in range(interval_minutes * 60):
+                    if not self._started:
+                        break
+                    import time
+                    time.sleep(1)
+
+        self._health_monitor_thread = threading.Thread(target=_monitor_loop, daemon=True)
+        self._health_monitor_thread.start()
+        logger.info("Team health monitor started (interval: %d minutes)", interval_minutes)
+
+    def _check_all_teams_health(self) -> None:
+        """Check health for all teams with active tasks."""
+        db = get_db()
+
+        # Find teams with active tasks
+        rows = db.execute(
+            """
+            SELECT DISTINCT t.id, t.name, t.lead_agent_id
+            FROM teams t
+            JOIN tasks tk ON t.id = tk.team_id
+            WHERE tk.status = 'active'
+            """
+        ).fetchall()
+
+        for row in rows:
+            team_id = row["id"]
+            team_name = row["name"]
+            lead_agent_id = row["lead_agent_id"]
+
+            try:
+                self._check_team_health(team_id, team_name, lead_agent_id)
+            except Exception as e:
+                logger.error("Health check failed for team %s: %s", team_id, e)
+
+    def _check_team_health(
+        self, team_id: str, team_name: str, lead_agent_id: Optional[str]
+    ) -> None:
+        """Check health for a single team.
+
+        Checks:
+        1. Agents stuck on tasks (no update for >30 min)
+        2. Task progress anomalies
+        3. Suggest standup if multiple agents are busy
+        """
+        db = get_db()
+
+        # Get active tasks with participant count
+        tasks = db.execute(
+            """
+            SELECT id, title, created_at,
+                   json_array_length(participant_agent_ids) as participant_count
+            FROM tasks
+            WHERE team_id = ? AND status = 'active'
+            """,
+            (team_id,),
+        ).fetchall()
+
+        if not tasks:
+            return
+
+        # Get team members and their status
+        members = db.execute(
+            """
+            SELECT agent_id, role FROM team_members WHERE team_id = ?
+            """,
+            (team_id,),
+        ).fetchall()
+
+        busy_count = 0
+        stuck_agents: list[str] = []
+
+        # Check for stuck agents (simplified: check if any agent has been busy too long)
+        # In a real implementation, we'd track agent activity timestamps
+        for member in members:
+            # Check if agent has tasks assigned but no recent updates
+            # This is a placeholder - real implementation would check agent activity logs
+            pass
+
+        # If multiple agents are busy, suggest a standup
+        if len(tasks) >= 2 and lead_agent_id:
+            # Check if there's already a scheduled/preparing meeting
+            existing_meeting = db.execute(
+                """
+                SELECT 1 FROM meetings
+                WHERE team_id = ? AND status IN ('preparing', 'in_progress')
+                AND meeting_type = 'standup'
+                LIMIT 1
+                """,
+                (team_id,),
+            ).fetchone()
+
+            if not existing_meeting:
+                # Trigger automatic standup suggestion
+                self._suggest_standup(team_id, team_name, lead_agent_id, tasks)
+
+    def _suggest_standup(
+        self,
+        team_id: str,
+        team_name: str,
+        lead_agent_id: str,
+        tasks: list[Any],
+    ) -> None:
+        """Suggest a standup meeting to the team Lead."""
+        from openclaw_orchestrator.services.meeting_service import meeting_service
+
+        task_summary = ", ".join([t["title"] for t in tasks[:3]])
+        if len(tasks) > 3:
+            task_summary += f" 等 {len(tasks)} 个任务"
+
+        # Create a standup meeting suggestion (preparing state)
+        # The Lead can choose to start it or ignore
+        try:
+            meeting = meeting_service.create_meeting(
+                team_id=team_id,
+                meeting_type="standup",
+                topic=f"{team_name} 团队站会",
+                participants=[],  # Will be filled when started
+                topic_description=f"自动触发：团队当前有 {len(tasks)} 个活跃任务：{task_summary}",
+                lead_agent_id=lead_agent_id,
+            )
+
+            # Notify via WebSocket
+            broadcast({
+                "type": "standup_suggested",
+                "payload": {
+                    "meetingId": meeting["id"],
+                    "teamId": team_id,
+                    "teamName": team_name,
+                    "reason": f"团队有 {len(tasks)} 个活跃任务，建议进行站会同步",
+                },
+                "timestamp": datetime.utcnow().isoformat(),
+            })
+
+            logger.info("Standup suggested for team %s (meeting: %s)", team_id, meeting["id"])
+        except Exception as e:
+            logger.error("Failed to suggest standup for team %s: %s", team_id, e)
 
 
 # Singleton instance

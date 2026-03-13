@@ -38,7 +38,7 @@ class TeamService:
         description: str,
         goal: Optional[str] = None,
         theme: Optional[str] = None,
-        lead_agent_id: Optional[str] = None,
+        lead_agent_id: Optional[str] = None,  # noqa: ARG002 - reserved for future use
     ) -> dict[str, Any]:
         """Create a new team with directory structure."""
         db = get_db()

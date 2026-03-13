@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 from openclaw_orchestrator.routes.agent_routes import router as agent_router
 from openclaw_orchestrator.routes.approval_routes import router as approval_router
 from openclaw_orchestrator.routes.chat_routes import router as chat_router
+from openclaw_orchestrator.routes.collaboration_routes import router as collaboration_router
 from openclaw_orchestrator.routes.knowledge_routes import router as knowledge_router
 from openclaw_orchestrator.routes.notification_routes import router as notification_router
 from openclaw_orchestrator.routes.task_routes import router as task_router
@@ -73,7 +74,7 @@ def mount_frontend(app: FastAPI, frontend_dir: Path) -> None:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_app: FastAPI):
     """Application lifespan: startup and shutdown hooks."""
     # ─── Startup ───
     os.makedirs(settings.openclaw_home, exist_ok=True)
@@ -149,7 +150,7 @@ app.add_middleware(ApiKeyMiddleware)
 
 # ─── Global exception handlers ───
 @app.exception_handler(ValueError)
-async def value_error_handler(request: Request, exc: ValueError):
+async def value_error_handler(_request: Request, exc: ValueError):
     """Return 400 for ValueError (validation failures)."""
     return JSONResponse(
         status_code=400,
@@ -158,7 +159,7 @@ async def value_error_handler(request: Request, exc: ValueError):
 
 
 @app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
+async def http_exception_handler(_request: Request, exc: HTTPException):
     """Preserve FastAPI's default HTTPException behavior."""
     return JSONResponse(
         status_code=exc.status_code,
@@ -194,6 +195,7 @@ app.include_router(workflow_router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
 app.include_router(meeting_router, prefix="/api")
 app.include_router(runtime_router, prefix="/api")
+app.include_router(collaboration_router, prefix="/api")
 
 
 # ─── Health check ───
