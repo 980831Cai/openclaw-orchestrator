@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import re
+
 from openclaw_orchestrator.database.db import get_db
+
+# Whitelist pattern for SQL identifiers (table names, column names)
+_SQL_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 def init_database() -> None:
@@ -194,7 +199,53 @@ def init_database() -> None:
     print("Database initialized successfully")
 
 
+def _validate_sql_identifier(value: str, label: str) -> None:
+    """Validate that a value is a safe SQL identifier (table/column name).
+
+    Args:
+        value: The identifier to validate.
+        label: Human-readable label for error messages (e.g. "table name").
+
+    Raises:
+        ValueError: If the identifier contains unsafe characters.
+    """
+    if not _SQL_IDENTIFIER_RE.match(value):
+        raise ValueError(
+            f"Unsafe SQL {label}: '{value}'. "
+            f"Only alphanumeric characters and underscores are allowed."
+        )
+
+
+# Whitelist of tables that are allowed to be migrated
+_ALLOWED_TABLES = {
+    "teams", "team_members", "tasks", "workflows",
+    "workflow_executions", "knowledge_entries", "approvals",
+    "notifications", "schedule_jobs", "meetings",
+}
+
+
 def _migrate_add_column(db, table: str, column: str, column_def: str) -> None:
+    """Safely add a column to an existing table (no-op if column already exists).
+
+    All identifiers are validated against a strict whitelist pattern to
+    prevent SQL injection via dynamic DDL statements.
+    """
+    # Validate all dynamic identifiers
+    _validate_sql_identifier(table, "table name")
+    _validate_sql_identifier(column, "column name")
+
+    # Additionally check table is in known whitelist
+    if table not in _ALLOWED_TABLES:
+        raise ValueError(
+            f"Table '{table}' is not in the allowed migration whitelist. "
+            f"Allowed tables: {_ALLOWED_TABLES}"
+        )
+
+    # Validate column_def only contains safe characters (type + default clause)
+    if not re.match(r"^[a-zA-Z0-9_ ()'\"]+$", column_def):
+        raise ValueError(f"Unsafe column definition: '{column_def}'")
+
+
     cursor = db.execute(f"PRAGMA table_info({table})")
     existing_columns = {row[1] for row in cursor.fetchall()}
     if column not in existing_columns:

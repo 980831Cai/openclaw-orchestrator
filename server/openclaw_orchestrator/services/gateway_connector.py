@@ -455,6 +455,7 @@ class GatewayConnector:
             }
         )
 
+
         handlers = self._event_handlers.get(event_name, [])
         for handler in handlers:
             try:

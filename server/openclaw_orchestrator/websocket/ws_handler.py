@@ -2,6 +2,7 @@
 
 Uses FastAPI's WebSocket support. Clients connect to /ws endpoint.
 The broadcast() function sends events to all connected clients.
+Includes ping/pong heartbeat to detect and clean up dead connections.
 """
 
 from __future__ import annotations
@@ -36,6 +37,9 @@ async def handle_ws_connection(websocket: WebSocket) -> None:
         }
     )
 
+    # Start heartbeat task for this connection
+    heartbeat_task = asyncio.create_task(_heartbeat_loop(websocket))
+
     try:
         from openclaw_orchestrator.services.gateway_connector import gateway_connector
         gateway_payload = gateway_connector._build_gateway_status_payload(
@@ -58,19 +62,60 @@ async def handle_ws_connection(websocket: WebSocket) -> None:
             data = await websocket.receive_text()
             try:
                 message = json.loads(data)
-                _handle_client_message(websocket, message)
+                await _handle_client_message(websocket, message)
             except json.JSONDecodeError:
                 pass
     except Exception:
         pass
     finally:
-        _clients.discard(websocket)
-        print("WebSocket client disconnected")
+        heartbeat_task.cancel()
+        _clients.pop(websocket, None)
+        logger.info("WebSocket client disconnected (total: %d)", len(_clients))
 
 
-def _handle_client_message(ws: WebSocket, message: Any) -> None:
-    """Handle incoming client messages."""
-    print(f"Received client message: {message}")
+async def _heartbeat_loop(websocket: WebSocket) -> None:
+    """Periodically send ping messages and check for pong responses."""
+    try:
+        while True:
+            await asyncio.sleep(HEARTBEAT_INTERVAL)
+
+            # Check if client responded to last ping
+            last_pong = _clients.get(websocket)
+            if last_pong is not None:
+                elapsed = asyncio.get_event_loop().time() - last_pong
+                if elapsed > HEARTBEAT_TIMEOUT:
+                    logger.warning(
+                        "WebSocket client heartbeat timeout (%.1fs), closing",
+                        elapsed,
+                    )
+                    try:
+                        await websocket.close(code=1000, reason="Heartbeat timeout")
+                    except Exception:
+                        pass
+                    return
+
+            # Send ping
+            try:
+                await websocket.send_json({
+                    "type": "ping",
+                    "timestamp": _now(),
+                })
+            except Exception:
+                return
+    except asyncio.CancelledError:
+        pass
+
+
+async def _handle_client_message(ws: WebSocket, message: Any) -> None:
+    """Handle incoming client messages, including pong responses."""
+    msg_type = message.get("type") if isinstance(message, dict) else None
+
+    if msg_type == "pong":
+        # Update last pong timestamp
+        _clients[ws] = asyncio.get_event_loop().time()
+        return
+
+    logger.debug("Received client message: %s", message)
 
 
 def broadcast(event: dict[str, Any]) -> None:
@@ -93,7 +138,8 @@ def broadcast(event: dict[str, Any]) -> None:
                 await client.send_text(data)
             except Exception:
                 dead_clients.add(client)
-        _clients.difference_update(dead_clients)
+        for dc in dead_clients:
+            _clients.pop(dc, None)
 
     try:
         running_loop = asyncio.get_running_loop()

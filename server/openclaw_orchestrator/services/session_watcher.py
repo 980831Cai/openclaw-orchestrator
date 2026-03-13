@@ -41,6 +41,7 @@ class SessionWatcher:
         self._task: Optional[asyncio.Task[None]] = None
         self._seen_message_ids: set[str] = set()  # dedup with Gateway
         self._seen_ids_max = 5000  # cap to prevent unbounded growth
+        self._session_alias_cache: dict[str, tuple[float, dict[str, str]]] = {}
 
     def start(self) -> None:
         """Start watching session files in background."""
@@ -82,7 +83,8 @@ class SessionWatcher:
                 step=300,
             ):
                 for change_type, path in changes:
-                    if path.endswith(".jsonl") and "/sessions/" in path:
+                    normalized_path = path.replace("\\", "/")
+                    if normalized_path.endswith(".jsonl") and "/sessions/" in normalized_path:
                         if change_type in (Change.added, Change.modified):
                             self._handle_file_change(path)
         except asyncio.CancelledError:
@@ -140,25 +142,42 @@ class SessionWatcher:
     ) -> Optional[dict[str, Any]]:
         try:
             data = json.loads(line)
-            session_id = Path(file_path).stem  # filename without .jsonl
-            if data.get("type") == "session":
-                return None
-            message = data.get("message") if isinstance(data.get("message"), dict) else data
-            if not isinstance(message, dict):
-                return None
-            content = message.get("content", "")
-            normalized_content = self._normalize_content(content)
-            return {
-                "id": data.get("id", message.get("id", f"{id(line)}-{hash(line) % 10000}")),
-                "sessionId": session_id,
-                "agentId": agent_id,
-                "role": message.get("role", "assistant"),
-                "content": normalized_content,
-                "timestamp": data.get("timestamp", message.get("timestamp", "")),
-                "metadata": message.get("metadata") or data.get("metadata"),
-            }
-        except (json.JSONDecodeError, KeyError):
+        except json.JSONDecodeError:
             return None
+        if not isinstance(data, dict) or data.get("type") == "session":
+            return None
+
+        message = data.get("message") if isinstance(data.get("message"), dict) else data
+        if not isinstance(message, dict):
+            return None
+
+        session_id = self._resolve_session_id(agent_id, file_path)
+        role = str(message.get("role") or data.get("role") or "assistant")
+        if role == "tool":
+            role = "assistant"
+
+        content = self._normalize_content(
+            message.get("content")
+            or data.get("content")
+            or message.get("text")
+            or data.get("text")
+            or ""
+        )
+        timestamp = message.get("timestamp") or data.get("timestamp") or ""
+        metadata = message.get("metadata") or data.get("metadata")
+
+        if not content and role != "system":
+            return None
+
+        return {
+            "id": data.get("id", message.get("id", f"{id(line)}-{hash(line) % 10000}")),
+            "sessionId": session_id,
+            "agentId": agent_id,
+            "role": role,
+            "content": content,
+            "timestamp": timestamp,
+            "metadata": metadata,
+        }
 
     @staticmethod
     def _normalize_content(content: Any) -> str:
@@ -180,6 +199,50 @@ class SessionWatcher:
                 return text
             return json.dumps(content, ensure_ascii=False)
         return ""
+
+    def _resolve_session_id(self, agent_id: str, file_path: str) -> str:
+        raw_session_id = Path(file_path).stem
+        aliases = self._get_session_aliases(agent_id)
+        return aliases.get(raw_session_id, raw_session_id)
+
+    def _get_session_aliases(self, agent_id: str) -> dict[str, str]:
+        sessions_dir = Path(settings.openclaw_home) / "agents" / agent_id / "sessions"
+        store_path = sessions_dir / "sessions.json"
+        try:
+            mtime = store_path.stat().st_mtime
+        except OSError:
+            return {}
+
+        cached = self._session_alias_cache.get(agent_id)
+        if cached and cached[0] == mtime:
+            return cached[1]
+
+        aliases: dict[str, str] = {}
+        try:
+            raw = json.loads(store_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            logger.warning("Failed to read session alias store for %s", agent_id, exc_info=True)
+            return {}
+
+        if isinstance(raw, dict):
+            prefix = f"agent:{agent_id}:"
+            for session_key, entry in raw.items():
+                if not isinstance(session_key, str) or not session_key.startswith(prefix):
+                    continue
+                logical_session_id = session_key[len(prefix):]
+                if not logical_session_id:
+                    continue
+                aliases[logical_session_id] = logical_session_id
+                if isinstance(entry, dict):
+                    session_uuid = entry.get("sessionId")
+                    if isinstance(session_uuid, str) and session_uuid.strip():
+                        aliases[session_uuid.strip()] = logical_session_id
+                    session_file = entry.get("sessionFile")
+                    if isinstance(session_file, str) and session_file.strip():
+                        aliases[Path(session_file).stem] = logical_session_id
+
+        self._session_alias_cache[agent_id] = (mtime, aliases)
+        return aliases
 
     def _mark_seen(self, msg_id: str) -> None:
         """Record a message ID to prevent duplicate broadcasts."""
@@ -260,23 +323,41 @@ class SessionWatcher:
         # ── Determine base status from message ──
         if "error" in content.lower() or "Error" in content:
             new_status = "error"
-        elif role == "assistant":
-            new_status = "busy"
-            # Schedule reset to idle/scheduled after 10s
-            try:
-                loop = asyncio.get_running_loop()
-                loop.call_later(
-                    10.0, self._reset_from_busy, agent_id
-                )
-            except RuntimeError:
-                pass
         else:
             new_status = "busy"
+            try:
+                loop = asyncio.get_running_loop()
+                loop.call_later(10.0, self._reset_from_busy, agent_id)
+            except RuntimeError:
+                pass
 
         prev_status = self._agent_statuses.get(agent_id)
         if prev_status != new_status:
             self._agent_statuses[agent_id] = new_status
             self._broadcast_status(agent_id, new_status)
+
+    def mark_gateway_activity(self, payload: dict[str, Any]) -> None:
+        """Project Gateway chat events onto the same status pipeline."""
+        session_key = str(payload.get("sessionKey") or "")
+        agent_id = self._extract_agent_id_from_session_key(session_key)
+        if not agent_id:
+            return
+
+        message = payload.get("message") if isinstance(payload.get("message"), dict) else {}
+        role = str(message.get("role") or payload.get("role") or "assistant")
+        content = self._normalize_content(
+            message.get("content") or payload.get("content") or ""
+        )
+        timestamp = message.get("timestamp") or payload.get("timestamp") or ""
+
+        self._update_agent_status(
+            agent_id,
+            {
+                "role": role,
+                "content": content,
+                "timestamp": timestamp,
+            },
+        )
 
     def _reset_from_busy(self, agent_id: str) -> None:
         """After 10s of no new assistant messages, downgrade from busy.
@@ -365,6 +446,18 @@ class SessionWatcher:
         except ValueError:
             pass
         return "unknown"
+
+    @staticmethod
+    def _extract_agent_id_from_session_key(session_key: str) -> str:
+        if session_key.startswith("agent:"):
+            parts = session_key.split(":")
+            if len(parts) >= 3:
+                return parts[1]
+        if session_key.startswith("agent/"):
+            parts = session_key.split("/")
+            if len(parts) >= 3:
+                return parts[1]
+        return ""
 
 
 # Singleton instance

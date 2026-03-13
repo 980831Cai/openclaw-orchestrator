@@ -6,18 +6,22 @@ Serves both the API and the pre-built React frontend as static files.
 
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from openclaw_orchestrator.config import settings
 from openclaw_orchestrator.database import init_database
+from openclaw_orchestrator.middleware.auth import ApiKeyMiddleware
+
+logger = logging.getLogger(__name__)
 from openclaw_orchestrator.routes.agent_routes import router as agent_router
 from openclaw_orchestrator.routes.approval_routes import router as approval_router
 from openclaw_orchestrator.routes.chat_routes import router as chat_router
@@ -138,6 +142,45 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ─── API Key authentication middleware ───
+app.add_middleware(ApiKeyMiddleware)
+
+
+# ─── Global exception handlers ───
+@app.exception_handler(ValueError)
+async def value_error_handler(request: Request, exc: ValueError):
+    """Return 400 for ValueError (validation failures)."""
+    return JSONResponse(
+        status_code=400,
+        content={"detail": str(exc)},
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Preserve FastAPI's default HTTPException behavior."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+    )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catch-all handler: log the full traceback, return a safe 500 response."""
+    logger.error(
+        "Unhandled exception on %s %s: %s",
+        request.method,
+        request.url.path,
+        exc,
+        exc_info=True,
+    )
+    # In production, never expose stack traces to clients
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
 
 # ─── API routes (all under /api prefix) ───
 app.include_router(agent_router, prefix="/api")

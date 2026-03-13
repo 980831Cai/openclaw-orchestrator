@@ -1,12 +1,18 @@
 type EventHandler = (data: unknown) => void;
 type ConnectionHandler = (connected: boolean) => void;
 
+/** Exponential backoff configuration */
+const RECONNECT_BASE_MS = 1000;   // Initial reconnect delay: 1s
+const RECONNECT_MAX_MS = 30000;   // Max reconnect delay: 30s
+const RECONNECT_MULTIPLIER = 2;   // Backoff multiplier
+
 class WebSocketClient {
   private ws: WebSocket | null = null;
   private handlers: Map<string, Set<EventHandler>> = new Map();
   private connectionHandlers: Set<ConnectionHandler> = new Set();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectDelay: number = RECONNECT_BASE_MS;
   private url: string;
   private subscriberCount = 0;
   private shouldReconnect = false;
@@ -77,8 +83,18 @@ class WebSocketClient {
       if (!this.shouldReconnect || this.intentionalClose) {
         return;
       }
-      console.log('WebSocket disconnected, reconnecting...');
-      this.reconnectTimer = setTimeout(() => this.connect(), 3000);
+      console.log(
+        `WebSocket disconnected, reconnecting in ${this.reconnectDelay}ms...`
+      );
+      this.reconnectTimer = setTimeout(() => {
+        this.connect();
+      }, this.reconnectDelay);
+
+      // Exponential backoff with cap
+      this.reconnectDelay = Math.min(
+        this.reconnectDelay * RECONNECT_MULTIPLIER,
+        RECONNECT_MAX_MS
+      );
     };
 
     socket.onerror = (error) => {
