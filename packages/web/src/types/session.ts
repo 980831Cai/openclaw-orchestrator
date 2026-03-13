@@ -59,11 +59,17 @@ export interface GatewayRuntimeStatus {
   manageable: boolean
   cliInstalled: boolean
   running: boolean
+  responsive?: boolean
   host: string
   port: number
   gatewayUrl: string
+  rpcGatewayUrl?: string
+  pid?: number | null
+  detectionSource?: string | null
   logFile: string
+  logTail?: string | null
   errorLogFile: string
+  errorLogTail?: string | null
   message?: string | null
 }
 

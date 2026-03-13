@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -58,8 +59,11 @@ class RuntimeService:
         }
         responsive = self._probe_gateway(host, port) if manageable else False
         running = bool(process["running"] or responsive)
+        log_path = self._gateway_log_dir() / "gateway.log"
         error_log_path = self._gateway_log_dir() / "gateway.err.log"
-        error_log_tail = self._read_log_tail(error_log_path) if not running else ""
+        should_surface_logs = not running or not responsive
+        log_tail = self._read_log_tail(log_path) if should_surface_logs else ""
+        error_log_tail = self._read_log_tail(error_log_path) if should_surface_logs else ""
 
         return {
             "platform": os.name,
@@ -74,7 +78,8 @@ class RuntimeService:
             "responsive": responsive,
             "pid": process.get("pid"),
             "detectionSource": process.get("source"),
-            "logFile": str(self._gateway_log_dir() / "gateway.log"),
+            "logFile": str(log_path),
+            "logTail": log_tail or None,
             "errorLogFile": str(error_log_path),
             "errorLogTail": error_log_tail or None,
             "message": self._build_status_message(
@@ -95,6 +100,14 @@ class RuntimeService:
             raise RuntimeServiceError("未找到 openclaw CLI，请先确认命令行可以执行 `openclaw`。")
         if status["running"] and status.get("responsive", False):
             return {**status, "message": "Gateway 已在运行"}
+
+        if status["running"]:
+            raise RuntimeServiceError(
+                self._format_gateway_failure(
+                    "检测到 Gateway 进程已占用端口，但 RPC 握手未通过。请先停止或重启后再试。",
+                    status=status,
+                )
+            )
 
         log_dir = self._gateway_log_dir()
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -572,12 +585,20 @@ class RuntimeService:
         status: dict[str, Any] | None = None,
     ) -> str:
         parts = [message.strip()]
+        log_path = (
+            Path(str(status["logFile"]))
+            if status and status.get("logFile")
+            else self._gateway_log_dir() / "gateway.log"
+        )
         error_log_path = (
             Path(str(status["errorLogFile"]))
             if status and status.get("errorLogFile")
             else self._gateway_log_dir() / "gateway.err.log"
         )
-        log_tail = self._read_log_tail(error_log_path)
+        std_log_tail = (status or {}).get("logTail") or self._read_log_tail(log_path)
+        log_tail = (status or {}).get("errorLogTail") or self._read_log_tail(error_log_path)
+        if std_log_tail:
+            parts.append(f"运行日志尾部（{log_path}）\n{std_log_tail}")
         if log_tail:
             parts.append(f"错误日志尾部（{error_log_path}）:\n{log_tail}")
         return "\n\n".join(part for part in parts if part)
@@ -659,14 +680,42 @@ class RuntimeService:
         if not self._is_manageable_target(host):
             return {"running": False, "pid": None, "source": "unmanaged"}
         if os.name == "nt":
-            return {
-                "running": self._probe_tcp_port(host, port),
-                "pid": None,
-                "source": "tcp",
-            }
+            return self._check_windows_gateway_process(host, port)
         if os.uname().sysname.lower() == "linux":
             return self._check_linux_gateway_process(port)
         return self._check_posix_gateway_process(port)
+
+    def _check_windows_gateway_process(self, host: str, port: int) -> dict[str, Any]:
+        try:
+            result = subprocess.run(
+                ["netstat", "-ano", "-p", "tcp"],
+                capture_output=True,
+                text=True,
+                check=False,
+                creationflags=_WINDOWS_CREATE_NO_WINDOW,
+            )
+            output = (result.stdout or "").splitlines()
+            local_suffixes = {f":{port}"}
+            if host in {"127.0.0.1", "localhost"}:
+                local_suffixes.update({f"127.0.0.1:{port}", f"[::1]:{port}"})
+
+            for line in output:
+                normalized = line.strip()
+                if "LISTENING" not in normalized.upper():
+                    continue
+                if not any(suffix in normalized for suffix in local_suffixes):
+                    continue
+                match = re.search(r"LISTENING\s+(\d+)$", normalized, flags=re.IGNORECASE)
+                pid = int(match.group(1)) if match else None
+                return {"running": True, "pid": pid, "source": "netstat"}
+        except OSError:
+            pass
+
+        return {
+            "running": self._probe_tcp_port(host, port),
+            "pid": None,
+            "source": "tcp",
+        }
 
     def _check_linux_gateway_process(self, port: int) -> dict[str, Any]:
         try:

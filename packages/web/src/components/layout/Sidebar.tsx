@@ -19,8 +19,10 @@ import { Logo } from '@/components/brand/Logo'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { toast } from '@/hooks/use-toast'
 import { api } from '@/lib/api'
+import { getGatewayRuntimeActions } from '@/lib/gateway-runtime-controls'
 import { cn } from '@/lib/utils'
 import { useMonitorStore } from '@/stores/monitor-store'
+import type { GatewayRuntimeStatus } from '@/types'
 import { SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_EXPANDED_WIDTH } from './layout-shell'
 
 const navItems = [
@@ -35,19 +37,6 @@ const navItems = [
 interface SidebarProps {
   expanded?: boolean
   onExpandedChange?: (expanded: boolean) => void
-}
-
-interface GatewayRuntimeStatus {
-  manageable: boolean
-  cliInstalled: boolean
-  running: boolean
-  host: string
-  port: number
-  gatewayUrl: string
-  logFile: string
-  errorLogFile: string
-  errorLogTail?: string | null
-  message?: string | null
 }
 
 export function Sidebar({ expanded: expandedProp, onExpandedChange }: SidebarProps) {
@@ -110,6 +99,7 @@ export function Sidebar({ expanded: expandedProp, onExpandedChange }: SidebarPro
   const realtimeOk = connected
   const gatewayRpcOk = gatewayConnected
   const localProcessOk = gatewayRuntime?.running ?? false
+  const runtimeActions = getGatewayRuntimeActions(gatewayRuntime, runtimeBusy)
   const allHealthy = realtimeOk && gatewayRpcOk && localProcessOk
   const overallTone: 'green' | 'amber' | 'red' = !realtimeOk ? 'red' : allHealthy ? 'green' : 'amber'
   const overallLabel =
@@ -245,6 +235,16 @@ export function Sidebar({ expanded: expandedProp, onExpandedChange }: SidebarPro
                   {runtimeActionError}
                 </div>
               ) : null}
+              {gatewayRuntime?.logTail ? (
+                <div className="mt-2 rounded-lg border border-white/8 bg-black/20 px-2.5 py-2">
+                  <p className="mb-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-white/55">
+                    最近运行日志
+                  </p>
+                  <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-[10px] leading-5 text-white/70">
+                    {gatewayRuntime.logTail}
+                  </pre>
+                </div>
+              ) : null}
               {gatewayRuntime?.errorLogTail ? (
                 <div className="mt-2 rounded-lg border border-cyber-amber/15 bg-black/20 px-2.5 py-2">
                   <p className="mb-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-cyber-amber/75">
@@ -257,24 +257,27 @@ export function Sidebar({ expanded: expandedProp, onExpandedChange }: SidebarPro
               ) : null}
 
               <div className="mt-3 flex items-center gap-2">
-                <ActionButton
-                  icon={runtimeBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
-                  label="启动"
-                  onClick={() => void runGatewayAction('start')}
-                  disabled={runtimeBusy || !gatewayRuntime?.manageable || !gatewayRuntime?.cliInstalled}
-                />
-                <ActionButton
-                  icon={runtimeBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Square className="h-3.5 w-3.5" />}
-                  label="停止"
-                  onClick={() => void runGatewayAction('stop')}
-                  disabled={runtimeBusy || !gatewayRuntime?.manageable || !gatewayRuntime?.cliInstalled}
-                />
-                <ActionButton
-                  icon={runtimeBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
-                  label="重启"
-                  onClick={() => void runGatewayAction('restart')}
-                  disabled={runtimeBusy || !gatewayRuntime?.manageable || !gatewayRuntime?.cliInstalled}
-                />
+                {runtimeActions
+                  .filter((action) => action.visible)
+                  .map((action) => (
+                    <ActionButton
+                      key={action.action}
+                      icon={
+                        runtimeBusy ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : action.action === 'start' ? (
+                          <Zap className="h-3.5 w-3.5" />
+                        ) : action.action === 'stop' ? (
+                          <Square className="h-3.5 w-3.5" />
+                        ) : (
+                          <RotateCcw className="h-3.5 w-3.5" />
+                        )
+                      }
+                      label={action.label}
+                      onClick={() => void runGatewayAction(action.action)}
+                      disabled={action.disabled}
+                    />
+                  ))}
               </div>
             </div>
           ) : null}
