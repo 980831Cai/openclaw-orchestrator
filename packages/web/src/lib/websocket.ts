@@ -1,4 +1,5 @@
 type EventHandler = (data: unknown) => void;
+type ConnectionHandler = (connected: boolean) => void;
 
 /** Exponential backoff configuration */
 const RECONNECT_BASE_MS = 1000;   // Initial reconnect delay: 1s
@@ -8,6 +9,7 @@ const RECONNECT_MULTIPLIER = 2;   // Backoff multiplier
 class WebSocketClient {
   private ws: WebSocket | null = null;
   private handlers: Map<string, Set<EventHandler>> = new Map();
+  private connectionHandlers: Set<ConnectionHandler> = new Set();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay: number = RECONNECT_BASE_MS;
@@ -18,6 +20,10 @@ class WebSocketClient {
 
   constructor(url: string) {
     this.url = url;
+  }
+
+  private notifyConnectionChange(connected: boolean) {
+    this.connectionHandlers.forEach((handler) => handler(connected));
   }
 
   connect() {
@@ -45,8 +51,7 @@ class WebSocketClient {
         return;
       }
       console.log('WebSocket connected');
-      // Reset backoff on successful connection
-      this.reconnectDelay = RECONNECT_BASE_MS;
+      this.notifyConnectionChange(true);
       if (this.reconnectTimer) {
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
@@ -57,21 +62,15 @@ class WebSocketClient {
       if (socket !== this.ws) {
         return;
       }
+
       try {
         const data = JSON.parse(event.data);
-
-        // Respond to server ping with pong
-        if (data.type === 'ping') {
-          this.send({ type: 'pong', timestamp: new Date().toISOString() });
-          return;
-        }
-
         const handlers = this.handlers.get(data.type);
         if (handlers) {
           handlers.forEach((handler) => handler(data.payload));
         }
-      } catch (e) {
-        console.error('Failed to parse WebSocket message:', e);
+      } catch (error) {
+        console.warn('WebSocket message ignored: invalid payload', error);
       }
     };
 
@@ -80,6 +79,7 @@ class WebSocketClient {
         return;
       }
       this.ws = null;
+      this.notifyConnectionChange(false);
       if (!this.shouldReconnect || this.intentionalClose) {
         return;
       }
@@ -108,7 +108,7 @@ class WebSocketClient {
   disconnect() {
     this.subscriberCount = Math.max(0, this.subscriberCount - 1);
     if (this.subscriberCount > 0) {
-      return;
+      return false;
     }
 
     this.shouldReconnect = false;
@@ -130,7 +130,7 @@ class WebSocketClient {
       this.intentionalClose = true;
       this.ws?.close();
       this.ws = null;
-      this.reconnectDelay = RECONNECT_BASE_MS;
+      this.notifyConnectionChange(false);
     };
 
     if (this.ws?.readyState === WebSocket.CONNECTING) {
@@ -138,10 +138,11 @@ class WebSocketClient {
         this.disconnectTimer = null;
         closeSocket();
       }, 150);
-      return;
+      return true;
     }
 
     closeSocket();
+    return true;
   }
 
   on(event: string, handler: EventHandler) {
@@ -150,6 +151,12 @@ class WebSocketClient {
     }
     this.handlers.get(event)!.add(handler);
     return () => this.handlers.get(event)?.delete(handler);
+  }
+
+  onConnectionChange(handler: ConnectionHandler) {
+    this.connectionHandlers.add(handler);
+    handler(this.ws?.readyState === WebSocket.OPEN);
+    return () => this.connectionHandlers.delete(handler);
   }
 
   send(data: unknown) {

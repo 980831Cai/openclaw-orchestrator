@@ -118,6 +118,18 @@ def init_database() -> None:
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
+        CREATE TABLE IF NOT EXISTS live_feed_messages (
+            id TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL,
+            recorded_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS live_feed_events (
+            id TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL,
+            recorded_at TEXT NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_tasks_team_id ON tasks(team_id);
         CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
         CREATE INDEX IF NOT EXISTS idx_team_members_agent ON team_members(agent_id);
@@ -127,6 +139,8 @@ def init_database() -> None:
         CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);
         CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(read);
         CREATE INDEX IF NOT EXISTS idx_notifications_execution ON notifications(execution_id);
+        CREATE INDEX IF NOT EXISTS idx_live_feed_messages_recorded_at ON live_feed_messages(recorded_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_live_feed_events_recorded_at ON live_feed_events(recorded_at DESC);
     """)
 
     _migrate_add_column(db, "workflow_executions", "context_json", "TEXT DEFAULT NULL")

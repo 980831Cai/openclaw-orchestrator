@@ -12,7 +12,12 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: response.statusText }));
     console.error(`API Error: ${path}`, error);
-    throw new Error(error.message || `Request failed: ${response.status}`);
+    const message =
+      (typeof error?.message === 'string' && error.message) ||
+      (typeof error?.detail === 'string' && error.detail) ||
+      response.statusText ||
+      `Request failed: ${response.status}`;
+    throw new Error(message);
   }
 
   return response.json();

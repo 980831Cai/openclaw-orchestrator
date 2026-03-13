@@ -4,9 +4,28 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Any, Optional
 
-from openclaw_orchestrator.services.workflow_engine import workflow_engine
+from openclaw_orchestrator.services.workflow_engine import (
+    WorkflowValidationError,
+    workflow_engine,
+)
+from openclaw_orchestrator.services.workflow_scheduler import workflow_scheduler
 
 router = APIRouter()
+
+
+def _attach_schedule_metadata(workflow: dict[str, Any]) -> dict[str, Any]:
+    schedule = workflow.get("schedule")
+    if not isinstance(schedule, dict):
+        return workflow
+
+    next_run_at = workflow_scheduler.get_next_run_at(workflow)
+    return {
+        **workflow,
+        "schedule": {
+            **schedule,
+            "nextRunAt": next_run_at,
+        },
+    }
 
 
 class CreateWorkflowRequest(BaseModel):
@@ -30,13 +49,21 @@ class StopExecutionRequest(BaseModel):
 
 @router.get("/workflows")
 def list_workflows(teamId: Optional[str] = None):
-    return workflow_engine.list_workflows(teamId)
+    return [
+        _attach_schedule_metadata(workflow)
+        for workflow in workflow_engine.list_workflows(teamId)
+    ]
+
+
+@router.get("/workflows/active-executions")
+def list_active_executions():
+    return workflow_engine.list_active_execution_signals()
 
 
 @router.get("/workflows/{workflow_id}")
 def get_workflow(workflow_id: str):
     try:
-        return workflow_engine.get_workflow(workflow_id)
+        return _attach_schedule_metadata(workflow_engine.get_workflow(workflow_id))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -47,23 +74,32 @@ def create_workflow(req: CreateWorkflowRequest):
         raise HTTPException(
             status_code=400, detail="teamId and name are required"
         )
-    return workflow_engine.create_workflow(
-        req.teamId,
-        req.name,
-        {
-            "nodes": req.nodes or {},
-            "edges": req.edges or [],
-            "schedule": req.schedule,
-        },
-    )
+    try:
+        return _attach_schedule_metadata(
+            workflow_engine.create_workflow(
+                req.teamId,
+                req.name,
+                {
+                    "nodes": req.nodes or {},
+                    "edges": req.edges or [],
+                    "schedule": req.schedule,
+                },
+            )
+        )
+    except WorkflowValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.put("/workflows/{workflow_id}")
 def update_workflow(workflow_id: str, req: UpdateWorkflowRequest):
     try:
-        return workflow_engine.update_workflow(
-            workflow_id, req.model_dump(exclude_none=True)
+        return _attach_schedule_metadata(
+            workflow_engine.update_workflow(
+                workflow_id, req.model_dump(exclude_none=True)
+            )
         )
+    except WorkflowValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -81,6 +117,8 @@ def delete_workflow(workflow_id: str):
 async def execute_workflow(workflow_id: str):
     try:
         return await workflow_engine.execute_workflow(workflow_id)
+    except WorkflowValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -89,6 +127,17 @@ async def execute_workflow(workflow_id: str):
 def stop_workflow(workflow_id: str, req: StopExecutionRequest):
     if not req.executionId:
         raise HTTPException(status_code=400, detail="executionId is required")
+    try:
+        execution = workflow_engine.get_execution(req.executionId)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    if execution.get("workflowId") != workflow_id:
+        raise HTTPException(
+            status_code=400,
+            detail="executionId does not belong to the requested workflow",
+        )
+
     workflow_engine.stop_execution(req.executionId)
     return {"message": "Execution stopped"}
 

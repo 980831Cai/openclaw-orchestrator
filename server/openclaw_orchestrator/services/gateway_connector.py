@@ -23,6 +23,7 @@ from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
 from openclaw_orchestrator.config import settings
+from openclaw_orchestrator.services.live_feed_service import live_feed_service
 from openclaw_orchestrator.websocket.ws_handler import broadcast
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ class GatewayConnector:
         self._auth_token: Optional[str] = None
         self._instance_id = str(uuid.uuid4())
         self._hello_payload: dict[str, Any] | None = None
+        self._last_error: str | None = None
 
     @property
     def gateway_url(self) -> str:
@@ -62,6 +64,53 @@ class GatewayConnector:
     @property
     def connected(self) -> bool:
         return self._connected and self._ws is not None
+
+    @property
+    def last_error(self) -> str | None:
+        return self._last_error
+
+    def _build_gateway_status_payload(
+        self,
+        *,
+        connected: bool,
+        error: str | None,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from openclaw_orchestrator.services.runtime_service import runtime_service
+
+        runtime = runtime_service.get_gateway_status()
+        payload: dict[str, Any] = {
+            "connected": connected,
+            "error": error,
+            "runtimeRunning": bool(runtime.get("running")),
+            "manageable": bool(runtime.get("manageable")),
+            "cliInstalled": bool(runtime.get("cliInstalled")),
+            "host": runtime.get("host"),
+            "port": runtime.get("port"),
+            "gatewayUrl": runtime.get("gatewayUrl"),
+        }
+        if extra:
+            payload.update(extra)
+        return payload
+
+    def _broadcast_gateway_status(
+        self,
+        *,
+        connected: bool,
+        error: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        broadcast(
+            {
+                "type": "gateway_status",
+                "payload": self._build_gateway_status_payload(
+                    connected=connected,
+                    error=error,
+                    extra=extra,
+                ),
+                "timestamp": _now(),
+            }
+        )
 
     def _next_request_id(self) -> str:
         return str(uuid.uuid4())
@@ -89,7 +138,7 @@ class GatewayConnector:
         openclaw_json_path = Path(settings.openclaw_home) / "openclaw.json"
         if openclaw_json_path.exists():
             try:
-                config = json.loads(openclaw_json_path.read_text(encoding="utf-8"))
+                config = json.loads(openclaw_json_path.read_text(encoding="utf-8-sig"))
                 token = None
 
                 gateway_config = config.get("gateway", {})
@@ -159,37 +208,27 @@ class GatewayConnector:
             except GatewayAuthError as exc:
                 self._connected = False
                 self._hello_payload = None
+                self._last_error = str(exc)
                 logger.error(
                     "Gateway authentication error: %s; retrying in 60s",
                     exc,
                 )
-                broadcast(
-                    {
-                        "type": "gateway_status",
-                        "payload": {
-                            "connected": False,
-                            "error": f"Auth failed: {exc}",
-                            "authRequired": True,
-                        },
-                        "timestamp": _now(),
-                    }
+                self._broadcast_gateway_status(
+                    connected=False,
+                    error=f"Auth failed: {exc}",
+                    extra={"authRequired": True},
                 )
                 await asyncio.sleep(60.0)
             except Exception as exc:
                 self._connected = False
                 self._hello_payload = None
+                self._last_error = str(exc)
                 logger.warning(
                     "Gateway connection lost: %s; reconnecting in %.0fs",
                     exc,
                     self._reconnect_delay,
                 )
-                broadcast(
-                    {
-                        "type": "gateway_status",
-                        "payload": {"connected": False, "error": str(exc)},
-                        "timestamp": _now(),
-                    }
-                )
+                self._broadcast_gateway_status(connected=False, error=str(exc))
                 await asyncio.sleep(self._reconnect_delay)
                 self._reconnect_delay = min(
                     self._reconnect_delay * 1.5, self._max_reconnect_delay
@@ -219,18 +258,14 @@ class GatewayConnector:
                 hello_payload = await self._perform_handshake(ws, auth_token)
                 self._connected = True
                 self._hello_payload = hello_payload
+                self._last_error = None
                 self._reconnect_delay = 2.0
 
                 logger.info("Connected to OpenClaw Gateway at %s", self.gateway_url)
-                broadcast(
-                    {
-                        "type": "gateway_status",
-                        "payload": {
-                            "connected": True,
-                            "features": hello_payload.get("features", {}),
-                        },
-                        "timestamp": _now(),
-                    }
+                self._broadcast_gateway_status(
+                    connected=True,
+                    error=None,
+                    extra={"features": hello_payload.get("features", {})},
                 )
 
                 async for raw in ws:
@@ -395,15 +430,19 @@ class GatewayConnector:
 
         # ── Dedup: register message IDs so SessionWatcher skips duplicates ──
         self._try_mark_seen(event_name, payload)
-        if event_name == "chat" or event_name in self._MESSAGE_EVENTS:
-            try:
-                from openclaw_orchestrator.services.session_watcher import session_watcher
-
-                session_watcher.mark_gateway_activity(payload)
-            except Exception as exc:
-                logger.debug(
-                    "Failed to project gateway event onto status chain: %s", exc
-                )
+        normalized_message = self._normalize_live_feed_message(event_name, payload)
+        if normalized_message:
+            live_feed_service.record_message(normalized_message)
+        normalized_event = self._normalize_live_feed_event(event_name, payload)
+        if normalized_event:
+            live_feed_service.record_event(normalized_event)
+            broadcast(
+                {
+                    "type": "communication",
+                    "payload": normalized_event,
+                    "timestamp": normalized_event.get("timestamp", timestamp),
+                }
+            )
 
         broadcast(
             {
@@ -423,6 +462,154 @@ class GatewayConnector:
                 handler(event_name, payload)
             except Exception as exc:
                 logger.error("Event handler error for %s: %s", event_name, exc)
+
+    def _normalize_live_feed_event(
+        self,
+        event_name: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if not event_name or event_name in self._MESSAGE_EVENTS:
+            return None
+
+        timestamp = str(payload.get("timestamp") or _now())
+        agent_id = str(payload.get("agentId") or payload.get("agent") or "gateway").strip() or "gateway"
+        session_key = str(payload.get("sessionKey") or payload.get("scope") or "").strip()
+        session_id = str(payload.get("sessionId") or "").strip()
+
+        if session_key.startswith("agent:"):
+            parts = session_key.split(":")
+            if len(parts) >= 3:
+                if agent_id == "gateway":
+                    agent_id = parts[1]
+                if not session_id:
+                    session_id = ":".join(parts[2:])
+
+        summary = self._summarize_live_feed_event(event_name, payload, session_id=session_id)
+        event_id = str(payload.get("id") or payload.get("eventId") or "").strip()
+        if not event_id:
+            event_id = f"gateway-{event_name}-{agent_id}-{session_id or 'none'}-{timestamp}"
+
+        return {
+            "id": event_id,
+            "fromAgentId": agent_id,
+            "toAgentId": session_id or event_name,
+            "type": "broadcast",
+            "eventType": event_name,
+            "content": summary,
+            "message": summary,
+            "timestamp": timestamp,
+        }
+
+    def _summarize_live_feed_event(
+        self,
+        event_name: str,
+        payload: dict[str, Any],
+        *,
+        session_id: str,
+    ) -> str:
+        if event_name in {"agent.status", "agent.update", "agent.state"}:
+            status = str(payload.get("status") or payload.get("state") or "unknown").strip()
+            return f"{event_name} -> {status}"
+
+        if event_name.startswith("sessions."):
+            label = session_id or str(payload.get("label") or payload.get("key") or "session").strip()
+            return f"{event_name} -> {label}"
+
+        if event_name.startswith("approval."):
+            status = str(payload.get("status") or "pending").strip()
+            return f"{event_name} -> {status}"
+
+        for key in ("message", "text", "detail", "summary", "error"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:200]
+
+        compact = json.dumps(payload, ensure_ascii=False, default=str)
+        return compact[:200]
+
+    def _normalize_live_feed_message(
+        self,
+        event_name: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if event_name not in self._MESSAGE_EVENTS:
+            return None
+
+        envelope = payload.get("message") if isinstance(payload.get("message"), dict) else payload
+        if not isinstance(envelope, dict):
+            envelope = payload
+
+        content = envelope.get("content")
+        normalized_content = ""
+        if isinstance(content, str):
+            normalized_content = content
+        elif isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    text = item.get("text") or item.get("content")
+                    if isinstance(text, str) and text.strip():
+                        parts.append(text)
+                elif isinstance(item, str) and item.strip():
+                    parts.append(item)
+            normalized_content = "\n".join(parts)
+        elif isinstance(content, dict):
+            text = content.get("text") or content.get("content")
+            if isinstance(text, str):
+                normalized_content = text
+
+        if not normalized_content.strip():
+            fallback_text = envelope.get("text") or payload.get("text")
+            if isinstance(fallback_text, str):
+                normalized_content = fallback_text
+
+        session_key = ""
+        for key in ("sessionKey", "scope"):
+            value = envelope.get(key) or payload.get(key)
+            if isinstance(value, str) and value.strip():
+                session_key = value.strip()
+                break
+
+        session_id = ""
+        value = envelope.get("sessionId") or payload.get("sessionId")
+        if isinstance(value, str) and value.strip():
+            session_id = value.strip()
+
+        agent_id = ""
+        value = envelope.get("agentId") or payload.get("agentId") or envelope.get("agent") or payload.get("agent")
+        if isinstance(value, str) and value.strip():
+            agent_id = value.strip()
+
+        if session_key.startswith("agent:"):
+            parts = session_key.split(":")
+            if len(parts) >= 3:
+                agent_id = agent_id or parts[1]
+                session_id = session_id or ":".join(parts[2:])
+
+        if session_key.startswith("agent/"):
+            parts = session_key.split("/")
+            if len(parts) >= 3:
+                agent_id = agent_id or parts[1]
+                session_id = session_id or "/".join(parts[2:])
+
+        if not normalized_content.strip():
+            return None
+
+        message_id = payload.get("id") or payload.get("messageId") or envelope.get("id")
+        timestamp = payload.get("timestamp") or envelope.get("timestamp") or _now()
+        role = envelope.get("role") or payload.get("role") or envelope.get("authorRole") or "assistant"
+        if role not in {"user", "assistant", "system"}:
+            role = "assistant"
+
+        return {
+            "id": str(message_id or f"gateway-{event_name}-{timestamp}"),
+            "sessionId": session_id or "main",
+            "sessionKey": session_key or None,
+            "agentId": agent_id or None,
+            "role": role,
+            "content": normalized_content,
+            "timestamp": timestamp,
+        }
 
     def _try_mark_seen(self, event_name: str, payload: dict[str, Any]) -> None:
         """Extract message ID from Gateway event and register it with SessionWatcher.
@@ -554,6 +741,30 @@ class GatewayConnector:
                 return session
         return {}
 
+    async def delete_session(
+        self,
+        *,
+        session_key: str,
+        delete_transcript: bool = True,
+    ) -> bool:
+        if not self.connected or not session_key.strip():
+            return False
+        try:
+            result = await self.call_rpc(
+                "sessions.delete",
+                {
+                    "key": session_key,
+                    "deleteTranscript": delete_transcript,
+                },
+                timeout=10.0,
+            )
+            if isinstance(result, dict):
+                return bool(result.get("deleted", True))
+            return True
+        except Exception as exc:
+            logger.debug("Failed to delete Gateway session %s: %s", session_key, exc)
+            return False
+
     async def interrupt_agent(self, agent_id: str) -> bool:
         logger.debug("interrupt_agent is not implemented for OpenClaw Gateway agent_id=%s", agent_id)
         return False
@@ -622,9 +833,9 @@ class GatewayAuthError(Exception):
 
 
 def _now() -> str:
-    from datetime import datetime
+    from datetime import UTC, datetime
 
-    return datetime.utcnow().isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 gateway_connector = GatewayConnector()

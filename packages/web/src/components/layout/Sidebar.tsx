@@ -1,4 +1,5 @@
-import { useState } from 'react'
+﻿import { useCallback, useEffect, useState } from 'react'
+import type { ReactNode } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
   Activity,
@@ -6,13 +7,23 @@ import {
   Building2,
   Command,
   GitBranch,
+  Loader2,
   MessageSquare,
+  RotateCcw,
+  Square,
   Users,
+  Zap,
 } from 'lucide-react'
 import { NotificationCenter } from '@/components/notification/NotificationCenter'
 import { Logo } from '@/components/brand/Logo'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { toast } from '@/hooks/use-toast'
+import { api } from '@/lib/api'
+import { getGatewayRuntimeActions } from '@/lib/gateway-runtime-controls'
 import { cn } from '@/lib/utils'
 import { useMonitorStore } from '@/stores/monitor-store'
+import type { GatewayRuntimeStatus } from '@/types'
+import { SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_EXPANDED_WIDTH } from './layout-shell'
 
 const navItems = [
   { path: '/', label: '总部大厅', icon: Building2, color: 'cyber-purple' },
@@ -30,19 +41,76 @@ interface SidebarProps {
 
 export function Sidebar({ expanded: expandedProp, onExpandedChange }: SidebarProps) {
   const [internalExpanded, setInternalExpanded] = useState(false)
+  const [gatewayRuntime, setGatewayRuntime] = useState<GatewayRuntimeStatus | null>(null)
+  const [runtimeBusy, setRuntimeBusy] = useState(false)
+  const [runtimeActionError, setRuntimeActionError] = useState<string | null>(null)
   const expanded = expandedProp ?? internalExpanded
   const setExpanded = onExpandedChange ?? setInternalExpanded
   const { connected, gatewayConnected } = useMonitorStore()
 
-  return (
-    <>
-      {expanded ? <div className="fixed inset-0 z-30" onClick={() => setExpanded(false)} /> : null}
+  const loadGatewayRuntime = useCallback(async () => {
+    try {
+      const status = await api.get<GatewayRuntimeStatus>('/runtime/gateway')
+      setGatewayRuntime(status)
+    } catch (error) {
+      console.error('Failed to load gateway runtime status', error)
+    }
+  }, [])
 
-      <aside
+  useEffect(() => {
+    void loadGatewayRuntime()
+  }, [loadGatewayRuntime])
+
+  useEffect(() => {
+    if (!expanded) {
+      return
+    }
+    void loadGatewayRuntime()
+  }, [expanded, loadGatewayRuntime])
+
+  const runGatewayAction = useCallback(
+    async (action: 'start' | 'stop' | 'restart') => {
+      setRuntimeBusy(true)
+      try {
+        const result = await api.post<GatewayRuntimeStatus>(`/runtime/gateway/${action}`)
+        setGatewayRuntime(result)
+        setRuntimeActionError(null)
+        toast({
+          title:
+            action === 'start' ? 'Gateway 已发起启动' : action === 'stop' ? 'Gateway 已发起停止' : 'Gateway 已发起重启',
+          description: result.message || `当前目标 ${result.host}:${result.port}`,
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Gateway 操作失败'
+        setRuntimeActionError(message)
+        toast({
+          title: 'Gateway 操作失败',
+          description: message,
+          variant: 'destructive',
+        })
+      } finally {
+        setRuntimeBusy(false)
+        void loadGatewayRuntime()
+      }
+    },
+    [loadGatewayRuntime],
+  )
+
+  const realtimeOk = connected
+  const gatewayRpcOk = gatewayConnected
+  const localProcessOk = gatewayRuntime?.running ?? false
+  const runtimeActions = getGatewayRuntimeActions(gatewayRuntime, runtimeBusy)
+  const allHealthy = realtimeOk && gatewayRpcOk && localProcessOk
+  const overallTone: 'green' | 'amber' | 'red' = !realtimeOk ? 'red' : allHealthy ? 'green' : 'amber'
+  const overallLabel =
+    overallTone === 'green' ? '系统状态正常' : overallTone === 'red' ? '实时通道断开' : '部分服务未就绪'
+
+  return (
+    <aside
         className={cn(
-          'fixed left-0 top-0 z-40 flex h-screen flex-col border-r border-white/5 bg-cyber-bg/95 py-4 backdrop-blur-sm transition-all duration-300',
-          expanded ? 'w-[200px]' : 'w-[72px]'
+          'fixed left-0 top-0 z-40 flex h-screen flex-col overflow-y-auto border-r border-white/5 bg-cyber-bg/95 py-4 backdrop-blur-sm transition-all duration-300',
         )}
+        style={{ width: expanded ? SIDEBAR_EXPANDED_WIDTH : SIDEBAR_COLLAPSED_WIDTH }}
         onMouseEnter={() => setExpanded(true)}
         onMouseLeave={() => setExpanded(false)}
       >
@@ -111,21 +179,206 @@ export function Sidebar({ expanded: expandedProp, onExpandedChange }: SidebarPro
 
           <NotificationCenter />
 
-          <div className="flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-white/30 transition-colors">
-            <div className={cn('h-2 w-2 flex-shrink-0 rounded-full', connected ? 'bg-cyber-green animate-pulse' : 'bg-cyber-red')} />
+          <OverallStatus
+            expanded={expanded}
+            tone={overallTone}
+            label={overallLabel}
+            detailItems={[
+              {
+                key: 'realtime',
+                label: '实时通道',
+                active: realtimeOk,
+                activeLabel: '已连接',
+                inactiveLabel: '未连接',
+              },
+              {
+                key: 'gateway',
+                label: 'Gateway RPC',
+                active: gatewayRpcOk,
+                activeLabel: '已连接',
+                inactiveLabel: '未连接',
+              },
+              {
+                key: 'runtime',
+                label: '本机进程',
+                active: localProcessOk,
+                activeLabel: '运行中',
+                inactiveLabel: '未运行',
+              },
+            ]}
+          />
+
+          {expanded ? (
+            <div className="rounded-xl border border-white/6 bg-white/[0.03] p-2.5 text-[10px] text-white/45">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="truncate font-medium text-white/75">{gatewayRuntime?.gatewayUrl ?? '等待读取 Gateway 配置'}</p>
+                  <p className="mt-1 truncate text-white/30">
+                    {gatewayRuntime?.host && gatewayRuntime?.port
+                      ? `${gatewayRuntime.host}:${gatewayRuntime.port}`
+                      : '尚未获取目标端口'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void loadGatewayRuntime()}
+                  className="rounded-md border border-white/8 px-2 py-1 text-[10px] text-white/40 transition hover:border-white/15 hover:text-white/70"
+                  disabled={runtimeBusy}
+                >
+                  刷新
+                </button>
+              </div>
+
+              {gatewayRuntime?.message ? <p className="mt-2 text-white/35">{gatewayRuntime.message}</p> : null}
+              {runtimeActionError ? (
+                <div className="mt-2 whitespace-pre-wrap rounded-lg border border-cyber-red/20 bg-cyber-red/8 px-2.5 py-2 text-[10px] leading-5 text-cyber-red/90">
+                  {runtimeActionError}
+                </div>
+              ) : null}
+              {gatewayRuntime?.logTail ? (
+                <div className="mt-2 rounded-lg border border-white/8 bg-black/20 px-2.5 py-2">
+                  <p className="mb-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-white/55">
+                    最近运行日志
+                  </p>
+                  <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-[10px] leading-5 text-white/70">
+                    {gatewayRuntime.logTail}
+                  </pre>
+                </div>
+              ) : null}
+              {gatewayRuntime?.errorLogTail ? (
+                <div className="mt-2 rounded-lg border border-cyber-amber/15 bg-black/20 px-2.5 py-2">
+                  <p className="mb-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-cyber-amber/75">
+                    最近错误日志
+                  </p>
+                  <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-[10px] leading-5 text-cyber-amber/85">
+                    {gatewayRuntime.errorLogTail}
+                  </pre>
+                </div>
+              ) : null}
+
+              <div className="mt-3 flex items-center gap-2">
+                {runtimeActions
+                  .filter((action) => action.visible)
+                  .map((action) => (
+                    <ActionButton
+                      key={action.action}
+                      icon={
+                        runtimeBusy ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : action.action === 'start' ? (
+                          <Zap className="h-3.5 w-3.5" />
+                        ) : action.action === 'stop' ? (
+                          <Square className="h-3.5 w-3.5" />
+                        ) : (
+                          <RotateCcw className="h-3.5 w-3.5" />
+                        )
+                      }
+                      label={action.label}
+                      onClick={() => void runGatewayAction(action.action)}
+                      disabled={action.disabled}
+                    />
+                  ))}
+              </div>
+            </div>
+          ) : null}
+
+          {expanded ? <div className="animate-fade-in py-1 text-center text-[9px] text-white/10">v0.1.0</div> : null}
+        </div>
+      </aside>
+  )
+}
+
+function OverallStatus({
+  expanded,
+  tone,
+  label,
+  detailItems,
+}: {
+  expanded: boolean
+  tone: 'green' | 'amber' | 'red'
+  label: string
+  detailItems: Array<{
+    key: string
+    label: string
+    active: boolean
+    activeLabel: string
+    inactiveLabel: string
+  }>
+}) {
+  const toneClass =
+    tone === 'green' ? 'bg-cyber-green' : tone === 'amber' ? 'bg-cyber-amber' : 'bg-cyber-red'
+
+  return (
+    <TooltipProvider delayDuration={150}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className="flex w-full items-center justify-center gap-2 rounded-xl px-3 py-2 text-white/35 transition-colors hover:bg-white/5 hover:text-white/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyber-cyan/60"
+            aria-label="系统状态明细"
+          >
+            <span className={cn('h-2 w-2 flex-shrink-0 rounded-full', toneClass)} />
             <span
               className={cn(
                 'whitespace-nowrap text-xs transition-opacity duration-300',
                 expanded ? 'opacity-100' : 'w-0 overflow-hidden opacity-0'
               )}
             >
-              {connected ? (gatewayConnected ? '实时通道与 Gateway 已连接' : '实时通道已连接') : '未连接'}
+              {label}
             </span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent
+          side="right"
+          align="end"
+          sideOffset={8}
+          className="w-56 border-white/10 bg-cyber-panel/95 p-3 text-white/85 backdrop-blur-xl"
+        >
+          <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/45">状态明细</p>
+          <div className="space-y-2">
+            {detailItems.map((item) => (
+              <div key={item.key} className="flex items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2">
+                  <span
+                    className={cn(
+                      'h-1.5 w-1.5 flex-shrink-0 rounded-full',
+                      item.active ? 'bg-cyber-green' : 'bg-cyber-red'
+                    )}
+                  />
+                  <span className="text-white/75">{item.label}</span>
+                </div>
+                <span className={cn('text-[11px]', item.active ? 'text-cyber-green/90' : 'text-cyber-red/90')}>
+                  {item.active ? item.activeLabel : item.inactiveLabel}
+                </span>
+              </div>
+            ))}
           </div>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
+}
 
-          {expanded ? <div className="animate-fade-in py-1 text-center text-[9px] text-white/10">v0.1.0</div> : null}
-        </div>
-      </aside>
-    </>
+function ActionButton({
+  icon,
+  label,
+  onClick,
+  disabled,
+}: {
+  icon: ReactNode
+  label: string
+  onClick: () => void
+  disabled?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg border border-white/8 bg-white/[0.04] px-2 py-1.5 text-[10px] font-medium text-white/65 transition hover:border-white/15 hover:bg-white/[0.08] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
   )
 }

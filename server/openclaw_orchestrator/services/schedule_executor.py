@@ -16,12 +16,12 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
 from typing import Any, Optional
 
 from openclaw_orchestrator.config import settings
 from openclaw_orchestrator.database.db import get_db
 from openclaw_orchestrator.services.openclaw_bridge import openclaw_bridge
+from openclaw_orchestrator.utils.time import utc_now_iso
 
 
 class ScheduleExecutor:
@@ -89,7 +89,7 @@ class ScheduleExecutor:
                 continue
 
         self._started = True
-        print(f"📅 Schedule executor started: {count} active schedules loaded")
+        print(f"[schedule] executor started: {count} active schedules loaded")
 
     def stop(self) -> None:
         """Clean up on shutdown. Persist round-robin state to DB."""
@@ -97,7 +97,7 @@ class ScheduleExecutor:
         self._started = False
         self._active_schedules.clear()
         self._round_robin_pointers.clear()
-        print("📅 Schedule executor stopped")
+        print("[schedule] executor stopped")
 
     # ════════════════════════════════════════════════════════════
     # Core: sync_schedule
@@ -126,7 +126,7 @@ class ScheduleExecutor:
                 "synced": True,
                 "mode": mode,
                 "jobCount": 0,
-                "syncedAt": datetime.utcnow().isoformat(),
+                "syncedAt": utc_now_iso(),
             }
 
         self._active_schedules[team_id] = schedule
@@ -151,7 +151,7 @@ class ScheduleExecutor:
                 "synced": False,
                 "mode": mode,
                 "error": f"Unknown schedule mode: {mode}",
-                "syncedAt": datetime.utcnow().isoformat(),
+                "syncedAt": utc_now_iso(),
             }
 
     # ════════════════════════════════════════════════════════════
@@ -191,7 +191,7 @@ class ScheduleExecutor:
             "jobCount": 0,
             "agentCount": len(sorted_entries),
             "currentPointer": self._round_robin_pointers.get(team_id, 0),
-            "syncedAt": datetime.utcnow().isoformat(),
+            "syncedAt": utc_now_iso(),
         }
 
     # ════════════════════════════════════════════════════════════
@@ -223,7 +223,7 @@ class ScheduleExecutor:
             "mode": "priority",
             "jobCount": 0,
             "agentCount": len(sorted_entries),
-            "syncedAt": datetime.utcnow().isoformat(),
+            "syncedAt": utc_now_iso(),
         }
 
     # ════════════════════════════════════════════════════════════
@@ -298,7 +298,7 @@ class ScheduleExecutor:
             "mode": "time-based",
             "jobCount": len(cron_jobs),
             "agents": next_triggers,
-            "syncedAt": datetime.utcnow().isoformat(),
+            "syncedAt": utc_now_iso(),
         }
 
     # ════════════════════════════════════════════════════════════
@@ -345,7 +345,7 @@ class ScheduleExecutor:
             "synced": success,
             "mode": "custom",
             "jobCount": len(cron_jobs),
-            "syncedAt": datetime.utcnow().isoformat(),
+            "syncedAt": utc_now_iso(),
         }
 
     # ════════════════════════════════════════════════════════════

@@ -6,27 +6,28 @@ is perfectly fine and simpler than async.
 """
 
 import sqlite3
-from typing import Optional
+import threading
 
 from openclaw_orchestrator.config import settings
 
-_db: Optional[sqlite3.Connection] = None
+_db_local = threading.local()
 
 
 def get_db() -> sqlite3.Connection:
-    """Get or create the database connection (singleton)."""
-    global _db
-    if _db is None:
-        _db = sqlite3.connect(settings.db_path, check_same_thread=False)
-        _db.row_factory = sqlite3.Row
-        _db.execute("PRAGMA journal_mode = WAL")
-        _db.execute("PRAGMA foreign_keys = ON")
-    return _db
+    """Get or create a SQLite connection scoped to the current thread."""
+    connection = getattr(_db_local, "connection", None)
+    if connection is None:
+        connection = sqlite3.connect(settings.db_path, check_same_thread=False)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA foreign_keys = ON")
+        _db_local.connection = connection
+    return connection
 
 
 def close_db() -> None:
-    """Close the database connection."""
-    global _db
-    if _db is not None:
-        _db.close()
-        _db = None
+    """Close the SQLite connection for the current thread, if present."""
+    connection = getattr(_db_local, "connection", None)
+    if connection is not None:
+        connection.close()
+        _db_local.connection = None
