@@ -4,6 +4,12 @@ import ReactFlow, {
   Background,
   Controls,
   MiniMap,
+  Panel,
+  useEdgesState,
+  useNodesState,
+  type Connection,
+  type Edge,
+  type Node,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import { GitBranch, Loader2, Merge, MessageSquare, Play, Plus, Save, Square, Split, Swords, Trash2, UserCheck, Zap } from 'lucide-react'
@@ -809,11 +815,11 @@ export function WorkflowEditorPage() {
               <DialogHeader><DialogTitle className="text-white">新建工作流</DialogTitle></DialogHeader>
               <div className="space-y-4 pt-4">
                 <Input
-                  value={editor.newName}
-                  onChange={(e) => editor.setNewName(e.target.value)}
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
                   placeholder="工作流名称"
                   className="bg-cyber-bg border-white/10 text-white"
-                  onKeyDown={(e) => e.key === 'Enter' && editor.handleCreate()}
+                  onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
                 />
                 <Input
                   value={newTeamId}
@@ -837,16 +843,16 @@ export function WorkflowEditorPage() {
           </Dialog>
         </div>
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
-          {editor.workflows.length === 0 ? (
+          {workflows.length === 0 ? (
             <EmptyState scene="no-workflows" className="py-8" />
           ) : (
-            editor.workflows.map((wf, i) => (
+            workflows.map((wf, i) => (
               <button
                 key={wf.id}
                 onClick={() => openWorkflow(wf)}
                 className={cn(
                   'w-full flex items-center gap-2 p-3 rounded-xl transition-all cursor-pointer text-left animate-fade-in group',
-                  editor.selected?.id === wf.id
+                  selected?.id === wf.id
                     ? 'cartoon-card border-cyber-amber/30'
                     : 'hover:bg-white/5 border-2 border-transparent'
                 )}
@@ -854,11 +860,11 @@ export function WorkflowEditorPage() {
               >
                 <div className={cn(
                   'w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors',
-                  editor.selected?.id === wf.id ? 'bg-cyber-amber/15' : 'bg-white/5'
+                  selected?.id === wf.id ? 'bg-cyber-amber/15' : 'bg-white/5'
                 )}>
                   <GitBranch className={cn(
                     'w-3.5 h-3.5 transition-colors',
-                    editor.selected?.id === wf.id ? 'text-cyber-amber' : 'text-white/25'
+                    selected?.id === wf.id ? 'text-cyber-amber' : 'text-white/25'
                   )} />
                 </div>
                 <div className="flex-1 min-w-0">
@@ -875,7 +881,11 @@ export function WorkflowEditorPage() {
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {!selected ? (
           <div className="flex-1 flex flex-col items-center justify-center">
-            <EmptyState scene="no-workflows" title="选择或创建工作流" description="从左侧列表选择工作流开始编辑，或创建一个新的" />
+            <EmptyState
+              scene="no-workflows"
+              title="选择或创建工作流"
+              description="从左侧列表选择工作流开始编辑，或创建一个新的"
+            />
           </div>
         ) : (
           <div className="flex h-full min-h-0 overflow-hidden">
@@ -1511,15 +1521,14 @@ export function WorkflowEditorPage() {
                 ) : null}
               </div>
 
-              {/* Execution logs */}
               <div className="p-4 border-t border-white/5 space-y-3">
                 <div className="flex items-center justify-between">
                   <h3 className="text-white font-semibold text-sm">执行日志</h3>
-                  {editor.execution ? <span className="text-[10px] text-white/35">{editor.execution.id}</span> : null}
+                  {execution ? <span className="text-[10px] text-white/35">{execution.id}</span> : null}
                 </div>
-                {editor.execution?.logs?.length ? (
+                {execution?.logs?.length ? (
                   <div className="space-y-2 max-h-80 overflow-y-auto">
-                    {editor.execution.logs.map((log, index) => (
+                    {execution.logs.map((log, index) => (
                       <div key={`${log.timestamp}-${index}`} className="rounded-lg border border-white/5 bg-cyber-bg/40 p-3">
                         <div className="flex items-center justify-between gap-3 mb-1">
                           <span className={cn('text-[10px] uppercase', log.level === 'error' ? 'text-red-300' : log.level === 'warn' ? 'text-yellow-300' : 'text-cyber-green')}>{log.level}</span>
