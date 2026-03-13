@@ -13,7 +13,6 @@ interface UseOfficePixiRuntimeParams {
   initIdRef: MutableRefObject<number>;
   initDoneRef: MutableRefObject<boolean>;
   officeWRef: MutableRefObject<number>;
-  totalHRef: MutableRefObject<number>;
   scrollHostXRef: MutableRefObject<HTMLElement | null>;
   scrollHostYRef: MutableRefObject<HTMLElement | null>;
   deliveriesRef: MutableRefObject<Delivery[]>;
@@ -42,7 +41,6 @@ export function useOfficePixiRuntime({
   initIdRef,
   initDoneRef,
   officeWRef,
-  totalHRef,
   scrollHostXRef,
   scrollHostYRef,
   deliveriesRef,
@@ -65,10 +63,6 @@ export function useOfficePixiRuntime({
   useEffect(() => {
     const element = containerRef.current;
     if (!element) return;
-    let trailingResizeTimer: ReturnType<typeof setTimeout> | null = null;
-    const pendingSizeRef = { current: { width: officeWRef.current, height: totalHRef.current } };
-    let lastResizeApplyAt = 0;
-    const MIN_RESIZE_INTERVAL_MS = 140;
 
     destroyedRef.current = false;
     const currentInitId = ++initIdRef.current;
@@ -196,70 +190,14 @@ export function useOfficePixiRuntime({
 
     init();
 
-    const applyResize = (targetWidth: number) => {
-      if (
-        destroyedRef.current ||
-        initIdRef.current !== currentInitId ||
-        !appRef.current
-      ) {
-        return;
-      }
-      if (Math.abs(targetWidth - officeWRef.current) <= 0) {
-        return;
-      }
-      officeWRef.current = targetWidth;
-      appRef.current.renderer.resize(targetWidth, totalHRef.current);
-      buildScene();
-      followCeoInView();
-    };
-
-    const scheduleResizeApply = () => {
-      if (!appRef.current || destroyedRef.current || initIdRef.current !== currentInitId) {
-        return;
-      }
-      const now = performance.now();
-      const elapsed = now - lastResizeApplyAt;
-      if (elapsed >= MIN_RESIZE_INTERVAL_MS) {
-        lastResizeApplyAt = now;
-        applyResize(pendingSizeRef.current.width);
-        if (trailingResizeTimer) {
-          clearTimeout(trailingResizeTimer);
-          trailingResizeTimer = null;
-        }
-        return;
-      }
-
-      if (trailingResizeTimer) {
-        return;
-      }
-
-      trailingResizeTimer = setTimeout(() => {
-        trailingResizeTimer = null;
-        lastResizeApplyAt = performance.now();
-        applyResize(pendingSizeRef.current.width);
-      }, Math.max(16, MIN_RESIZE_INTERVAL_MS - elapsed));
-    };
-
     const resizeObserver = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry || !appRef.current || destroyedRef.current || initIdRef.current !== currentInitId) return;
       const newWidth = Math.max(MIN_OFFICE_W, Math.floor(entry.contentRect.width));
-      const newHeight = Math.floor(entry.contentRect.height);
-      const widthChanged = Math.abs(newWidth - officeWRef.current) > 4;
-      const heightChanged = Math.abs(newHeight - pendingSizeRef.current.height) > 8;
-
-      if (!widthChanged && !heightChanged) {
-        return;
+      if (Math.abs(newWidth - officeWRef.current) > 10) {
+        officeWRef.current = newWidth;
+        buildScene();
       }
-
-      pendingSizeRef.current = { width: newWidth, height: newHeight };
-
-      if (widthChanged) {
-        scheduleResizeApply();
-        return;
-      }
-
-      followCeoInView();
     });
 
     resizeObserver.observe(element);
@@ -267,10 +205,6 @@ export function useOfficePixiRuntime({
     return () => {
       destroyedRef.current = true;
       initIdRef.current++;
-      if (trailingResizeTimer) {
-        clearTimeout(trailingResizeTimer);
-        trailingResizeTimer = null;
-      }
       resizeObserver.disconnect();
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);

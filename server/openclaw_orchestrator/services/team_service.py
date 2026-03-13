@@ -18,14 +18,17 @@ TEAM_MD_TEMPLATE = """# {name}
 ## 团队目标
 {goal}
 
-## 成员特长总结
+## 团队规范
+<!-- Lead 可以定义和更新团队的工作规范 -->
+
+## 工作流定义
+<!-- 定义团队常用的工作流程 -->
+
+## 成员能力总结
+<!-- 任务完成后自动积累 -->
+
+## 历史经验与教训
 <!-- 任务完成后自动追加 -->
-
-## 协作规则
-<!-- 在实践中逐渐沉淀 -->
-
-## 历史教训与最佳实践
-<!-- 每次任务完成后自动提炼追加 -->
 """
 
 
@@ -40,7 +43,12 @@ class TeamService:
         theme: Optional[str] = None,
         lead_agent_id: Optional[str] = None,  # noqa: ARG002 - reserved for future use
     ) -> dict[str, Any]:
-        """Create a new team with directory structure."""
+        """Create a new team with directory structure.
+
+        Automatically creates a manager agent as the team Lead.
+        """
+        from openclaw_orchestrator.services.agent_service import agent_service
+
         db = get_db()
         team_id = str(uuid.uuid4())
         team_dir = os.path.join("teams", team_id)
@@ -56,6 +64,10 @@ class TeamService:
             TEAM_MD_TEMPLATE.format(name=name, goal=goal or "待定义"),
         )
 
+        # Create manager agent as team Lead
+        manager_agent = agent_service.create_manager_agent(team_id, name)
+        manager_agent_id = manager_agent["id"]
+
         db.execute(
             "INSERT INTO teams (id, name, description, goal, theme, team_dir, lead_agent_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
@@ -65,10 +77,18 @@ class TeamService:
                 goal or "",
                 theme or "default",
                 file_manager.get_full_path(team_dir),
-                lead_agent_id,
+                manager_agent_id,
             ),
         )
         db.commit()
+
+        # Add manager agent to team members with lead role
+        db.execute(
+            "INSERT INTO team_members (team_id, agent_id, role, join_order) VALUES (?, ?, ?, ?)",
+            (team_id, manager_agent_id, "lead", 0),
+        )
+        db.commit()
+
         return self.get_team(team_id)
 
     def get_team(self, team_id: str) -> dict[str, Any]:
@@ -159,22 +179,13 @@ class TeamService:
         db.commit()
 
     def add_member(self, team_id: str, agent_id: str, role: str = "member") -> None:
-        """Add a member to a team. First member auto-promotes to Lead if no Lead exists."""
+        """Add a member to a team."""
         db = get_db()
         max_order_row = db.execute(
             "SELECT MAX(join_order) as m FROM team_members WHERE team_id = ?",
             (team_id,),
         ).fetchone()
         max_order = max_order_row["m"] or 0
-
-        # Auto-promote first member to Lead if team has no Lead
-        team_row = db.execute("SELECT lead_agent_id FROM teams WHERE id = ?", (team_id,)).fetchone()
-        if team_row and not team_row["lead_agent_id"]:
-            role = "lead"
-            db.execute(
-                "UPDATE teams SET lead_agent_id = ? WHERE id = ?",
-                (agent_id, team_id),
-            )
 
         db.execute(
             "INSERT OR REPLACE INTO team_members (team_id, agent_id, role, join_order) VALUES (?, ?, ?, ?)",
@@ -183,41 +194,6 @@ class TeamService:
         db.commit()
         self._update_agent_to_agent_config(team_id)
 
-    def set_lead(self, team_id: str, agent_id: str) -> dict[str, Any]:
-        """Set a specific agent as Team Lead."""
-        db = get_db()
-        # Verify agent is a member
-        member = db.execute(
-            "SELECT * FROM team_members WHERE team_id = ? AND agent_id = ?",
-            (team_id, agent_id),
-        ).fetchone()
-        if not member:
-            raise ValueError(f"Agent {agent_id} is not a member of team {team_id}")
-
-        # Demote old Lead
-        old_lead = db.execute(
-            "SELECT lead_agent_id FROM teams WHERE id = ?", (team_id,)
-        ).fetchone()
-        if old_lead and old_lead["lead_agent_id"]:
-            db.execute(
-                "UPDATE team_members SET role = 'member' WHERE team_id = ? AND agent_id = ?",
-                (team_id, old_lead["lead_agent_id"]),
-            )
-
-        # Promote new Lead
-        db.execute(
-            "UPDATE teams SET lead_agent_id = ? WHERE id = ?",
-            (agent_id, team_id),
-        )
-        db.execute(
-            "UPDATE team_members SET role = 'lead' WHERE team_id = ? AND agent_id = ?",
-            (team_id, agent_id),
-        )
-        db.commit()
-
-        logger.info("Team %s Lead changed to %s", team_id, agent_id)
-        return self.get_team(team_id)
-
     def get_lead(self, team_id: str) -> Optional[str]:
         """Get the Team Lead agent ID."""
         db = get_db()
@@ -225,6 +201,11 @@ class TeamService:
             "SELECT lead_agent_id FROM teams WHERE id = ?", (team_id,)
         ).fetchone()
         return row["lead_agent_id"] if row else None
+
+    def is_lead(self, agent_id: str, team_id: str) -> bool:
+        """Check if an agent is the team Lead."""
+        lead_agent_id = self.get_lead(team_id)
+        return lead_agent_id is not None and lead_agent_id == agent_id
 
     def remove_member(self, team_id: str, agent_id: str) -> None:
         """Remove a member from a team."""

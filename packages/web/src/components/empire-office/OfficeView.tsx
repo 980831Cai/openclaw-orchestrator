@@ -80,7 +80,6 @@ export default function OfficeView({
       particles: Container;
       agentId?: string;
       cliProvider?: string;
-      empireStatus?: string;
       deskG?: Graphics;
       bedG?: Graphics;
       blanketG?: Graphics;
@@ -334,7 +333,6 @@ export default function OfficeView({
     initIdRef,
     initDoneRef,
     officeWRef,
-    totalHRef,
     scrollHostXRef,
     scrollHostYRef,
     deliveriesRef,
@@ -393,8 +391,8 @@ export default function OfficeView({
   });
 
   return (
-    <div className="flex w-full min-h-0 flex-col">
-      <div className="relative mx-auto w-full overflow-auto">
+    <div className="w-full overflow-auto" style={{ minHeight: "100%" }}>
+      <div className="relative mx-auto w-full">
         <div
           ref={containerRef}
           className="mx-auto"

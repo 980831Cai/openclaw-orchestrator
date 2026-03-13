@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from openclaw_orchestrator.config import settings
 from openclaw_orchestrator.services.chat_service import ChatDeliveryError, chat_service
 from openclaw_orchestrator.services.live_feed_service import live_feed_service
 from openclaw_orchestrator.services.session_watcher import session_watcher
@@ -43,7 +44,17 @@ async def send_message(agent_id: str, session_id: str, req: SendMessageRequest):
 
 @router.get("/monitor/statuses")
 def get_statuses():
-    return session_watcher.get_all_statuses()
+    statuses = session_watcher.get_all_statuses()
+    agents_dir = Path(settings.openclaw_home) / "agents"
+    if agents_dir.exists():
+        for entry in agents_dir.iterdir():
+            if not entry.is_dir():
+                continue
+            agent_id = entry.name.strip()
+            if not agent_id:
+                continue
+            statuses[agent_id] = session_watcher.get_enriched_status(agent_id)["status"]
+    return statuses
 
 
 @router.get("/monitor/live-feed-snapshot")

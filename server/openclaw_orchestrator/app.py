@@ -14,7 +14,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from openclaw_orchestrator.config import settings
@@ -150,7 +150,11 @@ app.add_middleware(ApiKeyMiddleware)
 
 # ─── Global exception handlers ───
 @app.exception_handler(ValueError)
+<<<<<<< HEAD
 async def value_error_handler(_request: Request, exc: ValueError):
+=======
+async def value_error_handler(request: Request, exc: ValueError):
+>>>>>>> github/master
     """Return 400 for ValueError (validation failures)."""
     return JSONResponse(
         status_code=400,

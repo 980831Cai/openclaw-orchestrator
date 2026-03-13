@@ -69,7 +69,7 @@ export function EmpireOfficeBoard({ rooms, onOpenRoom, onOpenAgent }: EmpireOffi
         name_ja: room.agent.name,
         name_zh: room.agent.name,
         department_id: room.id,
-        role: index === 0 ? 'team_leader' : index % 3 === 0 ? 'senior' : 'junior',
+        role: index === 0 ? 'lead' : index % 3 === 0 ? 'senior' : 'junior',
         cli_provider: 'codex',
         avatar_emoji: room.agent.emoji || '🤖',
         personality: room.teamName ? `所属工作室：${room.teamName}` : null,
@@ -132,7 +132,7 @@ export function EmpireOfficeBoard({ rooms, onOpenRoom, onOpenAgent }: EmpireOffi
   )
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="h-full">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <StatusChip label="执行中" value={roomStats.busy} tone="border-emerald-400/20 bg-emerald-500/10 text-emerald-200" />
         <StatusChip label="待命" value={roomStats.idle} tone="border-sky-400/20 bg-sky-500/10 text-sky-200" />
@@ -141,12 +141,12 @@ export function EmpireOfficeBoard({ rooms, onOpenRoom, onOpenAgent }: EmpireOffi
         <StatusChip label="离线" value={roomStats.offline} tone="border-slate-400/20 bg-slate-500/10 text-slate-300" />
       </div>
 
-      <div className="mt-4 flex min-h-0 flex-col overflow-hidden rounded-[28px] border border-white/8 bg-slate-950/45 shadow-[0_16px_40px_rgba(2,6,23,0.35)]">
+      <div className="mt-4 overflow-hidden rounded-[28px] border border-white/8 bg-slate-950/45 shadow-[0_16px_40px_rgba(2,6,23,0.35)]">
         <div className="border-b border-white/8 bg-black/20 px-4 py-3">
           <h3 className="text-sm font-black tracking-wider text-white/85">Agent 工位总览</h3>
           <p className="mt-1 text-[11px] text-white/45">每个 Agent 独立工位，实时展示状态与当前任务。</p>
         </div>
-        <div className="min-h-0 overflow-auto">
+        <div className="h-[560px] min-h-[560px] overflow-hidden">
           <OfficeView
             departments={departments}
             agents={agents}
@@ -166,13 +166,12 @@ export function EmpireOfficeBoard({ rooms, onOpenRoom, onOpenAgent }: EmpireOffi
         </div>
       </div>
 
-      <div className="mt-4 max-h-[340px] overflow-y-auto pr-1 xl:max-h-[360px]">
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {rooms.map((room) => (
-            <article
-              key={room.id}
-              className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-3 transition-all duration-200 hover:border-white/12 hover:bg-white/[0.04]"
-            >
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        {rooms.map((room) => (
+          <article
+            key={room.id}
+            className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-3 transition-all duration-200 hover:border-white/12 hover:bg-white/[0.04]"
+          >
             <div className={`mb-3 h-1 rounded-full bg-gradient-to-r ${room.accent.bar}`} />
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
@@ -209,9 +208,8 @@ export function EmpireOfficeBoard({ rooms, onOpenRoom, onOpenAgent }: EmpireOffi
                 </button>
               ) : null}
             </div>
-            </article>
-          ))}
-        </div>
+          </article>
+        ))}
       </div>
     </div>
   )

@@ -2,8 +2,6 @@
 // Migrated from @openclaw/shared to local types
 // Enhanced with: Notification, notification/approval_update event types
 
-import type { WorkflowDefinition } from './workflow'
-
 export interface SessionMessage {
   id?: string
   sessionId?: string
@@ -30,7 +28,6 @@ export type WorkflowRuntimeStatus = 'running' | 'waiting_approval' | 'completed'
 export interface WorkflowRuntimeSignal {
   executionId: string
   workflowId?: string
-  workflowName?: string
   status: WorkflowRuntimeStatus
   currentNodeId?: string | null
   nodeType?: 'task' | 'condition' | 'join' | 'parallel' | 'approval' | 'meeting' | 'debate' | string
@@ -45,50 +42,12 @@ export interface WorkflowRuntimeSignal {
   updatedAt?: string
 }
 
-export interface ApprovalUpdatePayload {
-  id?: string
-  executionId: string
-  nodeId?: string | null
-  status: 'pending' | 'approved' | 'rejected' | string
-  rejectReason?: string | null
-  updatedAt?: string
-  resolvedAt?: string
-}
-
-export interface GatewayRuntimeStatus {
-  manageable: boolean
-  cliInstalled: boolean
-  running: boolean
-  responsive?: boolean
-  host: string
-  port: number
-  gatewayUrl: string
-  rpcGatewayUrl?: string
-  pid?: number | null
-  detectionSource?: string | null
-  logFile: string
-  logTail?: string | null
-  errorLogFile: string
-  errorLogTail?: string | null
-  message?: string | null
-}
-
-export interface LiveFeedSnapshot {
-  events: CommunicationEvent[]
-  messages: SessionMessage[]
-  workflowSignals: WorkflowRuntimeSignal[]
-  scheduledWorkflows: WorkflowDefinition[]
-  notifications: Notification[]
-  unreadCount: number
-}
-
 // ─── WebSocket event types ───
 
 export type WebSocketEventType =
   | 'agent_status'
   | 'new_message'
   | 'gateway_chat'
-  | 'gateway_event'
   | 'communication'
   | 'task_update'
   | 'workflow_update'

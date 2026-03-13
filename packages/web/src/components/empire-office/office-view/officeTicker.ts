@@ -29,7 +29,6 @@ interface AgentAnimItem {
   particles: Container;
   agentId?: string;
   cliProvider?: string;
-  empireStatus?: string;
   deskG?: Graphics;
   bedG?: Graphics;
   blanketG?: Graphics;
@@ -206,7 +205,7 @@ export function runOfficeTickerStep(ctx: OfficeTickerContext): void {
     }
   }
 
-  for (const { sprite, status, baseX, baseY, particles, agentId, cliProvider, empireStatus, deskG, bedG, blanketG } of ctx
+  for (const { sprite, status, baseX, baseY, particles, agentId, cliProvider, deskG, bedG, blanketG } of ctx
     .animItemsRef.current) {
     if (agentId) {
       const meetingNow = Date.now();
@@ -219,49 +218,10 @@ export function runOfficeTickerStep(ctx: OfficeTickerContext): void {
       if (inMeeting) continue;
     }
 
-    const effectiveStatus = empireStatus ?? status;
-    const swayBase = tick * 0.08 + baseX * 0.03 + baseY * 0.01;
-    let offsetX = 0;
-    let offsetY = 0;
-    let baseRotation = 0;
+    sprite.position.x = baseX;
+    sprite.position.y = baseY;
 
-    switch (effectiveStatus) {
-      case "working":
-        offsetY = Math.sin(swayBase * 1.35) * 1.4;
-        baseRotation = Math.sin(swayBase * 0.9) * 0.035;
-        break;
-      case "delegating":
-        offsetX = Math.sin(swayBase * 1.15) * 2.4;
-        offsetY = Math.cos(swayBase * 1.15) * 0.9;
-        baseRotation = Math.sin(swayBase * 1.15) * 0.06;
-        break;
-      case "reviewing":
-      case "approval":
-        offsetY = Math.sin(swayBase * 0.85) * 1.1;
-        baseRotation = Math.sin(swayBase * 0.55) * 0.028;
-        break;
-      case "returning":
-        offsetX = Math.sin(swayBase * 1.8) * 3.2;
-        offsetY = Math.abs(Math.cos(swayBase * 1.8)) * -1.4;
-        baseRotation = Math.sin(swayBase * 1.8) * 0.045;
-        break;
-      case "break":
-        offsetY = Math.sin(swayBase * 0.55) * 0.6 + 1.2;
-        baseRotation = -0.025;
-        break;
-      case "offline":
-        offsetY = 0.6;
-        break;
-      default:
-        offsetY = Math.sin(swayBase * 0.6) * 0.45;
-        break;
-    }
-
-    sprite.position.x = baseX + offsetX;
-    sprite.position.y = baseY + offsetY;
-    sprite.rotation = baseRotation;
-
-    if (effectiveStatus === "working") {
+    if (status === "working") {
       if (tick % 10 === 0) {
         const particle = new Graphics();
         const colors = [0x55aaff, 0x55ff88, 0xffaa33, 0xff5577, 0xaa77ff];
@@ -272,29 +232,25 @@ export function runOfficeTickerStep(ctx: OfficeTickerContext): void {
         particles.addChild(particle);
       }
 
-    }
-
-    for (let i = particles.children.length - 1; i >= 0; i--) {
-      const particle = particles.children[i] as any;
-      if (particle._sweat) continue;
-      particle._life = (particle._life ?? 0) + 1;
-      particle.position.y += particle._vy ?? -0.4;
-      particle.position.x += Math.sin(particle._life * 0.2) * 0.2;
-      particle.alpha =
-        effectiveStatus === "working"
-          ? Math.max(0, 1 - particle._life * 0.03)
-          : Math.max(0, (particle.alpha ?? 1) - 0.14);
-      particle.scale.set(Math.max(0.1, 1 - particle._life * 0.02));
-      if (particle._life > 35 || particle.alpha <= 0.05) {
-        particles.removeChild(particle);
-        particle.destroy();
+      for (let i = particles.children.length - 1; i >= 0; i--) {
+        const particle = particles.children[i] as any;
+        if (particle._sweat) continue;
+        particle._life++;
+        particle.position.y += particle._vy ?? -0.4;
+        particle.position.x += Math.sin(particle._life * 0.2) * 0.2;
+        particle.alpha = Math.max(0, 1 - particle._life * 0.03);
+        particle.scale.set(Math.max(0.1, 1 - particle._life * 0.02));
+        if (particle._life > 35) {
+          particles.removeChild(particle);
+          particle.destroy();
+        }
       }
     }
 
     if (cliProvider) {
       const usage = ctx.cliUsageRef.current?.[cliProvider];
       const maxUtil = usage?.windows?.reduce((max, window) => Math.max(max, window.utilization), 0) ?? 0;
-      const isOfflineAgent = effectiveStatus === "offline";
+      const isOfflineAgent = status === "offline";
 
       if (maxUtil >= 1.0) {
         const bedCenterX = baseX;
@@ -350,7 +306,7 @@ export function runOfficeTickerStep(ctx: OfficeTickerContext): void {
           particles.addChild(sleepy);
         }
       } else if (maxUtil >= 0.8) {
-        sprite.rotation = baseRotation;
+        sprite.rotation = 0;
         sprite.alpha = 1;
         const child0 = sprite.children[0];
         if (child0 && "tint" in child0) (child0 as any).tint = 0xff9999;
@@ -373,7 +329,7 @@ export function runOfficeTickerStep(ctx: OfficeTickerContext): void {
           particles.addChild(drop);
         }
       } else if (maxUtil >= 0.6) {
-        sprite.rotation = baseRotation;
+        sprite.rotation = 0;
         sprite.alpha = 1;
         const child0 = sprite.children[0];
         if (child0 && "tint" in child0) (child0 as any).tint = 0xffffff;
@@ -396,7 +352,7 @@ export function runOfficeTickerStep(ctx: OfficeTickerContext): void {
           particles.addChild(drop);
         }
       } else {
-        sprite.rotation = baseRotation;
+        sprite.rotation = 0;
         sprite.alpha = isOfflineAgent ? 0.3 : 1;
         const child0 = sprite.children[0];
         if (child0 && "tint" in child0) (child0 as any).tint = isOfflineAgent ? 0x888899 : 0xffffff;

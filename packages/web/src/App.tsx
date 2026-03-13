@@ -1,7 +1,6 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { MainLayout } from '@/components/layout/MainLayout'
-import { useWebSocket } from '@/hooks/use-websocket'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { AgentListPage } from '@/pages/AgentListPage'
 import { AgentConfigPage } from '@/pages/AgentConfigPage'
@@ -10,10 +9,9 @@ import { TeamDetailPage } from '@/pages/TeamDetailPage'
 import { WorkflowEditorPage } from '@/pages/WorkflowEditorPage'
 import { MonitorPage } from '@/pages/MonitorPage'
 import { ChatPage } from '@/pages/ChatPage'
+import { SettingsPage } from '@/pages/SettingsPage'
 
 function App() {
-  useWebSocket()
-
   return (
     <ErrorBoundary>
       <BrowserRouter>
@@ -28,6 +26,7 @@ function App() {
             <Route path="/monitor" element={<MonitorPage />} />
             <Route path="/chat" element={<ChatPage />} />
             <Route path="/chat/:agentId" element={<ChatPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
           </Route>
         </Routes>
       </BrowserRouter>
