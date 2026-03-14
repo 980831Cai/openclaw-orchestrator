@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from typing import Any, Optional
 
@@ -39,6 +40,10 @@ def _infer_artifact_type(ext: str) -> str:
 
 # ─── Task MD template ───
 
+HANDOFF_SECTION_TITLE = "可执行交接区"
+DECISION_SECTION_TITLE = "决议摘要区"
+
+
 def _task_md_template(title: str, description: str, agents: list[str]) -> str:
     agent_lines = "\n".join(f"- {a}" for a in agents)
     return f"""# {title}
@@ -56,6 +61,18 @@ def _task_md_template(title: str, description: str, agents: list[str]) -> str:
 ## 信息交换区
 
 <!-- Agent 们在此区域交换信息、更新进度 -->
+
+---
+
+## {HANDOFF_SECTION_TITLE}
+
+<!-- 仅记录可消费交接；由后端统一模板写入 -->
+
+---
+
+## {DECISION_SECTION_TITLE}
+
+<!-- 仅记录授权后的会议决议摘要（非原始会议纪要） -->
 
 ---
 
@@ -77,6 +94,15 @@ def _empty_manifest(task_id: str) -> dict[str, Any]:
 class TaskService:
     """Service for managing tasks and their artifacts."""
 
+    QUEUE_ALLOWED_STATUSES = {
+        "backlog",
+        "ready",
+        "running",
+        "blocked",
+        "done",
+        "cancelled",
+    }
+
     # ────── Task CRUD ──────
 
     def create_task(
@@ -85,6 +111,10 @@ class TaskService:
         title: str,
         description: str,
         participant_agent_ids: list[str],
+        *,
+        queue_status: str = "backlog",
+        parent_task_id: Optional[str] = None,
+        planned_by: Optional[str] = None,
     ) -> dict[str, Any]:
         """Create a new task with directory structure."""
         db = get_db()
@@ -102,14 +132,23 @@ class TaskService:
         )
         file_manager.write_json(manifest_path, _empty_manifest(task_id))
 
+        normalized_queue_status = self._normalize_queue_status(queue_status)
         db.execute(
-            "INSERT INTO tasks (id, team_id, title, description, status, task_file_path, participant_agent_ids, artifact_count) "
-            "VALUES (?, ?, ?, ?, 'active', ?, ?, 0)",
+            """
+            INSERT INTO tasks (
+                id, team_id, title, description, status, queue_status,
+                parent_task_id, planned_by, queued_at,
+                task_file_path, participant_agent_ids, artifact_count
+            ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, datetime('now'), ?, ?, 0)
+            """,
             (
                 task_id,
                 team_id,
                 title,
                 description,
+                normalized_queue_status,
+                parent_task_id,
+                planned_by,
                 file_manager.get_full_path(task_dir),
                 json.dumps(participant_agent_ids),
             ),
@@ -130,6 +169,17 @@ class TaskService:
             "title": row["title"],
             "description": row["description"],
             "status": row["status"],
+            "queueStatus": row["queue_status"] if "queue_status" in row.keys() else "backlog",
+            "parentTaskId": row["parent_task_id"] if "parent_task_id" in row.keys() else None,
+            "plannedBy": row["planned_by"] if "planned_by" in row.keys() else None,
+            "blockedReason": row["blocked_reason"] if "blocked_reason" in row.keys() else "",
+            "lastError": row["last_error"] if "last_error" in row.keys() else "",
+            "retryCount": row["retry_count"] if "retry_count" in row.keys() else 0,
+            "executionId": row["execution_id"] if "execution_id" in row.keys() else None,
+            "lastNodeId": row["last_node_id"] if "last_node_id" in row.keys() else None,
+            "queuedAt": row["queued_at"] if "queued_at" in row.keys() else None,
+            "startedAt": row["started_at"] if "started_at" in row.keys() else None,
+            "finishedAt": row["finished_at"] if "finished_at" in row.keys() else None,
             "taskFilePath": row["task_file_path"],
             "participantAgentIds": json.loads(row["participant_agent_ids"] or "[]"),
             "summary": row["summary"],
@@ -205,6 +255,232 @@ class TaskService:
 
         return ""
 
+    def get_task_summary_excerpt(self, task_id: str, *, max_chars: int = 1600) -> str:
+        """Extract a concise context excerpt from task.md."""
+        content = self.get_task_content(task_id)
+        if not content:
+            return ""
+
+        sections = self._extract_task_sections(content)
+        ordered = [
+            sections.get("任务描述", "").strip(),
+            sections.get("状态", "").strip(),
+            sections.get("信息交换区", "").strip(),
+            sections.get("产物引用区", "").strip(),
+        ]
+        merged = "\n\n".join(chunk for chunk in ordered if chunk).strip()
+        if not merged:
+            merged = content.strip()
+
+        normalized_limit = max(int(max_chars), 0)
+        if normalized_limit <= 0:
+            return ""
+        if len(merged) <= normalized_limit:
+            return merged
+        return merged[:normalized_limit].rstrip() + "\n...（任务内容已截断）"
+
+    def get_task_goal_excerpt(self, task_id: str, *, max_chars: int = 1200) -> str:
+        """Extract task goal + status as L1 baseline context."""
+        content = self.get_task_content(task_id)
+        if not content:
+            return ""
+
+        sections = self._extract_task_sections(content)
+        merged = "\n\n".join(
+            chunk
+            for chunk in (
+                sections.get("任务描述", "").strip(),
+                sections.get("状态：进行中", "").strip() or sections.get("状态", "").strip(),
+            )
+            if chunk
+        ).strip()
+        if not merged:
+            merged = sections.get("任务描述", "").strip() or content.strip()
+        return self._truncate_text(merged, max_chars=max_chars)
+
+    def get_handoff_excerpt(
+        self,
+        task_id: str,
+        *,
+        limit: int,
+        max_chars: int = 1800,
+    ) -> str:
+        """Return recent handoff records for contextual reading."""
+        handoffs = self.get_recent_handoffs(task_id, limit=limit)
+        if not handoffs:
+            return ""
+
+        lines: list[str] = []
+        for item in handoffs:
+            lines.extend(
+                [
+                    f"- [{item.get('timestamp', '')}] {item.get('fromAgentId', 'unknown')} -> {', '.join(item.get('toAgentIds', []) or ['未指定'])}",
+                    f"  摘要: {item.get('summary', '')}",
+                    f"  风险: {item.get('riskLevel', 'medium')} | 阻塞: {'是' if item.get('blocked') else '否'}",
+                ]
+            )
+        return self._truncate_text("\n".join(lines).strip(), max_chars=max_chars)
+
+    def get_authorized_decision_excerpt(self, task_id: str, *, max_chars: int = 1000) -> str:
+        """Read only authorized meeting decision digests from task.md section."""
+        content = self.get_task_content(task_id)
+        if not content:
+            return ""
+        sections = self._extract_task_sections(content)
+        decision_text = sections.get(DECISION_SECTION_TITLE, "").strip()
+        return self._truncate_text(decision_text, max_chars=max_chars)
+
+    def append_handoff_record(
+        self,
+        *,
+        task_id: str,
+        node_id: str,
+        from_agent_id: str,
+        raw_output: str,
+        to_agent_ids: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """Parse and append a normalized handoff block into task.md."""
+        task = self.get_task(task_id)
+        task_dir = self._get_task_dir_path(task)
+        task_md_path = os.path.join(task_dir, "task.md")
+
+        content = file_manager.read_file(task_md_path) if file_manager.file_exists(task_md_path) else ""
+        normalized_content = self._ensure_task_core_sections(content)
+
+        payload = self._parse_handoff_payload(raw_output)
+        summary = payload.get("summary") or self._truncate_text(str(raw_output or "").strip(), max_chars=300)
+        normalized_to = [str(item).strip() for item in (payload.get("toAgentIds") or to_agent_ids or []) if str(item).strip()]
+        blocked = bool(payload.get("blocked", False))
+        risk_level = self._normalize_risk_level(payload.get("riskLevel"))
+
+        handoff = {
+            "timestamp": utc_now_iso(),
+            "nodeId": str(node_id or "").strip() or "unknown",
+            "fromAgentId": str(from_agent_id or "").strip() or "unknown",
+            "toAgentIds": normalized_to,
+            "summary": summary,
+            "dependencies": payload.get("dependencies") or [],
+            "blocked": blocked,
+            "blockReason": str(payload.get("blockReason") or "").strip(),
+            "riskLevel": risk_level,
+            "nextAction": str(payload.get("nextAction") or "").strip(),
+            "raw": str(raw_output or "").strip(),
+        }
+
+        handoff_block = self._render_handoff_block(handoff)
+        updated = self._append_to_section(
+            normalized_content,
+            section_title=HANDOFF_SECTION_TITLE,
+            block=handoff_block,
+        )
+        file_manager.write_file(task_md_path, updated)
+
+        handoff_log_path = os.path.join(task_dir, "handoffs.jsonl")
+        existing = ""
+        if file_manager.file_exists(handoff_log_path):
+            existing = file_manager.read_file(handoff_log_path)
+        serialized = json.dumps(handoff, ensure_ascii=False)
+        file_manager.write_file(handoff_log_path, (existing + "\n" + serialized).strip() + "\n")
+        return handoff
+
+    def append_authorized_decision_summary(
+        self,
+        *,
+        task_id: str,
+        meeting_id: str,
+        summary: str,
+        participants: list[str],
+    ) -> None:
+        """Append authorized decision digest to task.md (never raw meeting notes)."""
+        task = self.get_task(task_id)
+        task_dir = self._get_task_dir_path(task)
+        task_md_path = os.path.join(task_dir, "task.md")
+
+        content = file_manager.read_file(task_md_path) if file_manager.file_exists(task_md_path) else ""
+        normalized_content = self._ensure_task_core_sections(content)
+        now = utc_now().strftime("%Y-%m-%d %H:%M:%S")
+        participant_text = ", ".join(p for p in participants if str(p).strip()) or "未记录"
+        digest = (
+            f"\n### 决议 {now} ({meeting_id[:8]})\n"
+            f"- 参会方: {participant_text}\n"
+            f"- 摘要: {self._truncate_text(summary.strip(), max_chars=400)}\n"
+        )
+        updated = self._append_to_section(
+            normalized_content,
+            section_title=DECISION_SECTION_TITLE,
+            block=digest,
+        )
+        file_manager.write_file(task_md_path, updated)
+
+    def validate_handoff(
+        self,
+        handoff: dict[str, Any],
+        *,
+        mode: str,
+        expected_from_agent: str,
+    ) -> tuple[bool, str]:
+        """Validate handoff payload according to configured release mode."""
+        normalized_mode = str(mode or "strict").strip().lower()
+        if normalized_mode == "disabled":
+            return True, ""
+
+        from_agent = str(handoff.get("fromAgentId") or "").strip()
+        summary = str(handoff.get("summary") or "").strip()
+        to_agents = [item for item in (handoff.get("toAgentIds") or []) if str(item).strip()]
+
+        if from_agent != str(expected_from_agent or "").strip():
+            return False, "handoff source mismatch"
+        if not summary:
+            return False, "handoff summary is empty"
+        if normalized_mode == "strict" and not to_agents:
+            return False, "handoff missing toAgentIds in strict mode"
+
+        return True, ""
+
+    def get_recent_handoffs(self, task_id: str, *, limit: int) -> list[dict[str, Any]]:
+        """Read structured handoff records from task.md."""
+        normalized_limit = max(int(limit), 0)
+        if normalized_limit <= 0:
+            return []
+
+        task = self.get_task(task_id)
+        task_dir = self._get_task_dir_path(task)
+        handoff_log_path = os.path.join(task_dir, "handoffs.jsonl")
+
+        found: list[dict[str, Any]] = []
+        if file_manager.file_exists(handoff_log_path):
+            raw_lines = file_manager.read_file(handoff_log_path).splitlines()
+            for line in raw_lines:
+                text = str(line or "").strip()
+                if not text:
+                    continue
+                try:
+                    parsed = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, dict):
+                    found.append(parsed)
+
+        # Fallback: parse markdown annotation for backward compatibility
+        if not found:
+            content = self.get_task_content(task_id)
+            if not content:
+                return []
+            for match in re.finditer(r"<!--\\s*HANDOFF:(.*?)\\s*-->", content, flags=re.DOTALL):
+                raw_json = match.group(1).strip()
+                if not raw_json:
+                    continue
+                try:
+                    parsed = json.loads(raw_json)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, dict):
+                    found.append(parsed)
+
+        if not found:
+            return []
+        return found[-normalized_limit:]
+
     def complete_task(
         self, task_id: str, summary: Optional[str] = None
     ) -> dict[str, Any]:
@@ -247,6 +523,64 @@ class TaskService:
             return self.complete_task(task_id)
         db = get_db()
         db.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, task_id))
+        db.commit()
+        return self.get_task(task_id)
+
+    def set_queue_status(
+        self,
+        task_id: str,
+        queue_status: str,
+        *,
+        execution_id: Optional[str] = None,
+        node_id: Optional[str] = None,
+        blocked_reason: Optional[str] = None,
+        last_error: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Update task queue status and execution metadata."""
+        normalized = self._normalize_queue_status(queue_status)
+        db = get_db()
+        sets = ["queue_status = ?"]
+        values: list[Any] = [normalized]
+
+        now_expr_fields = {
+            "ready": ["queued_at = COALESCE(queued_at, datetime('now'))", "started_at = NULL", "finished_at = NULL", "blocked_reason = ''", "last_error = ''"],
+            "running": ["started_at = COALESCE(started_at, datetime('now'))", "blocked_reason = ''", "last_error = ''"],
+            "blocked": ["finished_at = NULL"],
+            "done": ["finished_at = datetime('now')", "blocked_reason = ''", "last_error = ''"],
+            "cancelled": ["finished_at = datetime('now')"],
+            "backlog": ["started_at = NULL", "finished_at = NULL", "blocked_reason = ''", "last_error = ''"],
+        }
+        sets.extend(now_expr_fields.get(normalized, []))
+
+        if execution_id is not None:
+            sets.append("execution_id = ?")
+            values.append(execution_id)
+        if node_id is not None:
+            sets.append("last_node_id = ?")
+            values.append(node_id)
+        if blocked_reason is not None:
+            sets.append("blocked_reason = ?")
+            values.append(blocked_reason)
+        if last_error is not None:
+            sets.append("last_error = ?")
+            values.append(last_error)
+            if last_error.strip():
+                sets.append("retry_count = COALESCE(retry_count, 0) + 1")
+
+        values.append(task_id)
+        db.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", values)
+
+        if normalized == "done":
+            db.execute(
+                "UPDATE tasks SET status = 'completed', completed_at = datetime('now') WHERE id = ?",
+                (task_id,),
+            )
+        elif normalized in {"running", "ready", "blocked", "backlog"}:
+            db.execute(
+                "UPDATE tasks SET status = 'active', completed_at = NULL WHERE id = ?",
+                (task_id,),
+            )
+
         db.commit()
         return self.get_task(task_id)
 
@@ -378,6 +712,29 @@ class TaskService:
 
     # ─── Private helpers ───
 
+    @staticmethod
+    def _extract_task_sections(content: str) -> dict[str, str]:
+        """Split markdown content by level-2 headings."""
+        sections: dict[str, str] = {}
+        current = ""
+        bucket: list[str] = []
+
+        for raw_line in str(content or "").splitlines():
+            line = raw_line.rstrip()
+            if line.startswith("## "):
+                if current:
+                    sections[current] = "\n".join(bucket).strip()
+                current = line.replace("## ", "", 1).strip()
+                bucket = []
+                continue
+            if current:
+                bucket.append(line)
+
+        if current:
+            sections[current] = "\n".join(bucket).strip()
+
+        return sections
+
     def _get_task_dir_path(self, task: dict[str, Any]) -> str:
         """Get relative task directory path (compatible with old/new format)."""
         team_id = task["teamId"]
@@ -434,6 +791,163 @@ class TaskService:
         date_str = utc_now().strftime("%Y-%m-%d")
         entry = f"\n\n### [{date_str}] 任务「{task_title}」总结\n\n{summary}"
         file_manager.write_file(team_md_path, content + entry)
+
+    @classmethod
+    def _normalize_queue_status(cls, status: str) -> str:
+        normalized = str(status or "").strip().lower()
+        if normalized not in cls.QUEUE_ALLOWED_STATUSES:
+            raise ValueError(f"Invalid queue status: {status}")
+        return normalized
+
+    @staticmethod
+    def _truncate_text(text: str, *, max_chars: int) -> str:
+        normalized_limit = max(int(max_chars), 0)
+        raw = str(text or "").strip()
+        if normalized_limit <= 0:
+            return ""
+        if len(raw) <= normalized_limit:
+            return raw
+        return raw[:normalized_limit].rstrip() + "\n...（内容已截断）"
+
+    @staticmethod
+    def _normalize_risk_level(value: Any) -> str:
+        risk = str(value or "medium").strip().lower()
+        if risk in {"low", "medium", "high", "critical"}:
+            return risk
+        alias = {
+            "中": "medium",
+            "高": "high",
+            "低": "low",
+            "严重": "critical",
+            "阻塞": "high",
+        }
+        return alias.get(risk, "medium")
+
+    def _parse_handoff_payload(self, raw_output: str) -> dict[str, Any]:
+        text = str(raw_output or "").strip()
+        if not text:
+            return {}
+
+        payload: dict[str, Any] = {}
+        json_match = re.search(r"\{[\s\S]*\}", text)
+        if json_match:
+            try:
+                parsed = json.loads(json_match.group(0))
+                if isinstance(parsed, dict):
+                    payload.update(parsed)
+            except json.JSONDecodeError:
+                pass
+
+        if payload:
+            return {
+                "summary": str(payload.get("summary") or payload.get("handoff") or payload.get("结论") or "").strip(),
+                "toAgentIds": payload.get("toAgentIds") or payload.get("to") or [],
+                "dependencies": payload.get("dependencies") or payload.get("dependsOn") or [],
+                "blocked": payload.get("blocked") or payload.get("isBlocked") or False,
+                "blockReason": payload.get("blockReason") or payload.get("阻塞原因") or "",
+                "riskLevel": payload.get("riskLevel") or payload.get("risk") or payload.get("风险") or "medium",
+                "nextAction": payload.get("nextAction") or payload.get("next") or payload.get("下一步") or "",
+            }
+
+        extracted: dict[str, Any] = {}
+        key_patterns = {
+            "summary": [r"^(?:摘要|结论|handoff|summary)[:：]\s*(.+)$"],
+            "toAgentIds": [r"^(?:to|接收人|交接给)[:：]\s*(.+)$"],
+            "dependencies": [r"^(?:依赖|dependencies|depends)[:：]\s*(.+)$"],
+            "blockReason": [r"^(?:阻塞原因|blockReason|block_reason)[:：]\s*(.+)$"],
+            "riskLevel": [r"^(?:风险|risk|riskLevel)[:：]\s*(.+)$"],
+            "nextAction": [r"^(?:下一步|next|nextAction)[:：]\s*(.+)$"],
+            "blocked": [r"^(?:阻塞|blocked|isBlocked)[:：]\s*(.+)$"],
+        }
+
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            for key, patterns in key_patterns.items():
+                matched = False
+                for pattern in patterns:
+                    hit = re.match(pattern, stripped, flags=re.IGNORECASE)
+                    if hit:
+                        extracted[key] = hit.group(1).strip()
+                        matched = True
+                        break
+                if matched:
+                    break
+
+        to_agents = [
+            item.strip()
+            for item in re.split(r"[,，\s]+", str(extracted.get("toAgentIds") or ""))
+            if item.strip()
+        ]
+        dependencies = [
+            item.strip()
+            for item in re.split(r"[,，\s]+", str(extracted.get("dependencies") or ""))
+            if item.strip()
+        ]
+        blocked_raw = str(extracted.get("blocked") or "").strip().lower()
+        blocked = blocked_raw in {"1", "true", "yes", "y", "是", "阻塞"}
+
+        return {
+            "summary": str(extracted.get("summary") or "").strip(),
+            "toAgentIds": to_agents,
+            "dependencies": dependencies,
+            "blocked": blocked,
+            "blockReason": str(extracted.get("blockReason") or "").strip(),
+            "riskLevel": str(extracted.get("riskLevel") or "medium").strip(),
+            "nextAction": str(extracted.get("nextAction") or "").strip(),
+        }
+
+    def _ensure_task_core_sections(self, content: str) -> str:
+        text = str(content or "").strip()
+        if not text:
+            return _task_md_template("未命名任务", "", [])
+
+        sections_to_add: list[str] = []
+        if f"## {HANDOFF_SECTION_TITLE}" not in text:
+            sections_to_add.append(
+                f"\n\n---\n\n## {HANDOFF_SECTION_TITLE}\n\n<!-- 仅记录可消费交接；由后端统一模板写入 -->\n"
+            )
+        if f"## {DECISION_SECTION_TITLE}" not in text:
+            sections_to_add.append(
+                f"\n\n---\n\n## {DECISION_SECTION_TITLE}\n\n<!-- 仅记录授权后的会议决议摘要（非原始会议纪要） -->\n"
+            )
+        if not sections_to_add:
+            return text
+        return text + "".join(sections_to_add)
+
+    def _append_to_section(self, content: str, *, section_title: str, block: str) -> str:
+        pattern = rf"(##\s+{re.escape(section_title)}\s*\n)([\s\S]*?)(?=\n##\s+|$)"
+
+        def _repl(match: re.Match[str]) -> str:
+            prefix = match.group(1)
+            body = match.group(2).rstrip()
+            merged = (body + "\n" + block.strip()).strip()
+            return prefix + merged + "\n"
+
+        if re.search(pattern, content):
+            return re.sub(pattern, _repl, content, count=1)
+
+        return content.rstrip() + f"\n\n## {section_title}\n\n{block.strip()}\n"
+
+    def _render_handoff_block(self, handoff: dict[str, Any]) -> str:
+        safe_json = json.dumps(handoff, ensure_ascii=False)
+        now = utc_now().strftime("%Y-%m-%d %H:%M:%S")
+        to_text = ", ".join(handoff.get("toAgentIds") or ["未指定"])
+        deps = ", ".join(handoff.get("dependencies") or ["无"])
+        blocked_text = "是" if handoff.get("blocked") else "否"
+        return (
+            f"\n<!-- HANDOFF:{safe_json} -->\n"
+            f"### 交接 {now} [{handoff.get('nodeId', 'unknown')}]\n"
+            f"- 来源: {handoff.get('fromAgentId', 'unknown')}\n"
+            f"- 去向: {to_text}\n"
+            f"- 摘要: {handoff.get('summary', '')}\n"
+            f"- 依赖: {deps}\n"
+            f"- 阻塞: {blocked_text}\n"
+            f"- 阻塞原因: {handoff.get('blockReason') or '无'}\n"
+            f"- 风险: {handoff.get('riskLevel', 'medium')}\n"
+            f"- 下一步: {handoff.get('nextAction') or '待补充'}\n"
+        )
 
 
 # Singleton instance

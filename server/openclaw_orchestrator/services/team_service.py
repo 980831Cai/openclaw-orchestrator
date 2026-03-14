@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import uuid
+from pathlib import Path
 from typing import Any, Optional
 
 from openclaw_orchestrator.database.db import get_db
@@ -39,11 +40,14 @@ class TeamService:
         goal: Optional[str] = None,
         theme: Optional[str] = None,
         lead_agent_id: Optional[str] = None,
+        default_workflow_id: Optional[str] = None,
+        lead_mode: Optional[str] = None,
     ) -> dict[str, Any]:
         """Create a new team with directory structure."""
         db = get_db()
         team_id = str(uuid.uuid4())
         team_dir = os.path.join("teams", team_id)
+        normalized_lead_mode = self._normalize_lead_mode(lead_mode)
 
         file_manager.ensure_dir(team_dir)
         file_manager.ensure_dir(os.path.join(team_dir, "active"))
@@ -57,7 +61,12 @@ class TeamService:
         )
 
         db.execute(
-            "INSERT INTO teams (id, name, description, goal, theme, team_dir, lead_agent_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            """
+            INSERT INTO teams (
+                id, name, description, goal, theme, team_dir,
+                lead_agent_id, default_workflow_id, lead_mode
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
             (
                 team_id,
                 name,
@@ -66,8 +75,14 @@ class TeamService:
                 theme or "default",
                 file_manager.get_full_path(team_dir),
                 lead_agent_id,
+                default_workflow_id,
+                normalized_lead_mode,
             ),
         )
+
+        if not lead_agent_id and normalized_lead_mode == "agent":
+            lead_agent_id = self._bootstrap_default_lead(team_id=team_id, team_name=name)
+
         db.commit()
         return self.get_team(team_id)
 
@@ -79,7 +94,7 @@ class TeamService:
             raise ValueError(f"Team not found: {team_id}")
 
         members = self._get_team_members(team_id)
-        schedule = json.loads(row["schedule_config"]) if row["schedule_config"] and row["schedule_config"] != "{}" else None
+        schedule = self._parse_team_schedule(row)
 
         return {
             "id": row["id"],
@@ -91,6 +106,8 @@ class TeamService:
             "teamDir": row["team_dir"],
             "theme": row["theme"],
             "leadAgentId": row["lead_agent_id"] if "lead_agent_id" in row.keys() else None,
+            "defaultWorkflowId": row["default_workflow_id"] if "default_workflow_id" in row.keys() else None,
+            "leadMode": row["lead_mode"] if "lead_mode" in row.keys() else "agent",
             "createdAt": row["created_at"],
         }
 
@@ -138,10 +155,14 @@ class TeamService:
         sets: list[str] = []
         values: list[Any] = []
 
-        for field in ("name", "description", "goal", "theme"):
+        for field in ("name", "description", "goal", "theme", "default_workflow_id"):
             if field in updates and updates[field] is not None:
                 sets.append(f"{field} = ?")
                 values.append(updates[field])
+
+        if "lead_mode" in updates and updates["lead_mode"] is not None:
+            sets.append("lead_mode = ?")
+            values.append(self._normalize_lead_mode(updates["lead_mode"]))
 
         if sets:
             values.append(team_id)
@@ -227,12 +248,39 @@ class TeamService:
         return row["lead_agent_id"] if row else None
 
     def remove_member(self, team_id: str, agent_id: str) -> None:
-        """Remove a member from a team."""
+        """Remove a member from a team and re-assign Lead if needed."""
         db = get_db()
+        team_row = db.execute(
+            "SELECT lead_agent_id FROM teams WHERE id = ?",
+            (team_id,),
+        ).fetchone()
+        was_lead = bool(team_row and team_row["lead_agent_id"] == agent_id)
+
         db.execute(
             "DELETE FROM team_members WHERE team_id = ? AND agent_id = ?",
             (team_id, agent_id),
         )
+
+        if was_lead:
+            next_member = db.execute(
+                "SELECT agent_id FROM team_members WHERE team_id = ? ORDER BY join_order LIMIT 1",
+                (team_id,),
+            ).fetchone()
+            if next_member:
+                db.execute(
+                    "UPDATE teams SET lead_agent_id = ? WHERE id = ?",
+                    (next_member["agent_id"], team_id),
+                )
+                db.execute(
+                    "UPDATE team_members SET role = 'lead' WHERE team_id = ? AND agent_id = ?",
+                    (team_id, next_member["agent_id"]),
+                )
+            else:
+                db.execute(
+                    "UPDATE teams SET lead_agent_id = NULL WHERE id = ?",
+                    (team_id,),
+                )
+
         db.commit()
         self._update_agent_to_agent_config(team_id)
 
@@ -261,6 +309,23 @@ class TeamService:
 
         return sync_result
 
+    def set_execution_config(
+        self,
+        team_id: str,
+        *,
+        default_workflow_id: Optional[str] = None,
+        lead_mode: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Update team execution defaults (workflow + lead mode)."""
+        updates: dict[str, Any] = {}
+        if default_workflow_id is not None:
+            updates["default_workflow_id"] = default_workflow_id
+        if lead_mode is not None:
+            updates["lead_mode"] = lead_mode
+        if not updates:
+            return self.get_team(team_id)
+        return self.update_team(team_id, updates)
+
     def get_team_md(self, team_id: str) -> str:
         """Get team.md content."""
         md_path = os.path.join("teams", team_id, "team.md")
@@ -272,7 +337,117 @@ class TeamService:
         """Update team.md content."""
         file_manager.write_file(os.path.join("teams", team_id, "team.md"), content)
 
+    def get_recent_meeting_summaries(
+        self,
+        team_id: str,
+        *,
+        limit: int = 3,
+        max_chars_per_item: int = 600,
+    ) -> str:
+        """Return recent meeting summaries under this team scope.
+
+        Only reads files under teams/{team_id}/meetings to keep team isolation.
+        """
+        normalized_limit = max(int(limit), 0)
+        if normalized_limit <= 0:
+            return ""
+
+        meetings_dir = Path(file_manager.get_full_path(os.path.join("teams", team_id, "meetings")))
+        if not meetings_dir.exists() or not meetings_dir.is_dir():
+            return ""
+
+        candidates = sorted(
+            [
+                path
+                for path in meetings_dir.glob("meeting_*.md")
+                if path.is_file()
+            ],
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )[:normalized_limit]
+
+        chunks: list[str] = []
+        per_item = max(max_chars_per_item, 120)
+
+        for meeting_file in candidates:
+            relative_path = os.path.join("teams", team_id, "meetings", meeting_file.name)
+            try:
+                content = file_manager.read_file(relative_path)
+            except Exception:
+                continue
+
+            summary = self._extract_meeting_summary(content)
+            if not summary:
+                continue
+            trimmed = summary[:per_item].strip()
+            chunks.append(f"### {meeting_file.name}\n{trimmed}")
+
+        return "\n\n".join(chunks).strip()
+
+    @staticmethod
+    def _extract_meeting_summary(content: str) -> str:
+        text = str(content or "")
+        marker = "## 会议结论"
+        if marker in text:
+            section = text.split(marker, 1)[1]
+            return section.strip()
+        return text[-800:].strip()
+
     # ─── Private helpers ───
+
+    @staticmethod
+    def _normalize_lead_mode(lead_mode: Optional[str]) -> str:
+        normalized = str(lead_mode or "agent").strip().lower()
+        if normalized not in {"agent", "manual"}:
+            raise ValueError(f"Invalid lead_mode: {lead_mode}")
+        return normalized
+
+    @staticmethod
+    def _parse_team_schedule(row: Any) -> Optional[dict[str, Any]]:
+        for key in ("schedule_config", "schedule_json"):
+            if key not in row.keys():
+                continue
+            raw_value = row[key]
+            if not raw_value:
+                continue
+            text = str(raw_value).strip()
+            if not text or text == "{}":
+                continue
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, dict):
+                    return parsed
+            except (TypeError, ValueError):
+                logger.warning("Invalid team schedule payload on %s", key)
+        return None
+
+    def _bootstrap_default_lead(self, *, team_id: str, team_name: str) -> Optional[str]:
+        """Create a default Team Lead agent and bind it to team."""
+        try:
+            from openclaw_orchestrator.services.agent_service import agent_service
+
+            base_name = f"{team_name} Lead".strip()
+            fallback_name = f"team-{team_id[:8]}-lead"
+            try:
+                created = agent_service.create_agent(base_name if base_name else fallback_name)
+            except ValueError:
+                created = agent_service.create_agent(fallback_name)
+            lead_agent_id = created["id"]
+
+            db = get_db()
+            db.execute(
+                "UPDATE teams SET lead_agent_id = ? WHERE id = ?",
+                (lead_agent_id, team_id),
+            )
+            db.execute(
+                "INSERT OR REPLACE INTO team_members (team_id, agent_id, role, join_order) VALUES (?, ?, 'lead', 1)",
+                (team_id, lead_agent_id),
+            )
+            logger.info("Auto-created default lead %s for team %s", lead_agent_id, team_id)
+            return lead_agent_id
+        except Exception as exc:
+            logger.warning("Failed to bootstrap default lead for team %s: %s", team_id, exc)
+            return None
 
     def _get_team_members(self, team_id: str) -> list[dict[str, Any]]:
         db = get_db()

@@ -116,6 +116,18 @@ def update_schedule(team_id: str, schedule: dict[str, Any]):
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@router.put("/teams/{team_id}/execution-config")
+def update_execution_config(team_id: str, req: UpdateExecutionConfigRequest):
+    try:
+        return team_service.set_execution_config(
+            team_id,
+            default_workflow_id=req.defaultWorkflowId,
+            lead_mode=req.leadMode,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/teams/{team_id}/shared")
 def get_team_md(team_id: str):
     content = team_service.get_team_md(team_id)

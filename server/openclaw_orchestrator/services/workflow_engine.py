@@ -6,11 +6,15 @@ import asyncio
 import json
 import re
 import uuid
+from datetime import datetime
 from typing import Any, Optional
 
+from openclaw_orchestrator.config import settings
 from openclaw_orchestrator.database.db import get_db
 from openclaw_orchestrator.services.notification_service import notification_service
 from openclaw_orchestrator.services.openclaw_bridge import openclaw_bridge
+from openclaw_orchestrator.services.task_service import task_service
+from openclaw_orchestrator.services.team_context_service import team_context_service
 from openclaw_orchestrator.utils.time import utc_now, utc_now_iso
 from openclaw_orchestrator.websocket.ws_handler import broadcast
 
@@ -922,6 +926,7 @@ class WorkflowEngine:
             (execution_id,),
         )
         db.commit()
+        execution_snapshot = self._safe_get_execution(execution_id)
         broadcast(
             {
                 "type": "workflow_update",
@@ -929,8 +934,8 @@ class WorkflowEngine:
                     execution_id=execution_id,
                     workflow=self._safe_get_workflow_by_execution(execution_id),
                     status="failed",
-                    current_node_id=self._safe_get_execution(execution_id).get("currentNodeId")
-                    if self._safe_get_execution(execution_id)
+                    current_node_id=execution_snapshot.get("currentNodeId")
+                    if execution_snapshot
                     else None,
                 ),
                 "timestamp": self._utcnow_iso(),
@@ -1002,7 +1007,7 @@ class WorkflowEngine:
         node: dict[str, Any],
         upstream_artifacts: list[dict[str, Any]],
         node_artifacts: dict[str, list[dict[str, Any]]],
-    ) -> None:
+    ) -> str | None:
         label = node.get("label", node_id)
         agent_id = node.get("agentId", "unknown")
         task_prompt = node.get("task", "")
@@ -1036,6 +1041,65 @@ class WorkflowEngine:
                 },
             )
 
+        team_context_bundle: dict[str, Any] = {
+            "content": "",
+            "sources": [],
+            "budget": {"total": 0, "used": 0, "remaining": 0},
+            "truncated": False,
+            "readLevel": "L1",
+        }
+        workflow = self._safe_get_workflow_by_execution(execution_id) or {}
+        team_id = str(node.get("teamId") or workflow.get("teamId") or "").strip()
+        task_id = str(node.get("taskId") or "").strip() or None
+        read_level = self._resolve_context_level(node=node, upstream_artifacts=upstream_artifacts)
+
+        # Gate 1: Read
+        self._append_log(
+            execution_id,
+            {
+                "timestamp": self._utcnow_iso(),
+                "nodeId": node_id,
+                "message": f"闸门1/6 读取上下文（level={read_level}）",
+                "level": "info",
+            },
+        )
+
+        if team_id:
+            try:
+                team_context_bundle = team_context_service.build_context(
+                    team_id=team_id,
+                    task_id=task_id,
+                    scene="workflow_task",
+                    read_level=read_level,
+                    include_authorized_decision=(read_level == "L3"),
+                )
+            except Exception as exc:
+                self._append_log(
+                    execution_id,
+                    {
+                        "timestamp": self._utcnow_iso(),
+                        "nodeId": node_id,
+                        "message": f"团队上下文加载失败，已回退为默认执行: {exc}",
+                        "level": "warn",
+                    },
+                )
+
+        source_count = len(team_context_bundle.get("sources") or [])
+        if source_count > 0:
+            budget = team_context_bundle.get("budget") or {}
+            self._append_log(
+                execution_id,
+                {
+                    "timestamp": self._utcnow_iso(),
+                    "nodeId": node_id,
+                    "message": (
+                        f"团队上下文加载完成: {source_count} 个来源，"
+                        f"已使用 {budget.get('used', 0)}/{budget.get('total', 0)} 字符"
+                    ),
+                    "level": "info",
+                },
+            )
+
         self._append_log(
             execution_id,
             {
@@ -1050,28 +1114,68 @@ class WorkflowEngine:
                 "type": "workflow_update",
                 "payload": self._build_workflow_signal(
                     execution_id=execution_id,
-                    workflow=self._safe_get_workflow_by_execution(execution_id),
+                    workflow=workflow,
                     status="running",
                     current_node_id=node_id,
                     node=node,
                     upstreamArtifactCount=len(upstream_artifacts),
+                    teamContextSourceCount=source_count,
                 ),
                 "timestamp": self._utcnow_iso(),
             }
         )
 
         full_prompt = self._build_task_prompt(
-            label, task_prompt, upstream_artifacts, execution_id, node_id
+            label,
+            task_prompt,
+            upstream_artifacts,
+            execution_id,
+            node_id,
+            team_context=team_context_bundle.get("content", ""),
         )
 
         attempt = 0
         result: dict[str, Any] = {"success": False, "content": ""}
+        session_id = self._build_task_session_id(
+            execution_id=execution_id,
+            task_id=task_id,
+            agent_id=agent_id,
+        )
+        if task_id:
+            try:
+                task_service.set_queue_status(
+                    task_id,
+                    "running",
+                    execution_id=execution_id,
+                    node_id=node_id,
+                )
+            except Exception as exc:
+                self._append_log(
+                    execution_id,
+                    {
+                        "timestamp": self._utcnow_iso(),
+                        "nodeId": node_id,
+                        "message": f"任务队列状态更新失败（running）: {exc}",
+                        "level": "warn",
+                    },
+                )
+
         while attempt <= max_retries:
             try:
+                # Gate 2: Invoke agent
+                self._append_log(
+                    execution_id,
+                    {
+                        "timestamp": self._utcnow_iso(),
+                        "nodeId": node_id,
+                        "message": f"闸门2/6 调用Agent（session={session_id}）",
+                        "level": "info",
+                    },
+                )
                 result = await openclaw_bridge.invoke_agent(
                     agent_id=agent_id,
                     message=full_prompt,
-                    session_id=f"wf-{execution_id[:8]}",
+                    session_id=session_id,
                     timeout_seconds=timeout_seconds,
                     correlation_id=f"{execution_id[:8]}-{node_id}",
                     model=agent_model,
@@ -1098,6 +1202,87 @@ class WorkflowEngine:
                             "level": "info",
                         },
                     )
+
+                    handoff_record: dict[str, Any] | None = None
+                    if task_id:
+                        # Gate 3: Parse
+                        self._append_log(
+                            execution_id,
+                            {
+                                "timestamp": self._utcnow_iso(),
+                                "nodeId": node_id,
+                                "message": "闸门3/6 解析交接输出",
+                                "level": "info",
+                            },
+                        )
+                        handoff_record = task_service.append_handoff_record(
+                            task_id=task_id,
+                            node_id=node_id,
+                            from_agent_id=agent_id,
+                            raw_output=str(result.get("content") or ""),
+                            to_agent_ids=self._resolve_downstream_agents(
+                                workflow=workflow,
+                                current_node_id=node_id,
+                            ),
+                        )
+
+                        # Gate 4: Writeback
+                        self._append_log(
+                            execution_id,
+                            {
+                                "timestamp": self._utcnow_iso(),
+                                "nodeId": node_id,
+                                "message": "闸门4/6 写回task.md交接区",
+                                "level": "info",
+                            },
+                        )
+
+                        # Gate 5: Validate
+                        is_valid, reason = task_service.validate_handoff(
+                            handoff_record,
+                            mode=settings.handoff_validation_mode,
+                            expected_from_agent=agent_id,
+                        )
+                        self._append_log(
+                            execution_id,
+                            {
+                                "timestamp": self._utcnow_iso(),
+                                "nodeId": node_id,
+                                "message": "闸门5/6 交接校验" + ("通过" if is_valid else f"失败: {reason}"),
+                                "level": "info" if is_valid else "warn",
+                            },
+                        )
+                        if not is_valid:
+                            raise RuntimeError(f"handoff validation failed: {reason}")
+
+                    # Gate 6: Release
+                    self._append_log(
+                        execution_id,
+                        {
+                            "timestamp": self._utcnow_iso(),
+                            "nodeId": node_id,
+                            "message": "闸门6/6 放行下游节点",
+                            "level": "info",
+                        },
+                    )
+                    if task_id:
+                        try:
+                            task_service.set_queue_status(
+                                task_id,
+                                "done",
+                                execution_id=execution_id,
+                                node_id=node_id,
+                            )
+                        except Exception as exc:
+                            self._append_log(
+                                execution_id,
+                                {
+                                    "timestamp": self._utcnow_iso(),
+                                    "nodeId": node_id,
+                                    "message": f"任务队列状态更新失败（done）: {exc}",
+                                    "level": "warn",
+                                },
+                            )
                     break
                 raise RuntimeError(failure_reason)
             except Exception as err:
@@ -1112,6 +1297,26 @@ class WorkflowEngine:
                             "level": "error",
                         },
                     )
+                    if task_id:
+                        try:
+                            task_service.set_queue_status(
+                                task_id,
+                                "blocked",
+                                execution_id=execution_id,
+                                node_id=node_id,
+                                last_error=str(err),
+                                blocked_reason=f"节点{node_id}执行失败",
+                            )
+                        except Exception as queue_exc:
+                            self._append_log(
+                                execution_id,
+                                {
+                                    "timestamp": self._utcnow_iso(),
+                                    "nodeId": node_id,
+                                    "message": f"任务队列状态更新失败（blocked）: {queue_exc}",
+                                    "level": "warn",
+                                },
+                            )
                     notification_service.create_notification(
                         type="workflow_error",
                         title=f"节点失败: {label}",
@@ -1239,11 +1444,15 @@ class WorkflowEngine:
         upstream_artifacts: list[dict[str, Any]],
         execution_id: str,
         node_id: str,
+        team_context: str = "",
     ) -> str:
         parts = [f"## 任务: {label}"]
         if task_prompt:
             parts.append(f"\n{task_prompt}")
         parts.append(f"\n[工作流执行 ID: {execution_id[:8]}, 节点: {node_id}]")
+        if team_context.strip():
+            parts.append("\n### 团队必要上下文：")
+            parts.append(team_context.strip())
         if upstream_artifacts:
             parts.append("\n### 上游节点产出：")
             for artifact in upstream_artifacts:
@@ -1412,6 +1621,7 @@ class WorkflowEngine:
         topic_description = node.get("topicDescription", "")
         participants = node.get("participants", [])
         team_id = node.get("teamId", "default")
+        task_id = str(node.get("taskId") or "").strip() or None
         lead_agent_id = node.get("leadAgentId") or node.get("judgeAgentId")
         max_rounds = node.get("maxRounds", 3)
 
@@ -1482,6 +1692,24 @@ class WorkflowEngine:
                     "meetingId": meeting["id"],
                 }
             ]
+            if task_id:
+                try:
+                    task_service.append_authorized_decision_summary(
+                        task_id=task_id,
+                        meeting_id=meeting["id"],
+                        summary=summary,
+                        participants=[str(item) for item in participants if str(item).strip()],
+                    )
+                except Exception as exc:
+                    self._append_log(
+                        execution_id,
+                        {
+                            "timestamp": self._utcnow_iso(),
+                            "nodeId": node_id,
+                            "message": f"决议摘要写入task.md失败: {exc}",
+                            "level": "warn",
+                        },
+                    )
         except Exception as err:
             self._append_log(
                 execution_id,
@@ -1691,6 +1919,59 @@ class WorkflowEngine:
                 continue
             upstream.extend(node_artifacts.get(edge.get("from", ""), []))
         return upstream
+
+    @staticmethod
+    def _build_task_session_id(*, execution_id: str, task_id: str | None, agent_id: str) -> str:
+        if task_id:
+            return f"task-{task_id}-{agent_id}"
+        return f"wf-{execution_id[:8]}-{agent_id}"
+
+    @staticmethod
+    def _resolve_context_level(
+        *,
+        node: dict[str, Any],
+        upstream_artifacts: list[dict[str, Any]],
+    ) -> str:
+        explicit_level = str(node.get("contextLevel") or "").strip().upper()
+        if explicit_level in {"L1", "L2", "L3"}:
+            return explicit_level
+
+        risk_level = str(node.get("riskLevel") or "").strip().lower()
+        has_blocking = bool(node.get("hasBlocking") or node.get("blocked"))
+        has_dependency = bool(node.get("requiresDependency") or node.get("dependsOn"))
+        multi_upstream = len(upstream_artifacts) >= 2
+
+        if risk_level in {"high", "critical"} or has_blocking:
+            return "L3"
+        if has_dependency or multi_upstream:
+            return "L2"
+        return "L1"
+
+    @staticmethod
+    def _resolve_downstream_agents(
+        *,
+        workflow: dict[str, Any],
+        current_node_id: str,
+    ) -> list[str]:
+        nodes = workflow.get("nodes") if isinstance(workflow, dict) else None
+        edges = workflow.get("edges") if isinstance(workflow, dict) else None
+        if not isinstance(nodes, dict) or not isinstance(edges, list):
+            return []
+
+        recipients: list[str] = []
+        for edge in edges:
+            if not isinstance(edge, dict) or edge.get("from") != current_node_id:
+                continue
+            to_node_id = str(edge.get("to") or "").strip()
+            if not to_node_id:
+                continue
+            to_node = nodes.get(to_node_id)
+            if not isinstance(to_node, dict):
+                continue
+            to_agent_id = str(to_node.get("agentId") or "").strip()
+            if to_agent_id and to_agent_id not in recipients:
+                recipients.append(to_agent_id)
+        return recipients
 
     def _update_execution_node(self, execution_id: str, node_id: str) -> None:
         db = get_db()

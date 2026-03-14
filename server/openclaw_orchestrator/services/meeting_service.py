@@ -30,6 +30,7 @@ from openclaw_orchestrator.database.db import get_db
 from openclaw_orchestrator.utils.time import utc_now, utc_now_iso
 from openclaw_orchestrator.services.file_manager import file_manager
 from openclaw_orchestrator.services.notification_service import notification_service
+from openclaw_orchestrator.services.team_context_service import team_context_service
 from openclaw_orchestrator.websocket.ws_handler import broadcast
 
 logger = logging.getLogger(__name__)
@@ -303,6 +304,8 @@ class MeetingService:
         meeting_type = meeting["meetingType"]
         file_path = meeting["filePath"]
 
+        team_context = self._build_team_context_for_meeting(meeting)
+
         for i, agent_id in enumerate(participants):
             # Read current meeting content
             meeting_content = file_manager.read_file(file_path) if file_manager.file_exists(file_path) else ""
@@ -315,6 +318,8 @@ class MeetingService:
                 speaker_index=i,
                 total_speakers=len(participants),
             )
+            if team_context:
+                prompt += f"\n\n### 团队必要上下文\n{team_context}"
 
             # Invoke Agent
             try:
@@ -366,18 +371,19 @@ class MeetingService:
         max_rounds = meeting.get("maxRounds", 3) or 3
         file_path = meeting["filePath"]
         agent_a, agent_b = participants[0], participants[1]
+        team_context = self._build_team_context_for_meeting(meeting)
 
         for round_num in range(1, max_rounds + 1):
             # Agent A speaks
             content_a = await self._debate_turn(
                 openclaw_bridge, meeting_id, file_path,
-                agent_a, round_num, max_rounds, "正方",
+                agent_a, round_num, max_rounds, "正方", team_context,
             )
 
             # Agent B responds
             content_b = await self._debate_turn(
                 openclaw_bridge, meeting_id, file_path,
-                agent_b, round_num, max_rounds, "反方",
+                agent_b, round_num, max_rounds, "反方", team_context,
             )
 
             self._update_round(meeting_id, round_num)
@@ -417,6 +423,7 @@ class MeetingService:
         round_num: int,
         max_rounds: int,
         side: str,
+        team_context: str,
     ) -> str:
         """Single debate turn for one agent."""
         meeting_content = file_manager.read_file(file_path) if file_manager.file_exists(file_path) else ""
@@ -428,6 +435,8 @@ class MeetingService:
             max_rounds=max_rounds,
             side=side,
         )
+        if team_context:
+            prompt += f"\n\n### 团队必要上下文\n{team_context}"
 
         content = ""
         try:
@@ -489,19 +498,41 @@ class MeetingService:
         # Update status
         self._update_status(meeting_id, MeetingStatus.CONCLUDED, summary=summary)
 
+        governance_report = self._build_governance_report(meeting=meeting, summary=summary)
+        try:
+            from openclaw_orchestrator.services.openclaw_bridge import openclaw_bridge
+
+            openclaw_bridge.report_team_governance_summary(team_id, governance_report)
+        except Exception as exc:
+            logger.warning("Meeting %s governance report sync failed: %s", meeting_id, exc)
+
         # Append summary to team.md
         self._append_to_team_md(team_id, meeting)
 
         # Broadcast
+        event_payload = {
+            "meetingId": meeting_id,
+            "teamId": team_id,
+            "summary": summary[:200],
+            "governance": governance_report,
+        }
         broadcast({
             "type": "meeting_concluded",
-            "payload": {
-                "meetingId": meeting_id,
-                "teamId": team_id,
-                "summary": summary[:200],
-            },
+            "payload": event_payload,
             "timestamp": utc_now_iso(),
         })
+        try:
+            from openclaw_orchestrator.services.live_feed_service import live_feed_service
+
+            live_feed_service.record_event(
+                {
+                    "type": "meeting_concluded",
+                    "payload": event_payload,
+                    "timestamp": utc_now_iso(),
+                }
+            )
+        except Exception as exc:
+            logger.warning("Meeting %s live-feed sync failed: %s", meeting_id, exc)
 
         notification_service.create_notification(
             type="meeting_concluded",
@@ -520,6 +551,57 @@ class MeetingService:
             "timestamp": utc_now_iso(),
         })
         return self.get_meeting(meeting_id)
+
+    @staticmethod
+    def _build_governance_report(*, meeting: dict[str, Any], summary: str) -> dict[str, Any]:
+        """Build structured governance report from Lead conclusion text."""
+        text = str(summary or "").strip()
+        lines = [line.strip("- •\t ") for line in text.splitlines() if line.strip()]
+
+        def _pick(prefixes: tuple[str, ...], default: str = "") -> str:
+            lowered = [item.lower() for item in lines]
+            for index, original in enumerate(lines):
+                low = lowered[index]
+                for prefix in prefixes:
+                    marker = prefix.lower()
+                    if marker in low:
+                        if ":" in original:
+                            return original.split(":", 1)[1].strip()
+                        if "：" in original:
+                            return original.split("：", 1)[1].strip()
+                        return original.strip()
+            return default
+
+        return {
+            "meetingId": meeting.get("id"),
+            "meetingType": meeting.get("meetingType"),
+            "topic": meeting.get("topic"),
+            "leadAgentId": meeting.get("leadAgentId"),
+            "status": _pick(("状态", "status"), "in_progress"),
+            "risks": _pick(("风险", "risk"), ""),
+            "blockers": _pick(("阻塞", "block", "blocked"), ""),
+            "nextSteps": _pick(("下一步", "next"), text[:200]),
+            "owner": _pick(("责任人", "owner", "负责人"), meeting.get("leadAgentId") or ""),
+            "reportedAt": utc_now_iso(),
+        }
+
+    def _build_team_context_for_meeting(self, meeting: dict[str, Any]) -> str:
+        team_id = str(meeting.get("teamId") or "").strip()
+        if not team_id:
+            return ""
+        try:
+            context_bundle = team_context_service.build_context(
+                team_id=team_id,
+                scene="meeting_turn",
+            )
+            return str(context_bundle.get("content") or "").strip()
+        except Exception as exc:
+            logger.warning(
+                "Meeting %s context loading failed, fallback to plain prompt: %s",
+                meeting.get("id"),
+                exc,
+            )
+            return ""
 
     # ────── Helpers ──────
 

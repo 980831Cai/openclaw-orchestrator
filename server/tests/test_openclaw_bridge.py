@@ -1,4 +1,7 @@
+import json
 import sys
+import tempfile
+import unittest
 from pathlib import Path
 from datetime import timezone
 from types import SimpleNamespace
@@ -11,6 +14,7 @@ if str(SERVER_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVER_ROOT))
 
 
+from openclaw_orchestrator.config import settings
 from openclaw_orchestrator.services.openclaw_bridge import OpenClawBridge
 
 
@@ -24,6 +28,45 @@ class OpenClawBridgeTimestampTests(IsolatedAsyncioTestCase):
         self.assertIs(moment.tzinfo, timezone.utc)
         self.assertTrue(stamp.endswith("Z"))
         self.assertTrue(stamp.startswith(str(moment.year)))
+
+
+class OpenClawBridgeGovernanceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp_dir.cleanup)
+        self._original_home = settings.openclaw_home
+        settings.openclaw_home = self._temp_dir.name
+        self.addCleanup(self._restore_home)
+
+    def _restore_home(self) -> None:
+        settings.openclaw_home = self._original_home
+
+    def test_report_team_governance_summary_persists_latest_and_history(self) -> None:
+        bridge = OpenClawBridge()
+        ok = bridge.report_team_governance_summary(
+            "team-a",
+            {
+                "status": "yellow",
+                "risks": "风险上升",
+                "blockers": "等待审批",
+                "nextSteps": "继续灰度",
+                "owner": "lead-a",
+            },
+        )
+
+        self.assertTrue(ok)
+        latest = Path(self._temp_dir.name) / "teams" / "team-a" / "governance" / "latest-report.json"
+        history = Path(self._temp_dir.name) / "teams" / "team-a" / "governance" / "reports.jsonl"
+        self.assertTrue(latest.exists())
+        self.assertTrue(history.exists())
+
+        latest_payload = json.loads(latest.read_text(encoding="utf-8"))
+        self.assertEqual(latest_payload["teamId"], "team-a")
+        self.assertEqual(latest_payload["owner"], "lead-a")
+        self.assertIn("reportedAt", latest_payload)
+
+        history_lines = [line.strip() for line in history.read_text(encoding="utf-8").splitlines() if line.strip()]
+        self.assertGreaterEqual(len(history_lines), 1)
 
 
 class OpenClawBridgeTransientSessionTests(IsolatedAsyncioTestCase):

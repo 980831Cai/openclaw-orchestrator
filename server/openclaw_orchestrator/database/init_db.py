@@ -20,6 +20,10 @@ def init_database() -> None:
             goal TEXT DEFAULT '',
             theme TEXT DEFAULT 'default',
             schedule_json TEXT DEFAULT '{}',
+            schedule_config TEXT DEFAULT '{}',
+            default_workflow_id TEXT DEFAULT NULL,
+            lead_mode TEXT DEFAULT 'agent',
+            lead_agent_id TEXT DEFAULT NULL,
             team_dir TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
@@ -39,6 +43,17 @@ def init_database() -> None:
             title TEXT NOT NULL,
             description TEXT DEFAULT '',
             status TEXT NOT NULL DEFAULT 'active',
+            queue_status TEXT NOT NULL DEFAULT 'backlog',
+            parent_task_id TEXT DEFAULT NULL,
+            planned_by TEXT DEFAULT NULL,
+            blocked_reason TEXT DEFAULT '',
+            last_error TEXT DEFAULT '',
+            retry_count INTEGER DEFAULT 0,
+            execution_id TEXT DEFAULT NULL,
+            last_node_id TEXT DEFAULT NULL,
+            queued_at TEXT,
+            started_at TEXT,
+            finished_at TEXT,
             task_file_path TEXT NOT NULL,
             participant_agent_ids TEXT DEFAULT '[]',
             summary TEXT,
@@ -146,6 +161,22 @@ def init_database() -> None:
     _migrate_add_column(db, "workflow_executions", "context_json", "TEXT DEFAULT NULL")
     # 为 tasks 表添加 assigned_agent_id 列（排班分配的 Agent）
     _migrate_add_column(db, "tasks", "assigned_agent_id", "TEXT DEFAULT NULL")
+    _migrate_add_column(db, "tasks", "queue_status", "TEXT DEFAULT 'backlog'")
+    _migrate_add_column(db, "tasks", "parent_task_id", "TEXT DEFAULT NULL")
+    _migrate_add_column(db, "tasks", "planned_by", "TEXT DEFAULT NULL")
+    _migrate_add_column(db, "tasks", "blocked_reason", "TEXT DEFAULT ''")
+    _migrate_add_column(db, "tasks", "last_error", "TEXT DEFAULT ''")
+    _migrate_add_column(db, "tasks", "retry_count", "INTEGER DEFAULT 0")
+    _migrate_add_column(db, "tasks", "execution_id", "TEXT DEFAULT NULL")
+    _migrate_add_column(db, "tasks", "last_node_id", "TEXT DEFAULT NULL")
+    _migrate_add_column(db, "tasks", "queued_at", "TEXT DEFAULT NULL")
+    _migrate_add_column(db, "tasks", "started_at", "TEXT DEFAULT NULL")
+    _migrate_add_column(db, "tasks", "finished_at", "TEXT DEFAULT NULL")
+
+    # teams 历史兼容字段补齐
+    _migrate_add_column(db, "teams", "schedule_config", "TEXT DEFAULT NULL")
+    _migrate_add_column(db, "teams", "default_workflow_id", "TEXT DEFAULT NULL")
+    _migrate_add_column(db, "teams", "lead_mode", "TEXT DEFAULT 'agent'")
 
     _migrate_add_column(db, "knowledge_entries", "content_text", "TEXT DEFAULT ''")
     _ensure_knowledge_tables(db)
@@ -169,9 +200,6 @@ def init_database() -> None:
         CREATE INDEX IF NOT EXISTS idx_schedule_jobs_agent ON schedule_jobs(agent_id);
         CREATE INDEX IF NOT EXISTS idx_schedule_jobs_status ON schedule_jobs(status);
     """)
-    # 为 teams 表添加 lead_agent_id 列（Team Lead 角色）
-    _migrate_add_column(db, "teams", "lead_agent_id", "TEXT DEFAULT NULL")
-
     # 会议表
     db.executescript("""
         CREATE TABLE IF NOT EXISTS meetings (

@@ -714,6 +714,39 @@ class OpenClawBridge:
                 result[entry.name] = self.read_heartbeat_status(entry.name)
         return result
 
+    def report_team_governance_summary(
+        self,
+        team_id: str,
+        report: dict[str, Any],
+    ) -> bool:
+        """Persist latest team governance summary for OpenClaw-level aggregation."""
+        normalized_team_id = str(team_id or "").strip()
+        if not normalized_team_id:
+            return False
+
+        report_dir = self._home / "teams" / normalized_team_id / "governance"
+        latest_path = report_dir / "latest-report.json"
+        history_path = report_dir / "reports.jsonl"
+
+        payload = {
+            **(report or {}),
+            "teamId": normalized_team_id,
+            "reportedAt": str((report or {}).get("reportedAt") or self._utcnow_iso()),
+        }
+
+        try:
+            report_dir.mkdir(parents=True, exist_ok=True)
+            latest_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            with open(history_path, "a", encoding="utf-8") as fp:
+                fp.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            return True
+        except OSError as exc:
+            logger.warning("Failed to persist governance summary for team %s: %s", normalized_team_id, exc)
+            return False
+
     # ════════════════════════════════════════════════════════════
     # 4. JSONL Response Polling
     # ════════════════════════════════════════════════════════════
