@@ -32,6 +32,11 @@ class SetLeadRequest(BaseModel):
     agentId: str
 
 
+class UpdateExecutionConfigRequest(BaseModel):
+    defaultWorkflowId: Optional[str] = None
+    leadMode: Optional[str] = None
+
+
 class UpdateContentRequest(BaseModel):
     content: str
 
