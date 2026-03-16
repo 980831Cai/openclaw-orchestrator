@@ -75,6 +75,22 @@ class TeamServiceTests(unittest.TestCase):
             any(member["agentId"] == "member-agent-1" and member["role"] == "lead" for member in updated["members"])
         )
 
+    def test_create_team_manual_mode_still_bootstraps_lead(self) -> None:
+        team = self.service.create_team(
+            name="研发团队",
+            description="负责功能迭代",
+            lead_mode="manual",
+        )
+
+        self.assertEqual(team["leadMode"], "manual")
+        self.assertTrue(team["leadAgentId"])
+        self.assertTrue(any(m["role"] == "lead" for m in team["members"]))
+
+        identity_path = f"agents/{team['leadAgentId']}/IDENTITY.md"
+        rules_path = f"agents/{team['leadAgentId']}/AGENTS.md"
+        self.assertTrue(file_manager.file_exists(identity_path))
+        self.assertTrue(file_manager.file_exists(rules_path))
+
     def test_set_execution_config_updates_workflow_and_mode(self) -> None:
         team = self.service.create_team(
             name="研发团队",
@@ -90,6 +106,7 @@ class TeamServiceTests(unittest.TestCase):
 
         self.assertEqual(updated["defaultWorkflowId"], "wf-main")
         self.assertEqual(updated["leadMode"], "agent")
+        self.assertTrue(updated["leadAgentId"])
 
     def test_get_team_falls_back_to_legacy_schedule_json(self) -> None:
         db = get_db()

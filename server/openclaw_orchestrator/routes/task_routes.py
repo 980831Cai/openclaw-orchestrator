@@ -22,6 +22,8 @@ class CreateTaskRequest(BaseModel):
     queueStatus: str = "backlog"
     parentTaskId: Optional[str] = None
     plannedBy: Optional[str] = None
+    workflowId: Optional[str] = None
+    triggerEventId: Optional[str] = None
 
 
 class UpdateTaskStatusRequest(BaseModel):
@@ -56,6 +58,8 @@ def create_task(team_id: str, req: CreateTaskRequest):
         queue_status=req.queueStatus,
         parent_task_id=req.parentTaskId,
         planned_by=req.plannedBy,
+        workflow_id=req.workflowId,
+        trigger_event_id=req.triggerEventId,
     )
 
 

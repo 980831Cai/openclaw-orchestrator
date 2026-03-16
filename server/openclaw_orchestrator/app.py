@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 from openclaw_orchestrator.routes.agent_routes import router as agent_router
 from openclaw_orchestrator.routes.approval_routes import router as approval_router
 from openclaw_orchestrator.routes.chat_routes import router as chat_router
+from openclaw_orchestrator.routes.collaboration_routes import router as collaboration_router
 from openclaw_orchestrator.routes.knowledge_routes import router as knowledge_router
 from openclaw_orchestrator.routes.notification_routes import router as notification_router
 from openclaw_orchestrator.routes.task_routes import router as task_router
@@ -194,6 +195,7 @@ app.include_router(workflow_router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
 app.include_router(meeting_router, prefix="/api")
 app.include_router(runtime_router, prefix="/api")
+app.include_router(collaboration_router, prefix="/api")
 
 
 # ─── Health check ───

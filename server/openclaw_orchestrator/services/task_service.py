@@ -115,6 +115,8 @@ class TaskService:
         queue_status: str = "backlog",
         parent_task_id: Optional[str] = None,
         planned_by: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+        trigger_event_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """Create a new task with directory structure."""
         db = get_db()
@@ -133,13 +135,20 @@ class TaskService:
         file_manager.write_json(manifest_path, _empty_manifest(task_id))
 
         normalized_queue_status = self._normalize_queue_status(queue_status)
+        queue_seq_row = db.execute(
+            "SELECT COALESCE(MAX(queue_seq), 0) + 1 AS next_seq FROM tasks WHERE team_id = ?",
+            (team_id,),
+        ).fetchone()
+        next_queue_seq = int(queue_seq_row["next_seq"] if queue_seq_row else 1)
+
         db.execute(
             """
             INSERT INTO tasks (
                 id, team_id, title, description, status, queue_status,
                 parent_task_id, planned_by, queued_at,
+                workflow_id, trigger_event_id, queue_seq,
                 task_file_path, participant_agent_ids, artifact_count
-            ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, datetime('now'), ?, ?, 0)
+            ) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, 0)
             """,
             (
                 task_id,
@@ -149,6 +158,9 @@ class TaskService:
                 normalized_queue_status,
                 parent_task_id,
                 planned_by,
+                workflow_id,
+                trigger_event_id,
+                next_queue_seq,
                 file_manager.get_full_path(task_dir),
                 json.dumps(participant_agent_ids),
             ),
@@ -176,10 +188,15 @@ class TaskService:
             "lastError": row["last_error"] if "last_error" in row.keys() else "",
             "retryCount": row["retry_count"] if "retry_count" in row.keys() else 0,
             "executionId": row["execution_id"] if "execution_id" in row.keys() else None,
+            "workflowId": row["workflow_id"] if "workflow_id" in row.keys() else None,
+            "triggerEventId": row["trigger_event_id"] if "trigger_event_id" in row.keys() else None,
+            "queueSeq": row["queue_seq"] if "queue_seq" in row.keys() else None,
             "lastNodeId": row["last_node_id"] if "last_node_id" in row.keys() else None,
             "queuedAt": row["queued_at"] if "queued_at" in row.keys() else None,
             "startedAt": row["started_at"] if "started_at" in row.keys() else None,
             "finishedAt": row["finished_at"] if "finished_at" in row.keys() else None,
+            "lastHeartbeatAt": row["last_heartbeat_at"] if "last_heartbeat_at" in row.keys() else None,
+            "nextRetryAt": row["next_retry_at"] if "next_retry_at" in row.keys() else None,
             "taskFilePath": row["task_file_path"],
             "participantAgentIds": json.loads(row["participant_agent_ids"] or "[]"),
             "summary": row["summary"],
@@ -543,12 +560,38 @@ class TaskService:
         values: list[Any] = [normalized]
 
         now_expr_fields = {
-            "ready": ["queued_at = COALESCE(queued_at, datetime('now'))", "started_at = NULL", "finished_at = NULL", "blocked_reason = ''", "last_error = ''"],
-            "running": ["started_at = COALESCE(started_at, datetime('now'))", "blocked_reason = ''", "last_error = ''"],
-            "blocked": ["finished_at = NULL"],
-            "done": ["finished_at = datetime('now')", "blocked_reason = ''", "last_error = ''"],
-            "cancelled": ["finished_at = datetime('now')"],
-            "backlog": ["started_at = NULL", "finished_at = NULL", "blocked_reason = ''", "last_error = ''"],
+            "ready": [
+                "queued_at = COALESCE(queued_at, datetime('now'))",
+                "started_at = NULL",
+                "finished_at = NULL",
+                "blocked_reason = ''",
+                "last_error = ''",
+                "last_heartbeat_at = NULL",
+                "next_retry_at = NULL",
+            ],
+            "running": [
+                "started_at = COALESCE(started_at, datetime('now'))",
+                "blocked_reason = ''",
+                "last_error = ''",
+                "last_heartbeat_at = datetime('now')",
+                "next_retry_at = NULL",
+            ],
+            "blocked": ["finished_at = NULL", "last_heartbeat_at = NULL"],
+            "done": [
+                "finished_at = datetime('now')",
+                "blocked_reason = ''",
+                "last_error = ''",
+                "last_heartbeat_at = NULL",
+            ],
+            "cancelled": ["finished_at = datetime('now')", "last_heartbeat_at = NULL"],
+            "backlog": [
+                "started_at = NULL",
+                "finished_at = NULL",
+                "blocked_reason = ''",
+                "last_error = ''",
+                "last_heartbeat_at = NULL",
+                "next_retry_at = NULL",
+            ],
         }
         sets.extend(now_expr_fields.get(normalized, []))
 
@@ -581,6 +624,136 @@ class TaskService:
                 (task_id,),
             )
 
+        db.commit()
+        return self.get_task(task_id)
+
+    def heartbeat_running_task(self, task_id: str) -> None:
+        """Refresh task running heartbeat timestamp."""
+        db = get_db()
+        db.execute(
+            """
+            UPDATE tasks
+            SET last_heartbeat_at = datetime('now')
+            WHERE id = ? AND queue_status = 'running'
+            """,
+            (task_id,),
+        )
+        db.commit()
+
+    def recover_stale_running_tasks(
+        self,
+        team_id: str,
+        *,
+        stale_seconds: int = 300,
+        max_retries: int = 3,
+        base_backoff_seconds: int = 30,
+    ) -> dict[str, int]:
+        """Recover stale running tasks to ready/blocked state."""
+        db = get_db()
+        stale_threshold = max(int(stale_seconds), 1)
+        retries_cap = max(int(max_retries), 0)
+        base_backoff = max(int(base_backoff_seconds), 1)
+
+        rows = db.execute(
+            """
+            SELECT id, COALESCE(retry_count, 0) AS retry_count
+            FROM tasks
+            WHERE team_id = ?
+              AND queue_status = 'running'
+              AND COALESCE(last_heartbeat_at, started_at, queued_at, created_at) <= datetime('now', ?)
+            """,
+            (team_id, f"-{stale_threshold} seconds"),
+        ).fetchall()
+
+        recovered = 0
+        blocked = 0
+        for row in rows:
+            task_id = row["id"]
+            retry_count = int(row["retry_count"])
+            if retry_count >= retries_cap:
+                db.execute(
+                    """
+                    UPDATE tasks
+                    SET queue_status = 'blocked',
+                        status = 'active',
+                        finished_at = NULL,
+                        last_heartbeat_at = NULL,
+                        blocked_reason = 'running_timeout',
+                        last_error = 'running task timeout exceeded retry limit'
+                    WHERE id = ?
+                    """,
+                    (task_id,),
+                )
+                blocked += 1
+                continue
+
+            backoff_seconds = base_backoff * (2 ** retry_count)
+            db.execute(
+                """
+                UPDATE tasks
+                SET queue_status = 'ready',
+                    status = 'active',
+                    started_at = NULL,
+                    finished_at = NULL,
+                    last_heartbeat_at = NULL,
+                    blocked_reason = '',
+                    last_error = 'running task timeout, re-queued',
+                    retry_count = retry_count + 1,
+                    next_retry_at = datetime('now', ?)
+                WHERE id = ?
+                """,
+                (f"+{backoff_seconds} seconds", task_id),
+            )
+            recovered += 1
+
+        if rows:
+            db.commit()
+
+        return {
+            "scanned": len(rows),
+            "recovered": recovered,
+            "blocked": blocked,
+        }
+
+    def get_next_ready_task(self, team_id: str) -> dict[str, Any] | None:
+        """Pick the next ready task in FIFO order for a team."""
+        db = get_db()
+        row = db.execute(
+            """
+            SELECT id
+            FROM tasks
+            WHERE team_id = ?
+              AND queue_status = 'ready'
+              AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))
+            ORDER BY
+              CASE WHEN queue_seq IS NULL THEN 1 ELSE 0 END,
+              queue_seq ASC,
+              queued_at ASC,
+              created_at ASC
+            LIMIT 1
+            """,
+            (team_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return self.get_task(row["id"])
+
+    def attach_execution(
+        self,
+        task_id: str,
+        *,
+        execution_id: str,
+        workflow_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Bind a workflow execution to a task."""
+        db = get_db()
+        sets = ["execution_id = ?"]
+        values: list[Any] = [execution_id]
+        if workflow_id is not None:
+            sets.append("workflow_id = ?")
+            values.append(workflow_id)
+        values.append(task_id)
+        db.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", values)
         db.commit()
         return self.get_task(task_id)
 

@@ -8,6 +8,7 @@ import type {
   WorkflowRuntimeSignal,
 } from '@/types'
 import type { WorkflowDefinition } from '@/types/workflow'
+import { buildRealtimeMessageKey, mergeRealtimeMessages } from '@/lib/realtime-message'
 
 type ActiveWorkflowStatus = 'running' | 'waiting_approval'
 
@@ -69,13 +70,14 @@ function mergeByKey<T>(
 }
 
 function getMessageKey(message: SessionMessage, index: number) {
-  return message.id || `${message.agentId || 'unknown'}-${message.sessionId || 'main'}-${message.timestamp || index}`
+  return buildRealtimeMessageKey(message, index)
 }
 
 interface MonitorStore {
   agentStatuses: Map<string, AgentStatusEvent>;
   events: CommunicationEvent[];
   connected: boolean;
+  connectionReady: boolean;
   gatewayConnected: boolean;
   gatewayRuntime: GatewayRuntimeStatus | null;
   gatewayLastError: string | null;
@@ -89,6 +91,7 @@ interface MonitorStore {
   setEvents: (events: CommunicationEvent[]) => void;
   syncEvents: (events: CommunicationEvent[]) => void;
   setConnected: (connected: boolean) => void;
+  setConnectionReady: (ready: boolean) => void;
   setGatewayConnected: (connected: boolean) => void;
   setGatewayRuntime: (runtime: GatewayRuntimeStatus | null) => void;
   setGatewayLastError: (error: string | null) => void;
@@ -111,6 +114,7 @@ export const useMonitorStore = create<MonitorStore>((set) => ({
   agentStatuses: new Map(),
   events: [],
   connected: false,
+  connectionReady: false,
   gatewayConnected: false,
   gatewayRuntime: null,
   gatewayLastError: null,
@@ -139,39 +143,27 @@ export const useMonitorStore = create<MonitorStore>((set) => ({
       }),
     })),
   setConnected: (connected) => set({ connected }),
+  setConnectionReady: (connectionReady) => set({ connectionReady }),
   setGatewayConnected: (connected) => set({ gatewayConnected: connected }),
   setGatewayRuntime: (gatewayRuntime) => set({ gatewayRuntime }),
   setGatewayLastError: (gatewayLastError) => set({ gatewayLastError }),
   addRealtimeMessage: (message) =>
     set((state) => {
-      // Dedup by message id
-      if (state.realtimeMessages.some((m) => m.id === message.id)) {
+      const nextMessages = mergeRealtimeMessages(state.realtimeMessages, [message])
+      if (nextMessages.length === state.realtimeMessages.length) {
         return state
       }
       return {
-        realtimeMessages: [...state.realtimeMessages.slice(-199), message],
+        realtimeMessages: nextMessages,
       }
     }),
   setRealtimeMessages: (messages) =>
-    set(() => {
-      const deduped = new Map<string, SessionMessage>()
-      messages.forEach((message, index) => {
-        const key = getMessageKey(message, index)
-        if (!deduped.has(key)) {
-          deduped.set(key, message)
-        }
-      })
-      return {
-        realtimeMessages: Array.from(deduped.values()).slice(-200),
-      }
-    }),
+    set(() => ({
+      realtimeMessages: mergeRealtimeMessages([], messages),
+    })),
   syncRealtimeMessages: (messages) =>
     set((state) => ({
-      realtimeMessages: mergeByKey(state.realtimeMessages, messages, {
-        getKey: getMessageKey,
-        compare: (left, right) => toTimestamp(left.timestamp) - toTimestamp(right.timestamp),
-        limit: 200,
-      }),
+      realtimeMessages: mergeRealtimeMessages(state.realtimeMessages, messages),
     })),
   setWorkflowSignal: (signal) =>
     set((state) => {

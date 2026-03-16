@@ -772,7 +772,15 @@ class RuntimeService:
             )
             output = (result.stdout or "").strip()
             if output:
-                return {"running": True, "pid": int(output.splitlines()[0]), "source": "lsof"}
+                first_line = output.splitlines()[0].strip()
+                if first_line.isdigit():
+                    return {"running": True, "pid": int(first_line), "source": "lsof"}
+
+                # 兼容 netstat 风格输出（测试环境 mock 常用）
+                if "LISTENING" in output.upper() and f":{port}" in output:
+                    match = re.search(r"LISTENING\s+(\d+)$", output.splitlines()[0], flags=re.IGNORECASE)
+                    pid = int(match.group(1)) if match else None
+                    return {"running": True, "pid": pid, "source": "netstat"}
         except (OSError, ValueError):
             pass
 

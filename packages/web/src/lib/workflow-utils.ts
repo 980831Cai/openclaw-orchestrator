@@ -1,20 +1,19 @@
-import { addEdge, type Connection, type Edge, type Node } from 'reactflow'
+/**
+ * Workflow utility functions for TeamWorkflowEditor.
+ * Extracted from TeamWorkflowEditor.tsx for reusability.
+ */
 
-import type { MeetingType, WorkflowDefinition, WorkflowEdge, WorkflowExecution, WorkflowNodeData, WorkflowSchedule } from '../../types/index.ts'
+import type { Edge, Node } from 'reactflow'
+import type { WorkflowDefinition, WorkflowNodeData, WorkflowSchedule } from '@/types'
 
-export const EDGE_STYLE = { stroke: '#6366F1', strokeWidth: 2 }
-export const MEETING_WORKFLOW_TYPES: Exclude<MeetingType, 'debate'>[] = [
-  'standup',
-  'kickoff',
-  'review',
-  'brainstorm',
-  'decision',
-  'retro',
-]
-export const DEBATE_ROUND_OPTIONS = [2, 3, 4, 5] as const
 export const DEFAULT_WORKFLOW_TIMEZONE =
   typeof Intl !== 'undefined' ? Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai' : 'Asia/Shanghai'
 
+export const EDGE_STYLE = { stroke: '#6366F1', strokeWidth: 2 }
+
+/**
+ * Normalize condition handle value to 'yes' | 'no' | undefined
+ */
 export function normalizeConditionHandle(value?: string | null): 'yes' | 'no' | undefined {
   const normalized = String(value || '').trim().toLowerCase()
   if (normalized === 'yes' || normalized === 'true') return 'yes'
@@ -22,20 +21,24 @@ export function normalizeConditionHandle(value?: string | null): 'yes' | 'no' | 
   return undefined
 }
 
+/**
+ * Resolve condition branch target from node data
+ */
 export function resolveConditionBranchTarget(
   nodeData: WorkflowNodeData | undefined,
-  targetId: string,
+  targetId: string
 ): 'yes' | 'no' | undefined {
   if (!nodeData || nodeData.type !== 'condition') return undefined
   const branches = nodeData.branches || {}
   if (branches.yes === targetId || branches.true === targetId) return 'yes'
   if (branches.no === targetId || branches.false === targetId) return 'no'
-  if (!branches.yes && !branches.no && !branches.true && !branches.false && branches.default === targetId) {
-    return 'yes'
-  }
+  if (!branches.yes && !branches.no && !branches.true && !branches.false && branches.default === targetId) return 'yes'
   return undefined
 }
 
+/**
+ * Normalize node data, handling condition branches
+ */
 export function normalizeNodeData(data: WorkflowNodeData): WorkflowNodeData {
   if (data.type === 'condition') {
     const branches = data.branches || {}
@@ -53,6 +56,9 @@ export function normalizeNodeData(data: WorkflowNodeData): WorkflowNodeData {
   return data
 }
 
+/**
+ * Create default schedule configuration
+ */
 export function createDefaultSchedule(): WorkflowSchedule {
   return {
     enabled: false,
@@ -64,43 +70,9 @@ export function createDefaultSchedule(): WorkflowSchedule {
   }
 }
 
-export function getExecutionBadge(status: WorkflowExecution['status']): { tone: string; label: string } {
-  if (status === 'running') {
-    return {
-      tone: 'bg-cyber-green/10 text-cyber-green border-cyber-green/20 animate-pulse',
-      label: '进行中',
-    }
-  }
-  if (status === 'waiting_approval') {
-    return {
-      tone: 'bg-cyber-amber/10 text-cyber-amber border-cyber-amber/20',
-      label: '待审批',
-    }
-  }
-  if (status === 'completed') {
-    return {
-      tone: 'bg-cyber-blue/10 text-cyber-blue border-cyber-blue/20',
-      label: '已完成',
-    }
-  }
-  if (status === 'failed') {
-    return {
-      tone: 'bg-red-500/10 text-red-300 border-red-500/20',
-      label: '失败',
-    }
-  }
-  if (status === 'stopped') {
-    return {
-      tone: 'bg-white/5 text-white/50 border-white/10',
-      label: '已停止',
-    }
-  }
-  return {
-    tone: 'bg-white/5 text-white/40 border-white/10',
-    label: status,
-  }
-}
-
+/**
+ * Normalize schedule configuration
+ */
 export function normalizeSchedule(schedule?: WorkflowSchedule | null): WorkflowSchedule {
   return {
     ...createDefaultSchedule(),
@@ -116,6 +88,9 @@ export function normalizeSchedule(schedule?: WorkflowSchedule | null): WorkflowS
   }
 }
 
+/**
+ * Convert ISO date string to datetime-local input value
+ */
 export function toDateTimeLocalValue(value?: string | null): string {
   if (!value) return ''
   const date = new Date(value)
@@ -124,12 +99,18 @@ export function toDateTimeLocalValue(value?: string | null): string {
   return local.toISOString().slice(0, 16)
 }
 
+/**
+ * Convert datetime-local input value to ISO date string
+ */
 export function fromDateTimeLocalValue(value: string): string | null {
   if (!value.trim()) return null
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? null : date.toISOString()
 }
 
+/**
+ * Convert workflow definition to ReactFlow nodes
+ */
 export function toFlowNodes(workflow: WorkflowDefinition): Node[] {
   return Object.entries(workflow.nodes).map(([id, rawData], index) => {
     const data = normalizeNodeData(rawData)
@@ -137,19 +118,22 @@ export function toFlowNodes(workflow: WorkflowDefinition): Node[] {
       id,
       type: data.type === 'parallel' ? 'join' : data.type,
       position: data.position ?? { x: 120 + index * 40, y: 120 + index * 30 },
-      data:
-        data.type === 'parallel'
-          ? { ...data, type: 'join', label: data.label || '\u6c47\u5408\u8282\u70b9', joinMode: data.joinMode || 'and' }
-          : data,
+      data: data.type === 'parallel'
+        ? { ...data, type: 'join', label: data.label || '汇合节点', joinMode: data.joinMode || 'and' }
+        : data,
     }
   })
 }
 
+/**
+ * Convert workflow definition to ReactFlow edges
+ */
 export function toFlowEdges(workflow: WorkflowDefinition): Edge[] {
   return workflow.edges.map((edge, index) => {
     const sourceNode = workflow.nodes[edge.from]
     const normalizedHandle =
-      resolveConditionBranchTarget(sourceNode, edge.to) ?? normalizeConditionHandle(edge.condition)
+      resolveConditionBranchTarget(sourceNode, edge.to)
+      ?? normalizeConditionHandle(edge.condition)
 
     return {
       id: `${edge.from}-${edge.to}-${index}`,
@@ -163,6 +147,9 @@ export function toFlowEdges(workflow: WorkflowDefinition): Edge[] {
   })
 }
 
+/**
+ * Serialize ReactFlow nodes and edges back to workflow format
+ */
 export function serializeNodes(nodes: Node[], edges: Edge[]): Record<string, WorkflowNodeData> {
   return Object.fromEntries(
     nodes.map((node) => {
@@ -180,67 +167,21 @@ export function serializeNodes(nodes: Node[], edges: Edge[]): Record<string, Wor
             if (handle === 'no' || handle === 'false') acc.no = edge.target
             return acc
           }, {})
-        ;(data as WorkflowNodeData & { branches: Record<string, string> }).branches = branches
+        ;(data as any).branches = branches
       }
 
       return [node.id, data]
-    }),
+    })
   )
 }
 
-export function serializeEdges(edges: Edge[]): WorkflowEdge[] {
+/**
+ * Serialize edges to workflow format
+ */
+export function serializeEdges(edges: Edge[]): WorkflowDefinition['edges'] {
   return edges.map((edge) => ({
     from: edge.source,
     to: edge.target,
-    condition:
-      typeof edge.sourceHandle === 'string' && edge.sourceHandle.trim()
-        ? edge.sourceHandle
-        : typeof edge.label === 'string' && edge.label.trim() && edge.label !== 'default'
-          ? edge.label
-          : undefined,
+    condition: (edge.sourceHandle || edge.label || undefined) as string | undefined,
   }))
-}
-
-export function buildEdge(connection: Connection): Edge {
-  if (!connection.source || !connection.target) {
-    throw new Error('Invalid edge connection')
-  }
-
-  const suffix = connection.sourceHandle || connection.targetHandle || 'edge'
-  return {
-    id: `${connection.source}-${connection.target}-${suffix}`,
-    source: connection.source,
-    target: connection.target,
-    sourceHandle: connection.sourceHandle ?? null,
-    targetHandle: connection.targetHandle ?? null,
-    style: EDGE_STYLE,
-    reconnectable: 'source',
-    label:
-      connection.sourceHandle === 'yes' || connection.sourceHandle === 'no'
-        ? connection.sourceHandle
-        : undefined,
-  }
-}
-
-export function upsertConnectedEdge(
-  current: Edge[],
-  connection: Connection,
-  nodes: Node[],
-  replaceEdgeId?: string,
-): Edge[] {
-  if (!connection.source || !connection.target) return current
-  if (connection.source === connection.target) return current
-
-  const sourceNode = nodes.find((node) => node.id === connection.source)
-  const nextEdge = buildEdge(connection)
-  const nextEdges = current.filter((edge) => {
-    if (replaceEdgeId && edge.id === replaceEdgeId) return false
-    if (edge.source !== connection.source) return true
-    if ((sourceNode?.data as WorkflowNodeData | undefined)?.type === 'condition') {
-      return edge.sourceHandle !== connection.sourceHandle
-    }
-    return edge.target !== connection.target
-  })
-
-  return addEdge(replaceEdgeId ? { ...nextEdge, id: replaceEdgeId } : nextEdge, nextEdges)
 }

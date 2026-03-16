@@ -84,6 +84,38 @@ export function resolveWaitingApprovalFocusNodeId({
   return null
 }
 
+interface ShouldAutoFocusWaitingApprovalNodeInput {
+  status?: WorkflowExecution['status'] | null
+  focusNodeId?: string | null
+  selectedNodeId?: string | null
+  lastAutoFocusedNodeId?: string | null
+}
+
+export function shouldAutoFocusWaitingApprovalNode({
+  status,
+  focusNodeId,
+  selectedNodeId,
+  lastAutoFocusedNodeId,
+}: ShouldAutoFocusWaitingApprovalNodeInput): boolean {
+  if (status !== 'waiting_approval' || !focusNodeId) {
+    return false
+  }
+
+  if (selectedNodeId === focusNodeId) {
+    return false
+  }
+
+  if (!lastAutoFocusedNodeId) {
+    return true
+  }
+
+  if (lastAutoFocusedNodeId !== focusNodeId) {
+    return true
+  }
+
+  return false
+}
+
 export function mergeExecutionWithSignal(
   execution: WorkflowExecution,
   signal: Pick<WorkflowRuntimeSignal, 'executionId' | 'status' | 'currentNodeId' | 'updatedAt'>,

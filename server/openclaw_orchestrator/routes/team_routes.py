@@ -4,6 +4,10 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Any, Optional
 
+from openclaw_orchestrator.database.db import get_db
+from openclaw_orchestrator.services.lead_governance_service import lead_governance_service
+from openclaw_orchestrator.services.openclaw_bridge import openclaw_bridge
+from openclaw_orchestrator.services.team_dispatch_service import team_dispatch_service
 from openclaw_orchestrator.services.team_service import team_service
 
 router = APIRouter()
@@ -14,6 +18,8 @@ class CreateTeamRequest(BaseModel):
     description: str = ""
     goal: Optional[str] = None
     theme: Optional[str] = None
+    leadMode: Optional[str] = None
+    leadAgentId: Optional[str] = None
 
 
 class UpdateTeamRequest(BaseModel):
@@ -41,6 +47,18 @@ class UpdateContentRequest(BaseModel):
     content: str
 
 
+class DispatchRequest(BaseModel):
+    content: str
+    source: str = "manual"
+    actorId: str = "api"
+    sessionId: str = ""
+    workflowId: Optional[str] = None
+    idempotencyKey: Optional[str] = None
+    title: Optional[str] = None
+    plannedBy: Optional[str] = None
+    autoDrain: bool = True
+
+
 @router.get("/teams")
 def list_teams():
     return team_service.list_teams()
@@ -50,7 +68,14 @@ def list_teams():
 def create_team(req: CreateTeamRequest):
     if not req.name:
         raise HTTPException(status_code=400, detail="Team name is required")
-    return team_service.create_team(req.name, req.description, req.goal, req.theme)
+    return team_service.create_team(
+        req.name,
+        req.description,
+        req.goal,
+        req.theme,
+        req.leadMode,
+        req.leadAgentId,
+    )
 
 
 @router.get("/teams/{team_id}")
@@ -143,3 +168,93 @@ def get_team_md(team_id: str):
 def update_team_md(team_id: str, req: UpdateContentRequest):
     team_service.update_team_md(team_id, req.content)
     return {"message": "team.md updated"}
+
+
+@router.get("/teams/{team_id}/trace")
+def get_team_trace(team_id: str, limit: int = 50):
+    normalized_limit = max(1, min(int(limit), 200))
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT
+            te.id AS trigger_event_id,
+            te.workflow_id,
+            te.source,
+            te.actor_id,
+            te.session_id,
+            te.idempotency_key,
+            te.status AS trigger_status,
+            te.linked_task_id,
+            te.linked_execution_id,
+            te.created_at,
+            te.updated_at,
+            t.queue_status,
+            t.retry_count,
+            t.last_error,
+            t.last_heartbeat_at,
+            t.started_at AS task_started_at,
+            t.finished_at AS task_finished_at,
+            we.status AS execution_status,
+            we.current_node_id,
+            we.started_at AS execution_started_at,
+            we.completed_at AS execution_completed_at,
+            (
+                SELECT a.status
+                FROM approvals a
+                WHERE a.execution_id = te.linked_execution_id
+                ORDER BY a.created_at DESC
+                LIMIT 1
+            ) AS latest_approval_status
+        FROM trigger_events te
+        LEFT JOIN tasks t ON t.id = te.linked_task_id
+        LEFT JOIN workflow_executions we ON we.id = te.linked_execution_id
+        WHERE te.team_id = ?
+        ORDER BY te.created_at DESC
+        LIMIT ?
+        """,
+        (team_id, normalized_limit),
+    ).fetchall()
+    lead_agent_id = team_service.get_lead(team_id)
+    lead_heartbeat = (
+        openclaw_bridge.read_heartbeat_status(lead_agent_id)
+        if lead_agent_id
+        else None
+    )
+    governance_snapshot = lead_governance_service.get_latest_team_governance_snapshot(team_id)
+
+    return {
+        "teamId": team_id,
+        "items": [dict(row) for row in rows],
+        "leadAgentId": lead_agent_id,
+        "leadHeartbeat": lead_heartbeat,
+        "governanceSnapshot": governance_snapshot,
+    }
+
+
+@router.post("/teams/{team_id}/dispatch")
+async def dispatch_to_team(team_id: str, req: DispatchRequest):
+    if not req.content or not str(req.content).strip():
+        raise HTTPException(status_code=400, detail="content is required")
+    try:
+        return await team_dispatch_service.dispatch(
+            team_id=team_id,
+            content=req.content,
+            source=req.source,
+            actor_id=req.actorId,
+            session_id=req.sessionId,
+            workflow_id=req.workflowId,
+            idempotency_key=req.idempotencyKey,
+            title=req.title,
+            planned_by=req.plannedBy,
+            auto_drain=req.autoDrain,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/teams/{team_id}/queue/drain")
+async def drain_team_queue(team_id: str):
+    try:
+        return await team_dispatch_service.drain_once(team_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

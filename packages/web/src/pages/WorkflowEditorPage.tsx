@@ -12,7 +12,7 @@ import ReactFlow, {
   type Node,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
-import { GitBranch, Loader2, Merge, MessageSquare, Play, Plus, Save, Square, Split, Swords, Trash2, UserCheck, Zap } from 'lucide-react'
+import { ChevronDown, ChevronUp, GitBranch, Loader2, Merge, MessageSquare, Play, Plus, Save, Square, Split, Swords, Trash2, UserCheck, Zap } from 'lucide-react'
 import { EmptyState } from '@/components/brand/EmptyState'
 import { ApprovalNodeComponent } from '@/components/workflow/ApprovalNode'
 import { ConditionNodeComponent } from '@/components/workflow/ConditionNode'
@@ -38,6 +38,7 @@ import {
   mergeExecutionWithSignal,
   reconcileExecutionSelection,
   resolveWaitingApprovalFocusNodeId,
+  shouldAutoFocusWaitingApprovalNode,
 } from './workflow-editor/execution-state'
 import {
   EDGE_STYLE,
@@ -49,14 +50,18 @@ import {
   getExecutionBadge,
   normalizeConditionHandle,
   normalizeSchedule,
-  serializeEdges,
-  serializeNodes,
   toDateTimeLocalValue,
   toFlowEdges,
   toFlowNodes,
   upsertConnectedEdge,
 } from './workflow-editor/graph'
 import { resolveApprovalQueryId, selectPendingApproval } from './workflow-editor/approval-selection'
+import { COMMON_WORKFLOW_TIMEZONES, resolveTimezoneSelectValue, WORKFLOW_TIMEZONE_CUSTOM_VALUE } from './workflow-editor/schedule-controls'
+import { haveWorkflowGraphChanges, prepareWorkflowGraphForSave } from './workflow-editor/graph-persistence'
+import { haveWorkflowScheduleChanges, prepareWorkflowScheduleForSave } from './workflow-editor/schedule-persistence'
+import { getNextConfigPanelScrollTop, getNextWorkflowPanelSections, isNearBottom, isNearTop } from './workflow-editor/schedule-panel'
+import { createDefaultWorkflowNodeData } from './workflow-editor/node-defaults'
+import { getWorkflowNodeInstructionManual } from './workflow-editor/node-instructions'
 import { workflowNodeTypes } from './workflow-editor/shared'
 
 const nodeTypes = {
@@ -109,6 +114,95 @@ function ScheduleToggle({
   )
 }
 
+function SectionHeader({
+  title,
+  summary,
+  badge,
+  badgeTone,
+  expanded,
+  onToggle,
+  framed = true,
+}: {
+  title: string
+  summary: string
+  badge: string
+  badgeTone: string
+  expanded: boolean
+  onToggle: () => void
+  framed?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className={cn(
+        'flex w-full items-start gap-3 text-left transition-colors',
+        framed
+          ? 'rounded-xl border border-white/8 bg-cyber-bg/25 px-4 py-3 hover:border-white/15 hover:bg-cyber-bg/35'
+          : 'px-0 py-0 hover:text-white'
+      )}
+    >
+      <span className="mt-0.5 inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/45">
+        {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className={cn('inline-flex h-2.5 w-2.5 rounded-full', badgeTone)} />
+          <h3 className="truncate text-sm font-semibold text-white">{title}</h3>
+          <span className={cn('shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium', badgeTone)}>{badge}</span>
+        </div>
+        {!expanded ? <p className="mt-1 truncate text-xs text-white/40">{summary}</p> : null}
+      </div>
+    </button>
+  )
+}
+
+function TimezoneField({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  placeholder: string
+}) {
+  return (
+    <div className="space-y-2">
+      <Label className="text-xs text-white/60">{label}</Label>
+      <div className="grid grid-cols-[minmax(0,1fr)_160px] gap-2">
+        <Input
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={placeholder}
+          className="bg-cyber-bg border-white/10 text-white"
+        />
+        <Select
+          value={resolveTimezoneSelectValue(value)}
+          onValueChange={(nextValue) => {
+            if (nextValue !== WORKFLOW_TIMEZONE_CUSTOM_VALUE) {
+              onChange(nextValue)
+            }
+          }}
+        >
+          <SelectTrigger className="bg-cyber-bg border-white/10 text-white">
+            <SelectValue placeholder="选择时区" />
+          </SelectTrigger>
+          <SelectContent className="bg-cyber-panel border-white/10 text-white">
+            {COMMON_WORKFLOW_TIMEZONES.map((timezone) => (
+              <SelectItem key={timezone} value={timezone}>
+                {timezone}
+              </SelectItem>
+            ))}
+            <SelectItem value={WORKFLOW_TIMEZONE_CUSTOM_VALUE}>手动输入</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+    </div>
+  )
+}
+
 export function WorkflowEditorPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([])
@@ -125,10 +219,22 @@ export function WorkflowEditorPage() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [agents, setAgents] = useState<AgentListItem[]>([])
   const [schedule, setSchedule] = useState<WorkflowSchedule>(createDefaultSchedule())
+  const [schedulePanelExpanded, setSchedulePanelExpanded] = useState(false)
+  const [logsPanelExpanded, setLogsPanelExpanded] = useState(true)
   const [pendingApproval, setPendingApproval] = useState<ApprovalRecord | null>(null)
   const [approvalBusy, setApprovalBusy] = useState<'approve' | 'reject' | null>(null)
   const approvalPanelRef = useRef<HTMLDivElement | null>(null)
+  const configPanelContainerRef = useRef<HTMLDivElement | null>(null)
+  const configPanelScrollRef = useRef<HTMLDivElement | null>(null)
+  const previousConfigScrollTopRef = useRef(0)
   const lastApprovalFocusKeyRef = useRef<string | null>(null)
+  const lastAutoFocusedWaitingNodeRef = useRef<string | null>(null)
+  const selectedWorkflowIdRef = useRef<string | null>(null)
+  const workflowFetchRequestIdRef = useRef(0)
+  const graphAutosaveRequestIdRef = useRef(0)
+  const scheduleAutosaveRequestIdRef = useRef(0)
+  const lastGraphAutosaveErrorRef = useRef<string | null>(null)
+  const lastScheduleAutosaveErrorRef = useRef<string | null>(null)
   const requestedWorkflowId = searchParams.get('workflowId')
   const requestedExecutionId = searchParams.get('executionId')
   const requestedApprovalId = searchParams.get('approvalId')
@@ -137,7 +243,61 @@ export function WorkflowEditorPage() {
   const workflowSignals = useMonitorStore((state) => state.workflowSignals)
 
   const selectedNode = useMemo(() => nodes.find((node) => node.id === selectedNodeId) ?? null, [nodes, selectedNodeId])
+  const selectedNodeInstructionManual = useMemo(
+    () => getWorkflowNodeInstructionManual((selectedNode?.data as WorkflowNodeData | undefined)?.type),
+    [selectedNode],
+  )
   const executionIsActive = useMemo(() => isExecutionActive(execution?.status), [execution?.status])
+  const scheduleSummary = useMemo(() => {
+    if (!schedule.enabled) {
+      return '关闭后不会自动调度执行。'
+    }
+
+    const segments = [
+      schedule.cron.trim() ? `Cron ${schedule.cron.trim()}` : 'Cron 未填写',
+      schedule.timezone.trim() || DEFAULT_WORKFLOW_TIMEZONE,
+    ]
+
+    if (schedule.window?.start && schedule.window?.end) {
+      segments.push(`每日 ${schedule.window.start}-${schedule.window.end}`)
+    }
+
+    if (schedule.activeFrom || schedule.activeUntil) {
+      segments.push('含生效时间范围')
+    }
+
+    return segments.join(' · ')
+  }, [schedule])
+
+  const applyConfigPanelExpandedState = useCallback((deltaY: number, scrollTop: number, clientHeight: number, scrollHeight: number) => {
+    const next = getNextWorkflowPanelSections({
+      scheduleEnabled: schedule.enabled,
+      scheduleExpanded: schedulePanelExpanded,
+      logsExpanded: logsPanelExpanded,
+      deltaY,
+      atTop: isNearTop(scrollTop),
+      atBottom: isNearBottom({ scrollTop, clientHeight, scrollHeight }),
+    })
+
+    if (next.scheduleExpanded !== schedulePanelExpanded) {
+      setSchedulePanelExpanded(next.scheduleExpanded)
+    }
+    if (next.logsExpanded !== logsPanelExpanded) {
+      setLogsPanelExpanded(next.logsExpanded)
+    }
+  }, [logsPanelExpanded, schedule.enabled, schedulePanelExpanded])
+
+  const latestExecutionLog = execution?.logs?.length ? execution.logs[execution.logs.length - 1] : null
+  const logsSummary = useMemo(() => {
+    if (!latestExecutionLog) {
+      return '执行后会在这里显示真实日志和失败原因。'
+    }
+
+    const timeLabel = new Date(latestExecutionLog.timestamp).toLocaleTimeString()
+    const nodeLabel = latestExecutionLog.nodeId || 'system'
+    const compactMessage = latestExecutionLog.message.replace(/\s+/g, ' ').trim()
+    return `${latestExecutionLog.level.toUpperCase()} · ${nodeLabel} · ${timeLabel} · ${compactMessage || '无内容'}`
+  }, [latestExecutionLog])
   const selectedNodeUpstreamOptions = useMemo(() => {
     if (!selectedNodeId) return []
     const upstreamIds = edges.filter((edge) => edge.target === selectedNodeId).map((edge) => edge.source)
@@ -213,6 +373,10 @@ export function WorkflowEditorPage() {
     }
   }, [edges, execution, executionIsActive, nodes])
 
+  useEffect(() => {
+    selectedWorkflowIdRef.current = selected?.id ?? null
+  }, [selected?.id])
+
   const loadWorkflow = useCallback((workflow: WorkflowDefinition) => {
     setSelected(workflow)
     setNodes(toFlowNodes(workflow))
@@ -264,13 +428,17 @@ export function WorkflowEditorPage() {
   }, [setSearchParams])
 
   const fetchWorkflows = useCallback(async () => {
+    const requestId = ++workflowFetchRequestIdRef.current
+    const targetWorkflowId = requestedWorkflowId || selectedWorkflowIdRef.current || null
+
     try {
       const data = await api.get<WorkflowDefinition[]>('/workflows')
+      if (requestId !== workflowFetchRequestIdRef.current) return
       setWorkflows(data)
-      if (!selectedWorkflowId && data[0]) {
+      if (!targetWorkflowId && data[0]) {
         loadWorkflow(data[0])
-      } else if (selectedWorkflowId) {
-        const next = data.find((workflow) => workflow.id === selectedWorkflowId)
+      } else if (targetWorkflowId) {
+        const next = data.find((workflow) => workflow.id === targetWorkflowId)
         if (next) {
           setSelected(next)
           setNodes(toFlowNodes(next))
@@ -279,10 +447,10 @@ export function WorkflowEditorPage() {
           setSelectedNodeId((current) => (current && next.nodes[current] ? current : null))
         } else if (data[0]) {
           const fallbackWorkflow =
-            (selected?.id ? data.find((workflow) => workflow.id === selected.id) : null) ?? data[0]
+            (selectedWorkflowIdRef.current ? data.find((workflow) => workflow.id === selectedWorkflowIdRef.current) : null) ?? data[0]
           toast({
             title: '无效工作流链接',
-            description: `未找到工作流 ${requestedWorkflowId || selectedWorkflowId}，已切换到 ${fallbackWorkflow.name}`,
+            description: `未找到工作流 ${requestedWorkflowId || targetWorkflowId}，已切换到 ${fallbackWorkflow.name}`,
             variant: 'destructive',
           })
           replaceSelectionQuery(fallbackWorkflow.id, null)
@@ -299,7 +467,7 @@ export function WorkflowEditorPage() {
     } catch (error) {
       toast({ title: '工作流加载失败', description: error instanceof Error ? error.message : '未知错误', variant: 'destructive' })
     }
-  }, [loadWorkflow, replaceSelectionQuery, requestedWorkflowId, selected?.id, selectedWorkflowId, setEdges, setNodes])
+  }, [loadWorkflow, replaceSelectionQuery, requestedWorkflowId, setEdges, setNodes])
 
   const refreshExecution = useCallback(async (executionId: string) => {
     try {
@@ -389,6 +557,196 @@ export function WorkflowEditorPage() {
   }, [])
 
   useEffect(() => {
+    setSchedulePanelExpanded(schedule.enabled)
+  }, [schedule.enabled, selected?.id])
+
+  useEffect(() => {
+    if (!selected?.id) {
+      lastGraphAutosaveErrorRef.current = null
+      return undefined
+    }
+
+    if (!haveWorkflowGraphChanges(nodes, edges, selected)) {
+      lastGraphAutosaveErrorRef.current = null
+      return undefined
+    }
+
+    const workflowId = selected.id
+    const draftNodes = nodes
+    const draftEdges = edges
+    const timer = window.setTimeout(() => {
+      const prepared = prepareWorkflowGraphForSave(draftNodes, draftEdges)
+      lastGraphAutosaveErrorRef.current = null
+      const requestId = ++graphAutosaveRequestIdRef.current
+
+      void api
+        .put<WorkflowDefinition>(`/workflows/${workflowId}`, {
+          nodes: prepared.nodes,
+          edges: prepared.edges,
+        })
+        .then((updated) => {
+          if (selectedWorkflowIdRef.current !== workflowId || requestId !== graphAutosaveRequestIdRef.current) {
+            return
+          }
+
+          setSelected((current) =>
+            current?.id === updated.id
+              ? {
+                  ...current,
+                  nodes: updated.nodes,
+                  edges: updated.edges,
+                }
+              : current,
+          )
+          setWorkflows((current) =>
+            current.map((workflow) =>
+              workflow.id === updated.id
+                ? {
+                    ...workflow,
+                    nodes: updated.nodes,
+                    edges: updated.edges,
+                  }
+                : workflow,
+            ),
+          )
+        })
+        .catch((error) => {
+          if (selectedWorkflowIdRef.current !== workflowId || requestId !== graphAutosaveRequestIdRef.current) {
+            return
+          }
+
+          const message = error instanceof Error ? error.message : '未知错误'
+          const errorKey = `${workflowId}:${message}`
+          if (lastGraphAutosaveErrorRef.current === errorKey) {
+            return
+          }
+          lastGraphAutosaveErrorRef.current = errorKey
+          toast({
+            title: '工作流保存失败',
+            description: message,
+            variant: 'destructive',
+          })
+        })
+    }, 800)
+
+    return () => window.clearTimeout(timer)
+  }, [edges, nodes, selected])
+
+  useEffect(() => {
+    if (!selected?.id) {
+      lastScheduleAutosaveErrorRef.current = null
+      return undefined
+    }
+
+    if (!haveWorkflowScheduleChanges(schedule, selected.schedule)) {
+      lastScheduleAutosaveErrorRef.current = null
+      return undefined
+    }
+
+    const workflowId = selected.id
+    const draftSchedule = schedule
+    const timer = window.setTimeout(() => {
+      const prepared = prepareWorkflowScheduleForSave(draftSchedule)
+      if (!prepared.ok) {
+        const errorKey = `${workflowId}:${prepared.error}`
+        if (lastScheduleAutosaveErrorRef.current !== errorKey) {
+          lastScheduleAutosaveErrorRef.current = errorKey
+          toast({ title: '定时保存失败', description: prepared.error, variant: 'destructive' })
+        }
+        return
+      }
+
+      lastScheduleAutosaveErrorRef.current = null
+      const requestId = ++scheduleAutosaveRequestIdRef.current
+
+      void api
+        .put<WorkflowDefinition>(`/workflows/${workflowId}`, {
+          schedule: prepared.schedule,
+        })
+        .then((updated) => {
+          if (selectedWorkflowIdRef.current !== workflowId || requestId !== scheduleAutosaveRequestIdRef.current) {
+            return
+          }
+
+          setSelected((current) =>
+            current?.id === updated.id
+              ? {
+                  ...current,
+                  schedule: updated.schedule,
+                }
+              : current,
+          )
+          setWorkflows((current) =>
+            current.map((workflow) =>
+              workflow.id === updated.id
+                ? {
+                    ...workflow,
+                    schedule: updated.schedule,
+                  }
+                : workflow,
+            ),
+          )
+          setSchedule((current) =>
+            haveWorkflowScheduleChanges(current, draftSchedule)
+              ? current
+              : normalizeSchedule(updated.schedule),
+          )
+        })
+        .catch((error) => {
+          if (selectedWorkflowIdRef.current !== workflowId || requestId !== scheduleAutosaveRequestIdRef.current) {
+            return
+          }
+          toast({
+            title: '定时保存失败',
+            description: error instanceof Error ? error.message : '未知错误',
+            variant: 'destructive',
+          })
+        })
+    }, 800)
+
+    return () => window.clearTimeout(timer)
+  }, [schedule, selected?.id, selected?.schedule])
+
+  useEffect(() => {
+    setLogsPanelExpanded(Boolean(execution?.logs?.length))
+  }, [execution?.id])
+
+  useEffect(() => {
+    const container = configPanelContainerRef.current
+    const panel = configPanelScrollRef.current
+    if (!container || !panel) return undefined
+
+    previousConfigScrollTopRef.current = panel.scrollTop
+
+    const handleScroll = () => {
+      const deltaY = panel.scrollTop - previousConfigScrollTopRef.current
+      previousConfigScrollTopRef.current = panel.scrollTop
+      applyConfigPanelExpandedState(deltaY, panel.scrollTop, panel.clientHeight, panel.scrollHeight)
+    }
+
+    const handleWheel = (event: WheelEvent) => {
+      if (!(event.target instanceof Node) || !container.contains(event.target)) {
+        return
+      }
+
+      event.preventDefault()
+      const maxScrollTop = panel.scrollHeight - panel.clientHeight
+      const nextScrollTop = getNextConfigPanelScrollTop(panel.scrollTop, event.deltaY, maxScrollTop)
+      panel.scrollTop = nextScrollTop
+      previousConfigScrollTopRef.current = nextScrollTop
+      applyConfigPanelExpandedState(event.deltaY, nextScrollTop, panel.clientHeight, panel.scrollHeight)
+    }
+
+    panel.addEventListener('scroll', handleScroll, { passive: true })
+    container.addEventListener('wheel', handleWheel, { passive: false, capture: true })
+
+    return () => {
+      panel.removeEventListener('scroll', handleScroll)
+      container.removeEventListener('wheel', handleWheel, true)
+    }
+  }, [applyConfigPanelExpandedState])
+
+  useEffect(() => {
     if (!execution || !ACTIVE_EXECUTION_STATUSES.includes(execution.status)) {
       return undefined
     }
@@ -459,8 +817,19 @@ export function WorkflowEditorPage() {
       availableNodeIds: nodes.map((node) => node.id),
     })
 
-    if (focusNodeId && focusNodeId !== selectedNodeId) {
+    if (shouldAutoFocusWaitingApprovalNode({
+      status: execution?.status,
+      focusNodeId,
+      selectedNodeId,
+      lastAutoFocusedNodeId: lastAutoFocusedWaitingNodeRef.current,
+    })) {
+      lastAutoFocusedWaitingNodeRef.current = focusNodeId
       setSelectedNodeId(focusNodeId)
+      return
+    }
+
+    if (execution?.status !== 'waiting_approval') {
+      lastAutoFocusedWaitingNodeRef.current = null
     }
   }, [execution?.currentNodeId, execution?.status, nodes, pendingApproval?.nodeId, selectedNodeId])
 
@@ -537,6 +906,10 @@ export function WorkflowEditorPage() {
   }, [execution?.status, execution?.workflowId, replaceSelectionQuery, requestedExecutionId, selected?.id])
 
   const onConnect = useCallback((connection: Connection) => {
+    if (connection.source && connection.target && connection.source === connection.target) {
+      toast({ title: '连线无效', description: '节点不能连接到自身', variant: 'destructive' })
+      return
+    }
     setEdges((current) => upsertConnectedEdge(current, connection, nodes))
   }, [nodes, setEdges])
 
@@ -546,6 +919,11 @@ export function WorkflowEditorPage() {
 
   const handleEdgeUpdate = useCallback((oldEdge: Edge, newConnection: Connection) => {
     if (!newConnection.source || !newConnection.target) return
+    if (newConnection.source === newConnection.target) {
+      setEdgeReconnectSuccessful(true)
+      toast({ title: '重连无效', description: '节点不能连接到自身', variant: 'destructive' })
+      return
+    }
 
     setEdgeReconnectSuccessful(true)
     setEdges((current) => upsertConnectedEdge(current, newConnection, nodes, oldEdge.id))
@@ -558,35 +936,21 @@ export function WorkflowEditorPage() {
 
   const handleSave = async () => {
     if (!selected) return
-    const nextSchedule =
-      schedule.enabled && schedule.cron.trim()
-        ? {
-            ...schedule,
-            cron: schedule.cron.trim(),
-            timezone: schedule.timezone.trim() || DEFAULT_WORKFLOW_TIMEZONE,
-            window:
-              schedule.window?.start && schedule.window?.end
-                ? {
-                    start: schedule.window.start,
-                    end: schedule.window.end,
-                    timezone: schedule.window.timezone?.trim() || schedule.timezone.trim() || DEFAULT_WORKFLOW_TIMEZONE,
-                  }
-                : null,
-          }
-        : null
+    const preparedSchedule = prepareWorkflowScheduleForSave(schedule)
 
-    if (schedule.enabled && !schedule.cron.trim()) {
-      toast({ title: '保存失败', description: '开启定时执行后必须填写 Cron 表达式', variant: 'destructive' })
+    if (!preparedSchedule.ok) {
+      toast({ title: '保存失败', description: preparedSchedule.error, variant: 'destructive' })
       return
     }
 
     setSaving(true)
     try {
+      const preparedGraph = prepareWorkflowGraphForSave(nodes, edges)
       const updated = await api.put<WorkflowDefinition>(`/workflows/${selected.id}`, {
         name: selected.name,
-        nodes: serializeNodes(nodes, edges),
-        edges: serializeEdges(edges),
-        schedule: nextSchedule,
+        nodes: preparedGraph.nodes,
+        edges: preparedGraph.edges,
+        schedule: preparedSchedule.schedule,
       })
       setSelected(updated)
       setSchedule(normalizeSchedule(updated.schedule))
@@ -684,21 +1048,13 @@ export function WorkflowEditorPage() {
 
   const addNode = (type: WorkflowNodeData['type']) => {
     const nodeId = `${type}-${Date.now()}`
-    const baseData: Record<WorkflowNodeData['type'], WorkflowNodeData> = {
-      task: { type: 'task', label: '任务节点', agentId: '', task: '', timeoutSeconds: 60, requireResponse: true, requireArtifacts: false, minOutputLength: 1, successPattern: '', position: { x: 240, y: 120 } },
-      condition: { type: 'condition', label: '条件节点', expression: 'true', branches: { yes: '', no: '' }, position: { x: 240, y: 120 } },
-      approval: { type: 'approval', label: '审批节点', title: '请确认', description: '', approver: 'web-user', timeoutMinutes: 30, onTimeout: 'reject', position: { x: 240, y: 120 } },
-      join: { type: 'join', label: '汇合节点', joinMode: 'and', waitForAll: true, position: { x: 240, y: 120 } },
-      parallel: { type: 'parallel', label: '汇合节点', joinMode: 'and', waitForAll: true, position: { x: 240, y: 120 } },
-      meeting: { type: 'meeting', label: '会议节点', meetingType: 'brainstorm', topic: '', participants: [], position: { x: 240, y: 120 } },
-      debate: { type: 'debate', label: '辩论节点', topic: '', participants: [], maxRounds: 3, position: { x: 240, y: 120 } },
-    }
+    const nodeData = createDefaultWorkflowNodeData(type)
 
     const nextNode: Node = {
       id: nodeId,
       type,
       position: { x: 180 + nodes.length * 30, y: 100 + nodes.length * 20 },
-      data: baseData[type],
+      data: nodeData,
     }
 
     setNodes((current) => [...current, nextNode])
@@ -996,11 +1352,12 @@ export function WorkflowEditorPage() {
               </ReactFlow>
             </div>
 
-            <div className="flex h-full min-h-0 w-96 flex-shrink-0 flex-col overflow-hidden border-l border-white/5 bg-cyber-surface/30">
+            <div ref={configPanelContainerRef} className="flex h-full min-h-0 w-96 flex-shrink-0 flex-col overflow-hidden border-l border-white/5 bg-cyber-surface/30">
               <div className="p-4 border-b border-white/5">
                 <h3 className="text-white font-semibold text-sm">节点配置</h3>
               </div>
-              <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              <div ref={configPanelScrollRef} className="min-h-0 flex-1 overflow-y-auto">
+                <div className="p-4 space-y-4">
                 {execution?.status === 'waiting_approval' ? (
                   <div ref={approvalPanelRef} className="rounded-xl border border-yellow-500/20 bg-yellow-500/8 p-4">
                     <div className="flex items-start justify-between gap-3">
@@ -1066,6 +1423,15 @@ export function WorkflowEditorPage() {
                         <Trash2 className="h-4 w-4" />
                       </Button>
                     </div>
+                    {selectedNodeInstructionManual ? (
+                      <div className="space-y-2 rounded-xl border border-white/8 bg-cyber-bg/25 p-3">
+                        <div className="space-y-1">
+                          <p className="text-xs font-medium text-white/80">运行时说明书</p>
+                          <p className="text-[11px] text-white/45">执行时自动拼接到节点任务中，只读展示，不会写回节点内容。</p>
+                        </div>
+                        <pre className="whitespace-pre-wrap break-words rounded-lg border border-white/6 bg-black/15 p-3 text-[11px] leading-5 text-white/70">{selectedNodeInstructionManual}</pre>
+                      </div>
+                    ) : null}
                     {(selectedNode.data as WorkflowNodeData).type === 'task' ? (
                       <>
                         <div className="space-y-2">
@@ -1094,9 +1460,15 @@ export function WorkflowEditorPage() {
                           <Label className="text-xs text-white/60">任务内容</Label>
                           <textarea value={(selectedNode.data as any).task || ''} onChange={(event) => updateSelectedNode({ task: event.target.value } as Partial<WorkflowNodeData>)} placeholder="要发送给 Agent 的任务内容" className="w-full min-h-28 rounded-lg border border-white/10 bg-cyber-bg px-3 py-2 text-sm text-white outline-none resize-y" />
                         </div>
-                        <div className="space-y-2">
-                          <Label className="text-xs text-white/60">超时时间（秒）</Label>
-                          <Input type="number" min={1} value={(selectedNode.data as any).timeoutSeconds ?? 60} onChange={(event) => updateSelectedNode({ timeoutSeconds: Number(event.target.value || 60) } as Partial<WorkflowNodeData>)} placeholder="timeoutSeconds" className="bg-cyber-bg border-white/10 text-white" />
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-2">
+                            <Label className="text-xs text-white/60">超时时间（秒）</Label>
+                            <Input type="number" min={1} value={(selectedNode.data as any).timeoutSeconds ?? 60} onChange={(event) => updateSelectedNode({ timeoutSeconds: Number(event.target.value || 60) } as Partial<WorkflowNodeData>)} placeholder="timeoutSeconds" className="bg-cyber-bg border-white/10 text-white" />
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-xs text-white/60">最大重试次数</Label>
+                            <Input type="number" min={0} value={(selectedNode.data as any).maxRetries ?? 0} onChange={(event) => updateSelectedNode({ maxRetries: Math.max(0, Number(event.target.value || 0)) } as Partial<WorkflowNodeData>)} placeholder="0" className="bg-cyber-bg border-white/10 text-white" />
+                          </div>
                         </div>
                         <div className="grid grid-cols-2 gap-3 rounded-lg border border-white/5 bg-cyber-bg/30 p-3">
                           <label className="flex items-center gap-2 text-xs text-white/70">
@@ -1400,16 +1772,33 @@ export function WorkflowEditorPage() {
                   <p className="text-sm text-white/35">点击画布中的节点后可编辑其字段。</p>
                 )}
               </div>
-              <div className="p-4 border-t border-white/5 space-y-4">
-                <div className="flex items-center justify-between gap-3">
-                  <h3 className="text-sm font-semibold text-white">定时执行</h3>
-                  <ScheduleToggle
-                    checked={schedule.enabled}
-                    onCheckedChange={(checked) => setSchedule((current) => ({ ...current, enabled: checked }))}
-                    label={schedule.enabled ? '已启用' : '已关闭'}
-                  />
+              </div>
+              <div className="shrink-0 border-t border-white/5 bg-cyber-surface/30">
+                <div className="p-4 space-y-4">
+                <div className="rounded-xl border border-white/8 bg-cyber-bg/25 px-4 py-3 transition-colors hover:border-white/15 hover:bg-cyber-bg/35">
+                  <div className="flex items-start gap-3">
+                    <div className="min-w-0 flex-1">
+                      <SectionHeader
+                        title="定时执行"
+                        summary={scheduleSummary}
+                        badge={schedule.enabled ? '已启用' : '已关闭'}
+                        badgeTone={schedule.enabled ? 'border-cyber-green/25 bg-cyber-green/10 text-cyber-green' : 'border-white/10 bg-white/5 text-white/45'}
+                        expanded={schedulePanelExpanded}
+                        onToggle={() => setSchedulePanelExpanded((current) => !current)}
+                        framed={false}
+                      />
+                    </div>
+                    <ScheduleToggle
+                      checked={schedule.enabled}
+                      onCheckedChange={(checked) => {
+                        setSchedule((current) => ({ ...current, enabled: checked }))
+                        setSchedulePanelExpanded(checked)
+                      }}
+                      label={schedule.enabled ? '启用' : '关闭'}
+                    />
+                  </div>
                 </div>
-                {schedule.enabled ? (
+                {schedule.enabled && schedulePanelExpanded ? (
                   <>
                     <div className="space-y-2">
                       <Label className="text-xs text-white/60">Cron 表达式</Label>
@@ -1420,15 +1809,12 @@ export function WorkflowEditorPage() {
                         className="bg-cyber-bg border-white/10 text-white"
                       />
                     </div>
-                    <div className="space-y-2">
-                      <Label className="text-xs text-white/60">时区</Label>
-                      <Input
-                        value={schedule.timezone}
-                        onChange={(event) => setSchedule((current) => ({ ...current, timezone: event.target.value }))}
-                        placeholder="例如：Asia/Shanghai"
-                        className="bg-cyber-bg border-white/10 text-white"
-                      />
-                    </div>
+                    <TimezoneField
+                      label="时区"
+                      value={schedule.timezone}
+                      onChange={(value) => setSchedule((current) => ({ ...current, timezone: value }))}
+                      placeholder="例如：Asia/Shanghai"
+                    />
                     <div className="grid grid-cols-2 gap-3">
                       <div className="space-y-2">
                         <Label className="text-xs text-white/60">生效开始</Label>
@@ -1497,20 +1883,17 @@ export function WorkflowEditorPage() {
                               />
                             </div>
                           </div>
-                          <div className="space-y-2">
-                            <Label className="text-[11px] text-white/45">时间段时区</Label>
-                            <Input
-                              value={schedule.window.timezone || schedule.timezone}
-                              onChange={(event) =>
-                                setSchedule((current) => ({
-                                  ...current,
-                                  window: current.window ? { ...current.window, timezone: event.target.value } : null,
-                                }))
-                              }
-                              placeholder="例如：Asia/Shanghai"
-                              className="bg-cyber-bg border-white/10 text-white"
-                            />
-                          </div>
+                          <TimezoneField
+                            label="时间段时区"
+                            value={schedule.window.timezone || schedule.timezone}
+                            onChange={(value) =>
+                              setSchedule((current) => ({
+                                ...current,
+                                window: current.window ? { ...current.window, timezone: value } : null,
+                              }))
+                            }
+                            placeholder="例如：Asia/Shanghai"
+                          />
                         </>
                       ) : (
                         <p className="text-xs text-white/40">关闭后仅按 Cron 触发，不限制每天的可执行时段。</p>
@@ -1521,13 +1904,17 @@ export function WorkflowEditorPage() {
                 ) : null}
               </div>
 
-              <div className="p-4 border-t border-white/5 space-y-3">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-white font-semibold text-sm">执行日志</h3>
-                  {execution ? <span className="text-[10px] text-white/35">{execution.id}</span> : null}
-                </div>
-                {execution?.logs?.length ? (
-                  <div className="space-y-2 max-h-80 overflow-y-auto">
+                <div className="p-4 border-t border-white/5 space-y-3">
+                <SectionHeader
+                  title="执行日志"
+                  summary={logsSummary}
+                  badge={execution?.logs?.length ? `${execution.logs.length} 条` : '空'}
+                  badgeTone={execution?.logs?.length ? 'border-cyber-amber/25 bg-cyber-amber/10 text-cyber-amber' : 'border-white/10 bg-white/5 text-white/45'}
+                  expanded={logsPanelExpanded}
+                  onToggle={() => setLogsPanelExpanded((current) => !current)}
+                />
+                {logsPanelExpanded && execution?.logs?.length ? (
+                  <div className="space-y-2">
                     {execution.logs.map((log, index) => (
                       <div key={`${log.timestamp}-${index}`} className="rounded-lg border border-white/5 bg-cyber-bg/40 p-3">
                         <div className="flex items-center justify-between gap-3 mb-1">
@@ -1539,9 +1926,10 @@ export function WorkflowEditorPage() {
                       </div>
                     ))}
                   </div>
-                ) : (
+                ) : logsPanelExpanded ? (
                   <p className="text-sm text-white/35">执行后会在这里显示真实日志和失败原因。</p>
-                )}
+                ) : null}
+                </div>
               </div>
             </div>
           </div>

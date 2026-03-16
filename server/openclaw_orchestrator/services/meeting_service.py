@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import uuid
 from enum import Enum
 from typing import Any, Optional
@@ -30,7 +31,6 @@ from openclaw_orchestrator.database.db import get_db
 from openclaw_orchestrator.utils.time import utc_now, utc_now_iso
 from openclaw_orchestrator.services.file_manager import file_manager
 from openclaw_orchestrator.services.notification_service import notification_service
-from openclaw_orchestrator.services.team_context_service import team_context_service
 from openclaw_orchestrator.websocket.ws_handler import broadcast
 
 logger = logging.getLogger(__name__)
@@ -163,6 +163,72 @@ MEETING_MD_TEMPLATE = """# 团队会议：{topic}
 class MeetingService:
     """Service for managing meetings and debates."""
 
+    @staticmethod
+    def _build_participant_prompt(
+        *,
+        meeting_type: str,
+        agent_id: str,
+        meeting_content: str,
+        speaker_index: int,
+        total_speakers: int,
+    ) -> str:
+        template = PARTICIPANT_PROMPT_TEMPLATES.get(
+            meeting_type,
+            PARTICIPANT_PROMPT_TEMPLATES["review"],
+        )
+        body = template.format(
+            agent_id=agent_id,
+            meeting_content=meeting_content,
+            speaker_index=speaker_index,
+            total_speakers=total_speakers,
+        )
+        return "\n".join(
+            [
+                "你正在参与工作流中的多 Agent 会议节点。",
+                "请先通读已有会议记录，再只追加你自己的发言，不要重写别人的内容。",
+                "你的发言应尽量具体，优先给出观点、依据、风险和可执行建议。",
+                "",
+                body,
+            ]
+        )
+
+    @staticmethod
+    def _build_debate_prompt(
+        *,
+        agent_id: str,
+        meeting_content: str,
+        round_num: int,
+        max_rounds: int,
+        side: str,
+    ) -> str:
+        body = DEBATE_PROMPT_TEMPLATE.format(
+            agent_id=agent_id,
+            meeting_content=meeting_content,
+            round_num=round_num,
+            max_rounds=max_rounds,
+            side=side,
+        )
+        return "\n".join(
+            [
+                "你正在参与工作流中的辩论节点。",
+                "请只输出你本轮的立场、论据和对上一轮观点的回应。",
+                "如果你认为已经达成共识，请明确写出“同意”或“达成共识”。",
+                "",
+                body,
+            ]
+        )
+
+    @staticmethod
+    def _build_conclusion_prompt(meeting_content: str) -> str:
+        return "\n".join(
+            [
+                "你现在负责输出会议总结。",
+                "请基于完整记录提炼共识、分歧、行动项和一句话总结。",
+                "",
+                CONCLUDE_PROMPT.format(meeting_content=meeting_content),
+            ]
+        )
+
     # ────── Meeting CRUD ──────
 
     def create_meeting(
@@ -277,7 +343,13 @@ class MeetingService:
 
     # ────── Meeting Execution ──────
 
-    async def run_meeting(self, meeting_id: str) -> dict[str, Any]:
+    async def run_meeting(
+        self,
+        meeting_id: str,
+        *,
+        session_id: Optional[str] = None,
+        correlation_prefix: Optional[str] = None,
+    ) -> dict[str, Any]:
         """Execute a meeting — sequentially invoke each participant."""
         meeting = self.get_meeting(meeting_id)
 
@@ -289,13 +361,27 @@ class MeetingService:
 
         meeting_type = meeting["meetingType"]
         if meeting_type == MeetingType.DEBATE or meeting_type == "debate":
-            result = await self._run_debate(meeting)
+            result = await self._run_debate(
+                meeting,
+                session_id=session_id,
+                correlation_prefix=correlation_prefix,
+            )
         else:
-            result = await self._run_standard_meeting(meeting)
+            result = await self._run_standard_meeting(
+                meeting,
+                session_id=session_id,
+                correlation_prefix=correlation_prefix,
+            )
 
         return result
 
-    async def _run_standard_meeting(self, meeting: dict[str, Any]) -> dict[str, Any]:
+    async def _run_standard_meeting(
+        self,
+        meeting: dict[str, Any],
+        *,
+        session_id: Optional[str] = None,
+        correlation_prefix: Optional[str] = None,
+    ) -> dict[str, Any]:
         """Standard meeting: each participant speaks once in order."""
         from openclaw_orchestrator.services.openclaw_bridge import openclaw_bridge
 
@@ -303,32 +389,30 @@ class MeetingService:
         participants = meeting["participants"]
         meeting_type = meeting["meetingType"]
         file_path = meeting["filePath"]
-
-        team_context = self._build_team_context_for_meeting(meeting)
+        effective_session_id = session_id or f"meeting-{meeting_id[:8]}"
+        effective_correlation_prefix = correlation_prefix or f"mtg-{meeting_id[:8]}"
 
         for i, agent_id in enumerate(participants):
             # Read current meeting content
             meeting_content = file_manager.read_file(file_path) if file_manager.file_exists(file_path) else ""
 
             # Build prompt
-            template = PARTICIPANT_PROMPT_TEMPLATES.get(meeting_type, PARTICIPANT_PROMPT_TEMPLATES["review"])
-            prompt = template.format(
+            prompt = self._build_participant_prompt(
+                meeting_type=meeting_type,
                 agent_id=agent_id,
                 meeting_content=meeting_content,
                 speaker_index=i,
                 total_speakers=len(participants),
             )
-            if team_context:
-                prompt += f"\n\n### 团队必要上下文\n{team_context}"
 
             # Invoke Agent
             try:
                 result = await openclaw_bridge.invoke_agent(
                     agent_id=agent_id,
                     message=prompt,
-                    session_id=f"meeting-{meeting_id[:8]}",
+                    session_id=effective_session_id,
                     timeout_seconds=180,
-                    correlation_id=f"mtg-{meeting_id[:8]}-{i}",
+                    correlation_id=f"{effective_correlation_prefix}-{i}",
                 )
 
                 # If agent responded but didn't write to file, write on its behalf
@@ -355,14 +439,24 @@ class MeetingService:
             })
 
         # Conclude
-        summary = await self._conclude_meeting(meeting)
+        summary = await self._conclude_meeting(
+            meeting,
+            session_id=effective_session_id,
+            correlation_prefix=effective_correlation_prefix,
+        )
         return {
             "meetingId": meeting_id,
             "status": "concluded",
             "summary": summary,
         }
 
-    async def _run_debate(self, meeting: dict[str, Any]) -> dict[str, Any]:
+    async def _run_debate(
+        self,
+        meeting: dict[str, Any],
+        *,
+        session_id: Optional[str] = None,
+        correlation_prefix: Optional[str] = None,
+    ) -> dict[str, Any]:
         """Debate: 2 participants alternate for ≤ maxRounds."""
         from openclaw_orchestrator.services.openclaw_bridge import openclaw_bridge
 
@@ -371,19 +465,24 @@ class MeetingService:
         max_rounds = meeting.get("maxRounds", 3) or 3
         file_path = meeting["filePath"]
         agent_a, agent_b = participants[0], participants[1]
-        team_context = self._build_team_context_for_meeting(meeting)
+        effective_session_id = session_id or f"debate-{meeting_id[:8]}"
+        effective_correlation_prefix = correlation_prefix or f"debate-{meeting_id[:8]}"
 
         for round_num in range(1, max_rounds + 1):
             # Agent A speaks
             content_a = await self._debate_turn(
                 openclaw_bridge, meeting_id, file_path,
-                agent_a, round_num, max_rounds, "正方", team_context,
+                agent_a, round_num, max_rounds, "正方",
+                session_id=effective_session_id,
+                correlation_prefix=effective_correlation_prefix,
             )
 
             # Agent B responds
             content_b = await self._debate_turn(
                 openclaw_bridge, meeting_id, file_path,
-                agent_b, round_num, max_rounds, "反方", team_context,
+                agent_b, round_num, max_rounds, "反方",
+                session_id=effective_session_id,
+                correlation_prefix=effective_correlation_prefix,
             )
 
             self._update_round(meeting_id, round_num)
@@ -407,7 +506,11 @@ class MeetingService:
             })
 
         # Lead concludes as judge
-        summary = await self._conclude_meeting(meeting)
+        summary = await self._conclude_meeting(
+            meeting,
+            session_id=effective_session_id,
+            correlation_prefix=f"{effective_correlation_prefix}-conclude",
+        )
         return {
             "meetingId": meeting_id,
             "status": "concluded",
@@ -423,29 +526,31 @@ class MeetingService:
         round_num: int,
         max_rounds: int,
         side: str,
-        team_context: str,
+        *,
+        session_id: Optional[str] = None,
+        correlation_prefix: Optional[str] = None,
     ) -> str:
         """Single debate turn for one agent."""
         meeting_content = file_manager.read_file(file_path) if file_manager.file_exists(file_path) else ""
+        effective_session_id = session_id or f"debate-{meeting_id[:8]}"
+        effective_correlation_prefix = correlation_prefix or f"debate-{meeting_id[:8]}"
 
-        prompt = DEBATE_PROMPT_TEMPLATE.format(
+        prompt = self._build_debate_prompt(
             agent_id=agent_id,
             meeting_content=meeting_content,
             round_num=round_num,
             max_rounds=max_rounds,
             side=side,
         )
-        if team_context:
-            prompt += f"\n\n### 团队必要上下文\n{team_context}"
 
         content = ""
         try:
             result = await bridge.invoke_agent(
                 agent_id=agent_id,
                 message=prompt,
-                session_id=f"debate-{meeting_id[:8]}",
+                session_id=effective_session_id,
                 timeout_seconds=180,
-                correlation_id=f"debate-{meeting_id[:8]}-r{round_num}-{side}",
+                correlation_id=f"{effective_correlation_prefix}-r{round_num}-{side}",
             )
             content = result.get("content", "")
             if content:
@@ -458,7 +563,13 @@ class MeetingService:
 
         return content
 
-    async def _conclude_meeting(self, meeting: dict[str, Any]) -> str:
+    async def _conclude_meeting(
+        self,
+        meeting: dict[str, Any],
+        *,
+        session_id: Optional[str] = None,
+        correlation_prefix: Optional[str] = None,
+    ) -> str:
         """Let the lead agent summarize the meeting."""
         from openclaw_orchestrator.services.openclaw_bridge import openclaw_bridge
 
@@ -466,18 +577,20 @@ class MeetingService:
         lead_agent_id = meeting["leadAgentId"]
         file_path = meeting["filePath"]
         team_id = meeting["teamId"]
+        effective_session_id = session_id or f"meeting-conclude-{meeting_id[:8]}"
+        effective_correlation_prefix = correlation_prefix or f"mtg-conclude-{meeting_id[:8]}"
 
         meeting_content = file_manager.read_file(file_path) if file_manager.file_exists(file_path) else ""
-        prompt = CONCLUDE_PROMPT.format(meeting_content=meeting_content)
+        prompt = self._build_conclusion_prompt(meeting_content)
 
         summary = ""
         try:
             result = await openclaw_bridge.invoke_agent(
                 agent_id=lead_agent_id,
                 message=prompt,
-                session_id=f"meeting-conclude-{meeting_id[:8]}",
+                session_id=effective_session_id,
                 timeout_seconds=120,
-                correlation_id=f"mtg-conclude-{meeting_id[:8]}",
+                correlation_id=effective_correlation_prefix,
             )
             summary = result.get("content", "")
         except Exception as e:
@@ -498,41 +611,43 @@ class MeetingService:
         # Update status
         self._update_status(meeting_id, MeetingStatus.CONCLUDED, summary=summary)
 
-        governance_report = self._build_governance_report(meeting=meeting, summary=summary)
-        try:
-            from openclaw_orchestrator.services.openclaw_bridge import openclaw_bridge
-
-            openclaw_bridge.report_team_governance_summary(team_id, governance_report)
-        except Exception as exc:
-            logger.warning("Meeting %s governance report sync failed: %s", meeting_id, exc)
-
         # Append summary to team.md
         self._append_to_team_md(team_id, meeting)
 
-        # Broadcast
-        event_payload = {
-            "meetingId": meeting_id,
-            "teamId": team_id,
-            "summary": summary[:200],
-            "governance": governance_report,
-        }
-        broadcast({
-            "type": "meeting_concluded",
-            "payload": event_payload,
-            "timestamp": utc_now_iso(),
-        })
+        governance = self._build_governance_report(meeting=meeting, summary=summary)
+        try:
+            openclaw_bridge.report_team_governance_summary(team_id, governance)
+        except Exception:
+            logger.exception("Meeting %s governance report failed", meeting_id)
+
         try:
             from openclaw_orchestrator.services.live_feed_service import live_feed_service
 
             live_feed_service.record_event(
                 {
-                    "type": "meeting_concluded",
-                    "payload": event_payload,
+                    "type": "meeting_governance_summary",
+                    "payload": {
+                        "meetingId": meeting_id,
+                        "teamId": team_id,
+                        "governance": governance,
+                    },
                     "timestamp": utc_now_iso(),
                 }
             )
-        except Exception as exc:
-            logger.warning("Meeting %s live-feed sync failed: %s", meeting_id, exc)
+        except Exception:
+            logger.exception("Meeting %s governance live feed emit failed", meeting_id)
+
+        # Broadcast
+        broadcast({
+            "type": "meeting_concluded",
+            "payload": {
+                "meetingId": meeting_id,
+                "teamId": team_id,
+                "summary": summary[:200],
+                "governance": governance,
+            },
+            "timestamp": utc_now_iso(),
+        })
 
         notification_service.create_notification(
             type="meeting_concluded",
@@ -552,58 +667,39 @@ class MeetingService:
         })
         return self.get_meeting(meeting_id)
 
-    @staticmethod
-    def _build_governance_report(*, meeting: dict[str, Any], summary: str) -> dict[str, Any]:
-        """Build structured governance report from Lead conclusion text."""
-        text = str(summary or "").strip()
-        lines = [line.strip("- •\t ") for line in text.splitlines() if line.strip()]
+    # ────── Helpers ──────
 
-        def _pick(prefixes: tuple[str, ...], default: str = "") -> str:
-            lowered = [item.lower() for item in lines]
-            for index, original in enumerate(lines):
-                low = lowered[index]
-                for prefix in prefixes:
-                    marker = prefix.lower()
-                    if marker in low:
-                        if ":" in original:
-                            return original.split(":", 1)[1].strip()
-                        if "：" in original:
-                            return original.split("：", 1)[1].strip()
-                        return original.strip()
-            return default
+    @staticmethod
+    def _build_governance_report(
+        *,
+        meeting: dict[str, Any],
+        summary: str,
+    ) -> dict[str, Any]:
+        text = str(summary or "")
+
+        def _extract(field: str) -> str:
+            pattern = rf"(?:^|\n){re.escape(field)}\s*[:：]\s*(.+)"
+            matched = re.search(pattern, text, flags=re.IGNORECASE)
+            return matched.group(1).strip() if matched else ""
+
+        status = _extract("状态") or _extract("status") or "unknown"
+        risks = _extract("风险") or _extract("risks") or ""
+        blockers = _extract("阻塞") or _extract("blockers") or ""
+        next_steps = _extract("下一步") or _extract("nextsteps") or _extract("next steps") or ""
+        owner = _extract("责任人") or _extract("owner") or str(meeting.get("leadAgentId") or "")
 
         return {
-            "meetingId": meeting.get("id"),
-            "meetingType": meeting.get("meetingType"),
-            "topic": meeting.get("topic"),
-            "leadAgentId": meeting.get("leadAgentId"),
-            "status": _pick(("状态", "status"), "in_progress"),
-            "risks": _pick(("风险", "risk"), ""),
-            "blockers": _pick(("阻塞", "block", "blocked"), ""),
-            "nextSteps": _pick(("下一步", "next"), text[:200]),
-            "owner": _pick(("责任人", "owner", "负责人"), meeting.get("leadAgentId") or ""),
-            "reportedAt": utc_now_iso(),
+            "meetingId": str(meeting.get("id") or ""),
+            "meetingType": str(meeting.get("meetingType") or ""),
+            "topic": str(meeting.get("topic") or ""),
+            "status": status.strip().lower() or "unknown",
+            "risks": risks,
+            "blockers": blockers,
+            "nextSteps": next_steps,
+            "owner": owner,
+            "summary": text,
+            "updatedAt": utc_now_iso(),
         }
-
-    def _build_team_context_for_meeting(self, meeting: dict[str, Any]) -> str:
-        team_id = str(meeting.get("teamId") or "").strip()
-        if not team_id:
-            return ""
-        try:
-            context_bundle = team_context_service.build_context(
-                team_id=team_id,
-                scene="meeting_turn",
-            )
-            return str(context_bundle.get("content") or "").strip()
-        except Exception as exc:
-            logger.warning(
-                "Meeting %s context loading failed, fallback to plain prompt: %s",
-                meeting.get("id"),
-                exc,
-            )
-            return ""
-
-    # ────── Helpers ──────
 
     def _append_speech(
         self,

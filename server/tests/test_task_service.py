@@ -148,6 +148,7 @@ class TaskServiceQueueStateTests(unittest.TestCase):
         self.assertEqual(running["executionId"], "exec-1")
         self.assertEqual(running["lastNodeId"], "node-1")
         self.assertIsNotNone(running["startedAt"])
+        self.assertIsNotNone(running["lastHeartbeatAt"])
 
         blocked = task_service.set_queue_status(
             task["id"],
@@ -164,6 +165,62 @@ class TaskServiceQueueStateTests(unittest.TestCase):
         self.assertEqual(done["queueStatus"], "done")
         self.assertEqual(done["status"], "completed")
         self.assertIsNotNone(done["finishedAt"])
+
+    def test_recover_stale_running_tasks_requeues_with_backoff(self) -> None:
+        task = task_service.create_task(
+            team_id=self.team_id,
+            title="恢复任务",
+            description="卡住恢复",
+            participant_agent_ids=["agent-x"],
+            queue_status="ready",
+        )
+        task_service.set_queue_status(task["id"], "running", execution_id="exec-recover")
+        db = get_db()
+        db.execute(
+            "UPDATE tasks SET started_at = datetime('now', '-20 minutes'), last_heartbeat_at = datetime('now', '-20 minutes') WHERE id = ?",
+            (task["id"],),
+        )
+        db.commit()
+
+        result = task_service.recover_stale_running_tasks(
+            self.team_id,
+            stale_seconds=60,
+            max_retries=3,
+            base_backoff_seconds=10,
+        )
+        updated = task_service.get_task(task["id"])
+
+        self.assertEqual(result["recovered"], 1)
+        self.assertEqual(updated["queueStatus"], "ready")
+        self.assertEqual(updated["retryCount"], 1)
+        self.assertIsNotNone(updated["nextRetryAt"])
+
+    def test_get_next_ready_task_skips_backoff_not_reached(self) -> None:
+        blocked_task = task_service.create_task(
+            team_id=self.team_id,
+            title="重试等待",
+            description="等待退避窗口",
+            participant_agent_ids=["agent-1"],
+            queue_status="ready",
+        )
+        normal_task = task_service.create_task(
+            team_id=self.team_id,
+            title="可执行任务",
+            description="立即执行",
+            participant_agent_ids=["agent-2"],
+            queue_status="ready",
+        )
+
+        db = get_db()
+        db.execute(
+            "UPDATE tasks SET next_retry_at = datetime('now', '+10 minutes') WHERE id = ?",
+            (blocked_task["id"],),
+        )
+        db.commit()
+
+        picked = task_service.get_next_ready_task(self.team_id)
+        self.assertIsNotNone(picked)
+        self.assertEqual(picked["id"], normal_task["id"])
 
 
 if __name__ == "__main__":

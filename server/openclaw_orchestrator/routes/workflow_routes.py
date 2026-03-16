@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Any, Optional
 
+from openclaw_orchestrator.services.team_dispatch_service import team_dispatch_service
 from openclaw_orchestrator.services.workflow_engine import (
     WorkflowValidationError,
     workflow_engine,
@@ -45,6 +46,17 @@ class UpdateWorkflowRequest(BaseModel):
 
 class StopExecutionRequest(BaseModel):
     executionId: str
+
+
+class ExecuteWorkflowRequest(BaseModel):
+    content: Optional[str] = None
+    source: str = "manual"
+    actorId: str = "api"
+    sessionId: str = ""
+    idempotencyKey: Optional[str] = None
+    title: Optional[str] = None
+    plannedBy: Optional[str] = None
+    autoDrain: bool = True
 
 
 @router.get("/workflows")
@@ -114,9 +126,23 @@ def delete_workflow(workflow_id: str):
 
 
 @router.post("/workflows/{workflow_id}/execute")
-async def execute_workflow(workflow_id: str):
+async def execute_workflow(workflow_id: str, req: Optional[ExecuteWorkflowRequest] = None):
     try:
-        return await workflow_engine.execute_workflow(workflow_id)
+        workflow = workflow_engine.get_workflow(workflow_id)
+        request = req or ExecuteWorkflowRequest()
+        dispatch_content = request.content or f"手动触发工作流 {workflow.get('name') or workflow_id}"
+        return await team_dispatch_service.dispatch(
+            team_id=str(workflow.get("teamId") or "").strip(),
+            workflow_id=workflow_id,
+            content=dispatch_content,
+            source=request.source,
+            actor_id=request.actorId,
+            session_id=request.sessionId,
+            idempotency_key=request.idempotencyKey,
+            title=request.title or f"手动执行: {workflow.get('name') or workflow_id}",
+            planned_by=request.plannedBy,
+            auto_drain=request.autoDrain,
+        )
     except WorkflowValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except ValueError as e:
