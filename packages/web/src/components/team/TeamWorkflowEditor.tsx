@@ -115,6 +115,67 @@ export function TeamWorkflowEditor({ teamId }: TeamWorkflowEditorProps) {
     return { yes: resolveTarget('yes'), no: resolveTarget('no') }
   }, [edges, nodes, selectedNode])
 
+  const executionDecorations = useMemo(() => {
+    const failedNodeIds = new Set<string>()
+    const successfulNodeIds = new Set<string>()
+
+    if (execution) {
+      for (const log of execution.logs) {
+        if (!log.nodeId || log.nodeId.startsWith('__')) continue
+        if (log.level === 'error') {
+          failedNodeIds.add(log.nodeId)
+          successfulNodeIds.delete(log.nodeId)
+        } else if (!failedNodeIds.has(log.nodeId)) {
+          successfulNodeIds.add(log.nodeId)
+        }
+      }
+    }
+
+    return {
+      nodes: nodes.map((node) => {
+        const executionState =
+          execution?.currentNodeId === node.id && executionIsActive
+            ? 'running'
+            : failedNodeIds.has(node.id)
+              ? 'failed'
+              : successfulNodeIds.has(node.id)
+                ? 'success'
+                : 'idle'
+
+        return {
+          ...node,
+          data: {
+            ...(node.data as WorkflowNodeData),
+            executionState,
+          },
+        }
+      }),
+      edges: edges.map((edge) => {
+        const sourceState =
+          execution?.currentNodeId === edge.source && executionIsActive
+            ? 'running'
+            : failedNodeIds.has(edge.source)
+              ? 'failed'
+              : successfulNodeIds.has(edge.source)
+                ? 'success'
+                : 'idle'
+
+        return {
+          ...edge,
+          animated: sourceState === 'running',
+          style:
+            sourceState === 'running'
+              ? { ...EDGE_STYLE, stroke: '#f59e0b', strokeDasharray: '6 4' }
+              : sourceState === 'failed'
+                ? { ...EDGE_STYLE, stroke: '#ef4444' }
+                : sourceState === 'success'
+                  ? { ...EDGE_STYLE, stroke: '#22c55e' }
+                  : EDGE_STYLE,
+        }
+      }),
+    }
+  }, [edges, execution, executionIsActive, nodes])
+
   const loadWorkflow = useCallback((workflow: WorkflowDefinition) => {
     setSelected(workflow)
     setNodes(toFlowNodes(workflow))

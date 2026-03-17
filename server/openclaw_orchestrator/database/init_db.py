@@ -280,6 +280,9 @@ def init_database() -> None:
     _migrate_add_column(db, "knowledge_entries", "content_text", "TEXT DEFAULT ''")
     _ensure_knowledge_tables(db)
 
+    _migrate_add_column(db, "knowledge_entries", "content_text", "TEXT DEFAULT ''")
+    _ensure_knowledge_tables(db)
+
     # 调度任务状态表（记录排班调度的执行历史）
     db.executescript("""
         CREATE TABLE IF NOT EXISTS schedule_jobs (

@@ -76,6 +76,21 @@ def _audit(
         )
 
 
+def _attach_schedule_metadata(workflow: dict[str, Any]) -> dict[str, Any]:
+    schedule = workflow.get("schedule")
+    if not isinstance(schedule, dict):
+        return workflow
+
+    next_run_at = workflow_scheduler.get_next_run_at(workflow)
+    return {
+        **workflow,
+        "schedule": {
+            **schedule,
+            "nextRunAt": next_run_at,
+        },
+    }
+
+
 class CreateWorkflowRequest(BaseModel):
     teamId: str
     name: str

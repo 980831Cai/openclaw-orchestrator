@@ -44,6 +44,46 @@ function ToggleButton({ checked, onToggle, label }: { checked: boolean; onToggle
   )
 }
 
+function ScheduleToggle({
+  checked,
+  onCheckedChange,
+  label,
+}: {
+  checked: boolean
+  onCheckedChange: (checked: boolean) => void
+  label: string
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onCheckedChange(!checked)}
+      className={cn(
+        'inline-flex items-center gap-2 rounded-full border px-2 py-1 text-xs transition-colors',
+        checked
+          ? 'border-cyber-green/40 bg-cyber-green/15 text-cyber-green'
+          : 'border-white/10 bg-white/5 text-white/50 hover:border-white/20 hover:text-white/70'
+      )}
+    >
+      <span
+        className={cn(
+          'flex h-5 w-9 items-center rounded-full px-0.5 transition-colors',
+          checked ? 'bg-cyber-green/70' : 'bg-white/15'
+        )}
+      >
+        <span
+          className={cn(
+            'h-4 w-4 rounded-full bg-white shadow-[0_0_10px_rgba(255,255,255,0.18)] transition-all',
+            checked ? 'ml-auto' : 'ml-0'
+          )}
+        />
+      </span>
+      <span>{label}</span>
+    </button>
+  )
+}
+
 export function WorkflowEditorPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([])

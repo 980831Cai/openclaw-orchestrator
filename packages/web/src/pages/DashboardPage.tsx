@@ -94,6 +94,15 @@ export function DashboardPage() {
 
   const hour = new Date().getHours()
   const greeting = hour < 12 ? '早上好' : hour < 18 ? '下午好' : '晚上好'
+  const systemSummary = connected
+    ? gatewayConnected
+      ? gatewayRuntimeRunning
+        ? '实时通道、Gateway RPC 和本机进程都正常'
+        : '实时通道与 Gateway RPC 正常，但本机 Gateway 进程未运行'
+      : gatewayRuntimeRunning
+        ? '实时通道已连接，本机 Gateway 在运行，但后端还没连上 RPC'
+        : '实时通道已连接，但 Gateway 还没就绪'
+    : '实时通道未连接，首页状态可能不完整'
 
   return (
     <div className="h-full overflow-auto">
@@ -287,6 +296,11 @@ function Section({
     </section>
   )
 }
+function ScheduledWorkflowCard({ workflow, onClick }: { workflow: WorkflowDefinition; onClick: () => void }) {
+  const nextRunAt = workflow.schedule?.nextRunAt
+  const windowLabel = workflow.schedule?.window
+    ? `${workflow.schedule.window.start} - ${workflow.schedule.window.end}`
+    : null
 
 function StatCard({
   icon,

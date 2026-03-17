@@ -43,6 +43,14 @@ class WorkflowEngine:
     def _utcnow_iso(cls) -> str:
         return utc_now_iso()
 
+    @staticmethod
+    def _utcnow():
+        return utc_now()
+
+    @classmethod
+    def _utcnow_iso(cls) -> str:
+        return utc_now_iso()
+
     def create_workflow(
         self, team_id: str, name: str, definition: Optional[dict[str, Any]] = None
     ) -> dict[str, Any]:
