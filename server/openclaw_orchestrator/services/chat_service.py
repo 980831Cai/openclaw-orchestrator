@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from openclaw_orchestrator.config import settings
+from openclaw_orchestrator.utils.message_content import extract_visible_text
 
 logger = logging.getLogger(__name__)
 
@@ -48,24 +49,7 @@ class ChatService:
 
     @staticmethod
     def _extract_text_content(content: Any) -> str:
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                if isinstance(item, dict):
-                    text = item.get("text")
-                    if isinstance(text, str) and text.strip():
-                        parts.append(text)
-                elif isinstance(item, str) and item.strip():
-                    parts.append(item)
-            return "\n".join(parts)
-        if isinstance(content, dict):
-            text = content.get("text")
-            if isinstance(text, str):
-                return text
-            return json.dumps(content, ensure_ascii=False)
-        return ""
+        return extract_visible_text(content)
 
     @classmethod
     def _normalize_entry(

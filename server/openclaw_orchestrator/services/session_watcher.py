@@ -19,6 +19,7 @@ from typing import Any, Optional
 
 from openclaw_orchestrator.config import settings
 from openclaw_orchestrator.services.live_feed_service import live_feed_service
+from openclaw_orchestrator.utils.message_content import extract_visible_text
 from openclaw_orchestrator.utils.time import utc_now_iso
 from openclaw_orchestrator.websocket.ws_handler import broadcast
 
@@ -181,24 +182,7 @@ class SessionWatcher:
 
     @staticmethod
     def _normalize_content(content: Any) -> str:
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                if isinstance(item, dict):
-                    text = item.get("text")
-                    if isinstance(text, str) and text.strip():
-                        parts.append(text)
-                elif isinstance(item, str) and item.strip():
-                    parts.append(item)
-            return "\n".join(parts)
-        if isinstance(content, dict):
-            text = content.get("text")
-            if isinstance(text, str):
-                return text
-            return json.dumps(content, ensure_ascii=False)
-        return ""
+        return extract_visible_text(content)
 
     def _resolve_session_id(self, agent_id: str, file_path: str) -> str:
         raw_session_id = Path(file_path).stem

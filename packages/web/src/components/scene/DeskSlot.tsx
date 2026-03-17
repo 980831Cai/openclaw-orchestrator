@@ -36,7 +36,7 @@ function DeskItems({ color }: { color: string }) {
       </div>
 
       <div className="relative">
-        <div className="h-3.5 w-3 overflow-hidden rounded-b-md border border-white/10 bg-white/8">
+        <div className="h-3.5 w-3 overflow-hidden rounded-b-md border border-white/10 bg-white/[0.08]">
           <div className="mt-auto h-1/2 w-full" style={{ background: `${color}20` }} />
         </div>
         <div className="absolute -top-1.5 left-0.5 flex gap-px">
@@ -86,8 +86,8 @@ export function DeskSlot({ member, color, isHovered, isLead, onHover, onAddMembe
             </div>
           </div>
 
-          <span className="text-xs font-medium text-white/20 transition-colors group-hover:text-cyber-green/60">邀请成员</span>
-          <span className="mt-0.5 text-[10px] text-white/10 transition-colors group-hover:text-white/30">点击添加 Agent 到工位</span>
+          <span className="text-xs font-medium text-white/20 transition-colors group-hover:text-cyber-green/60">继续添加成员</span>
+          <span className="mt-0.5 text-[10px] text-white/10 transition-colors group-hover:text-white/30">点击邀请 Agent，工作室会自动扩展工位</span>
         </button>
       </div>
     )

@@ -14,6 +14,28 @@ from openclaw_orchestrator.services.chat_service import ChatDeliveryError, ChatS
 
 
 class ChatServiceGatewayTests(IsolatedAsyncioTestCase):
+    def test_extract_text_content_ignores_metadata_only_dict_payload(self) -> None:
+        self.assertEqual(
+            ChatService._extract_text_content(
+                {
+                    "results": [],
+                    "provider": "none",
+                    "citations": "auto",
+                    "mode": "fts-only",
+                }
+            ),
+            "",
+        )
+        self.assertEqual(
+            ChatService._extract_text_content(
+                {
+                    "summary": "这是给用户看的摘要",
+                    "provider": "demo",
+                }
+            ),
+            "这是给用户看的摘要",
+        )
+
     async def test_list_sessions_prefers_gateway_and_filters_internal_workflow_sessions(self) -> None:
         service = ChatService()
         fake_connector = SimpleNamespace(

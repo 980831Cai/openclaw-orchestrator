@@ -39,7 +39,7 @@ export function EmpireRoomGrid({ rooms, onOpenRoom, onOpenAgent }: EmpireRoomGri
           </h2>
           <p className="mt-1 text-[10px] text-white/45">使用办公室场景查看工作室内部席位与 Agent 状态。</p>
         </div>
-        <div className="rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2 text-right">
+        <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-right">
           <p className="text-[10px] text-white/40">房间数</p>
           <p className="text-sm font-black text-white/85">{rooms.length}</p>
         </div>
@@ -47,8 +47,8 @@ export function EmpireRoomGrid({ rooms, onOpenRoom, onOpenAgent }: EmpireRoomGri
 
       {selectedRoom && sceneTeam ? (
         <>
-          <div className="mb-4 overflow-hidden rounded-[28px] border border-white/8 bg-slate-950/45 shadow-[0_16px_40px_rgba(2,6,23,0.35)]">
-            <div className="flex items-center justify-between gap-3 border-b border-white/8 bg-black/20 px-4 py-3">
+          <div className="mb-4 overflow-hidden rounded-[28px] border border-white/[0.08] bg-slate-950/45 shadow-[0_16px_40px_rgba(2,6,23,0.35)]">
+            <div className="flex items-center justify-between gap-3 border-b border-white/[0.08] bg-black/20 px-4 py-3">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <h3 className="truncate text-base font-black text-white/90">{selectedRoom.name}</h3>

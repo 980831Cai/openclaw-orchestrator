@@ -84,6 +84,14 @@ def init_database() -> None:
             status TEXT NOT NULL DEFAULT 'pending',
             current_node_id TEXT,
             logs TEXT DEFAULT '[]',
+            prompt_tokens INTEGER DEFAULT 0,
+            completion_tokens INTEGER DEFAULT 0,
+            total_tokens INTEGER DEFAULT 0,
+            estimated_cost_usd REAL DEFAULT 0,
+            usage_metrics_count INTEGER DEFAULT 0,
+            usage_samples_count INTEGER DEFAULT 0,
+            usage_coverage_ratio REAL DEFAULT 0,
+            model_summary_json TEXT DEFAULT '',
             started_at TEXT NOT NULL DEFAULT (datetime('now')),
             completed_at TEXT,
             FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
@@ -168,6 +176,42 @@ def init_database() -> None:
             recorded_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS execution_usage_metrics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            execution_id TEXT NOT NULL,
+            workflow_id TEXT NOT NULL,
+            team_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            agent_id TEXT DEFAULT '',
+            model TEXT DEFAULT '',
+            channel TEXT DEFAULT '',
+            prompt_tokens INTEGER DEFAULT 0,
+            completion_tokens INTEGER DEFAULT 0,
+            total_tokens INTEGER DEFAULT 0,
+            estimated_cost_usd REAL DEFAULT 0,
+            duration_ms INTEGER DEFAULT 0,
+            has_usage INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (execution_id) REFERENCES workflow_executions(id) ON DELETE CASCADE,
+            FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE,
+            FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS audit_logs (
+            id TEXT PRIMARY KEY,
+            team_id TEXT DEFAULT NULL,
+            actor TEXT NOT NULL DEFAULT 'api',
+            action TEXT NOT NULL,
+            resource_type TEXT NOT NULL,
+            resource_id TEXT DEFAULT '',
+            detail TEXT DEFAULT '',
+            metadata_json TEXT DEFAULT '',
+            ok INTEGER NOT NULL DEFAULT 1,
+            request_id TEXT DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE SET NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_tasks_team_id ON tasks(team_id);
         CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
         CREATE INDEX IF NOT EXISTS idx_tasks_team_queue ON tasks(team_id, queue_status, queue_seq, queued_at);
@@ -183,9 +227,26 @@ def init_database() -> None:
         CREATE INDEX IF NOT EXISTS idx_notifications_execution ON notifications(execution_id);
         CREATE INDEX IF NOT EXISTS idx_live_feed_messages_recorded_at ON live_feed_messages(recorded_at DESC);
         CREATE INDEX IF NOT EXISTS idx_live_feed_events_recorded_at ON live_feed_events(recorded_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_execution_usage_metrics_execution ON execution_usage_metrics(execution_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_execution_usage_metrics_team_created ON execution_usage_metrics(team_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_execution_usage_metrics_team_model_created ON execution_usage_metrics(team_id, model, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_execution_usage_metrics_team_agent_created ON execution_usage_metrics(team_id, agent_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_execution_usage_metrics_team_workflow_created ON execution_usage_metrics(team_id, workflow_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_audit_logs_team_created ON audit_logs(team_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_audit_logs_action_created ON audit_logs(action, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_audit_logs_resource_created ON audit_logs(resource_type, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_audit_logs_ok_created ON audit_logs(ok, created_at DESC);
     """)
 
     _migrate_add_column(db, "workflow_executions", "context_json", "TEXT DEFAULT NULL")
+    _migrate_add_column(db, "workflow_executions", "prompt_tokens", "INTEGER DEFAULT 0")
+    _migrate_add_column(db, "workflow_executions", "completion_tokens", "INTEGER DEFAULT 0")
+    _migrate_add_column(db, "workflow_executions", "total_tokens", "INTEGER DEFAULT 0")
+    _migrate_add_column(db, "workflow_executions", "estimated_cost_usd", "REAL DEFAULT 0")
+    _migrate_add_column(db, "workflow_executions", "usage_metrics_count", "INTEGER DEFAULT 0")
+    _migrate_add_column(db, "workflow_executions", "usage_samples_count", "INTEGER DEFAULT 0")
+    _migrate_add_column(db, "workflow_executions", "usage_coverage_ratio", "REAL DEFAULT 0")
+    _migrate_add_column(db, "workflow_executions", "model_summary_json", "TEXT DEFAULT ''")
     # 为 tasks 表添加 assigned_agent_id 列（排班分配的 Agent）
     _migrate_add_column(db, "tasks", "assigned_agent_id", "TEXT DEFAULT NULL")
     _migrate_add_column(db, "tasks", "queue_status", "TEXT DEFAULT 'backlog'")
@@ -285,8 +346,8 @@ def _validate_sql_identifier(value: str, label: str) -> None:
 # Whitelist of tables that are allowed to be migrated
 _ALLOWED_TABLES = {
     "teams", "team_members", "tasks", "workflows",
-    "workflow_executions", "trigger_events", "knowledge_entries", "approvals",
-    "notifications", "schedule_jobs", "meetings",
+    "workflow_executions", "execution_usage_metrics", "trigger_events", "knowledge_entries", "approvals",
+    "notifications", "audit_logs", "schedule_jobs", "meetings",
 }
 
 

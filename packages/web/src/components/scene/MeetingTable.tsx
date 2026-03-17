@@ -51,7 +51,7 @@ export function MeetingTable({ summary, memberCount }: MeetingTableProps) {
           </div>
 
           {/* Separator */}
-          <div className="w-full h-px bg-gradient-to-r from-transparent via-white/8 to-transparent mb-2" />
+          <div className="w-full h-px bg-gradient-to-r from-transparent via-white/[0.08] to-transparent mb-2" />
 
           {/* Preview text — looks like handwritten notes */}
           <div className="flex-1 overflow-hidden">

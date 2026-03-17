@@ -174,6 +174,147 @@ class WorkflowEngine:
         return str(workflow_id).strip() if workflow_id else None
 
     @staticmethod
+    def _normalize_usage_result(result: dict[str, Any]) -> dict[str, Any]:
+        usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+        prompt_tokens = max(int(usage.get("promptTokens") or 0), 0)
+        completion_tokens = max(int(usage.get("completionTokens") or 0), 0)
+        total_tokens = max(int(usage.get("totalTokens") or (prompt_tokens + completion_tokens) or 0), 0)
+        estimated_cost_usd = round(float(usage.get("estimatedCostUsd") or 0.0), 6)
+        duration_ms = result.get("durationMs")
+        if duration_ms in (None, ""):
+            duration_ms = round(float(result.get("elapsed") or 0) * 1000)
+        return {
+            "model": str(result.get("model") or "").strip(),
+            "channel": str(result.get("channel") or "").strip(),
+            "promptTokens": prompt_tokens,
+            "completionTokens": completion_tokens,
+            "totalTokens": total_tokens,
+            "estimatedCostUsd": estimated_cost_usd,
+            "durationMs": max(int(duration_ms or 0), 0),
+            "hasUsage": bool(usage.get("hasUsage")) or any(
+                value > 0 for value in (prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd)
+            ),
+        }
+
+    def _record_execution_usage_metric(
+        self,
+        *,
+        execution_id: str,
+        node_id: str,
+        agent_id: str,
+        result: dict[str, Any],
+    ) -> None:
+        workflow = self._safe_get_workflow_by_execution(execution_id)
+        workflow_id = str(workflow.get("id") or "").strip() if workflow else ""
+        team_id = str(workflow.get("teamId") or "").strip() if workflow else ""
+        if not workflow_id or not team_id:
+            return
+
+        usage_result = self._normalize_usage_result(result)
+        db = get_db()
+        db.execute(
+            """
+            INSERT INTO execution_usage_metrics (
+                execution_id, workflow_id, team_id, node_id, agent_id, model, channel,
+                prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd,
+                duration_ms, has_usage
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                execution_id,
+                workflow_id,
+                team_id,
+                node_id,
+                str(agent_id or "").strip(),
+                usage_result["model"],
+                usage_result["channel"],
+                usage_result["promptTokens"],
+                usage_result["completionTokens"],
+                usage_result["totalTokens"],
+                usage_result["estimatedCostUsd"],
+                usage_result["durationMs"],
+                1 if usage_result["hasUsage"] else 0,
+            ),
+        )
+        self._refresh_execution_usage_summary(execution_id, db=db)
+        db.commit()
+
+    def _refresh_execution_usage_summary(self, execution_id: str, db: Any | None = None) -> None:
+        owns_db = db is None
+        db = db or get_db()
+        totals = db.execute(
+            """
+            SELECT
+                COUNT(*) AS metrics_count,
+                SUM(prompt_tokens) AS prompt_tokens,
+                SUM(completion_tokens) AS completion_tokens,
+                SUM(total_tokens) AS total_tokens,
+                SUM(estimated_cost_usd) AS estimated_cost_usd,
+                SUM(has_usage) AS usage_samples_count
+            FROM execution_usage_metrics
+            WHERE execution_id = ?
+            """,
+            (execution_id,),
+        ).fetchone()
+        model_rows = db.execute(
+            """
+            SELECT
+                COALESCE(NULLIF(model, ''), 'unknown') AS model_name,
+                COUNT(*) AS sample_count,
+                SUM(prompt_tokens) AS prompt_tokens,
+                SUM(completion_tokens) AS completion_tokens,
+                SUM(total_tokens) AS total_tokens,
+                SUM(estimated_cost_usd) AS estimated_cost_usd
+            FROM execution_usage_metrics
+            WHERE execution_id = ?
+            GROUP BY model_name
+            ORDER BY total_tokens DESC, sample_count DESC
+            """,
+            (execution_id,),
+        ).fetchall()
+
+        metrics_count = int(totals["metrics_count"] or 0) if totals else 0
+        usage_samples_count = int(totals["usage_samples_count"] or 0) if totals else 0
+        coverage_ratio = round(usage_samples_count / metrics_count, 4) if metrics_count else 0.0
+        model_summary = {
+            row["model_name"]: {
+                "sampleCount": int(row["sample_count"] or 0),
+                "promptTokens": int(row["prompt_tokens"] or 0),
+                "completionTokens": int(row["completion_tokens"] or 0),
+                "totalTokens": int(row["total_tokens"] or 0),
+                "estimatedCostUsd": round(float(row["estimated_cost_usd"] or 0), 6),
+            }
+            for row in model_rows
+        }
+        db.execute(
+            """
+            UPDATE workflow_executions
+            SET prompt_tokens = ?,
+                completion_tokens = ?,
+                total_tokens = ?,
+                estimated_cost_usd = ?,
+                usage_metrics_count = ?,
+                usage_samples_count = ?,
+                usage_coverage_ratio = ?,
+                model_summary_json = ?
+            WHERE id = ?
+            """,
+            (
+                int(totals["prompt_tokens"] or 0) if totals else 0,
+                int(totals["completion_tokens"] or 0) if totals else 0,
+                int(totals["total_tokens"] or 0) if totals else 0,
+                round(float(totals["estimated_cost_usd"] or 0), 6) if totals else 0.0,
+                metrics_count,
+                usage_samples_count,
+                coverage_ratio,
+                json.dumps(model_summary, ensure_ascii=False),
+                execution_id,
+            ),
+        )
+        if owns_db:
+            db.commit()
+
+    @staticmethod
     def _delete_file_if_exists(path: Path) -> None:
         try:
             path.unlink(missing_ok=True)
@@ -387,6 +528,7 @@ class WorkflowEngine:
                 """,
                 ("Execution stopped", execution_id),
             )
+        self._refresh_execution_usage_summary(execution_id, db=db)
         db.commit()
         for approval in pending_approvals:
             self._clear_approval_timeout_task(approval["id"])
@@ -960,6 +1102,7 @@ class WorkflowEngine:
             "UPDATE workflow_executions SET status = 'completed', completed_at = datetime('now') WHERE id = ?",
             (execution_id,),
         )
+        self._refresh_execution_usage_summary(execution_id, db=db)
         db.commit()
 
         total_artifacts = self._count_materialized_artifacts(node_artifacts)
@@ -1310,6 +1453,7 @@ class WorkflowEngine:
             "UPDATE workflow_executions SET status = 'failed', completed_at = datetime('now') WHERE id = ?",
             (execution_id,),
         )
+        self._refresh_execution_usage_summary(execution_id, db=db)
         self._sync_linked_entities(
             db,
             linked_task_id=linked_task_id,
@@ -1555,6 +1699,13 @@ class WorkflowEngine:
                     },
                 )
                 await asyncio.sleep(retry_delay)
+
+        self._record_execution_usage_metric(
+            execution_id=execution_id,
+            node_id=node_id,
+            agent_id=agent_id,
+            result=result,
+        )
 
         if not result.get("success"):
             node_artifacts[node_id] = []
@@ -1955,7 +2106,15 @@ class WorkflowEngine:
         topic = node.get("topic", label)
         topic_description = node.get("topicDescription", "")
         participants = node.get("participants", [])
-        team_id = node.get("teamId", "default")
+        workflow_id = self._workflow_id_for_execution(execution_id)
+        workflow = self.get_workflow(workflow_id) if workflow_id else None
+        inherited_team_id = (
+            str(workflow.get("teamId") or "").strip()
+            if isinstance(workflow, dict)
+            else ""
+        )
+        explicit_team_id = str(node.get("teamId") or "").strip()
+        team_id = explicit_team_id or inherited_team_id or "default"
         lead_agent_id = node.get("leadAgentId") or node.get("judgeAgentId")
         max_rounds = node.get("maxRounds", 3)
         discussion_manual = self._build_discussion_manual(node_type)
@@ -2001,7 +2160,6 @@ class WorkflowEngine:
         )
 
         try:
-            workflow_id = self._workflow_id_for_execution(execution_id)
             workflow_session_id = (
                 self._workflow_session_id(workflow_id)
                 if workflow_id
@@ -2566,6 +2724,14 @@ class WorkflowEngine:
             "startedAt": row["started_at"],
             "completedAt": row["completed_at"] or None,
             "logs": json.loads(row["logs"] or "[]"),
+            "promptTokens": int(row["prompt_tokens"] or 0) if "prompt_tokens" in row.keys() else 0,
+            "completionTokens": int(row["completion_tokens"] or 0) if "completion_tokens" in row.keys() else 0,
+            "totalTokens": int(row["total_tokens"] or 0) if "total_tokens" in row.keys() else 0,
+            "estimatedCostUsd": round(float(row["estimated_cost_usd"] or 0), 6) if "estimated_cost_usd" in row.keys() else 0.0,
+            "usageMetricsCount": int(row["usage_metrics_count"] or 0) if "usage_metrics_count" in row.keys() else 0,
+            "usageSamplesCount": int(row["usage_samples_count"] or 0) if "usage_samples_count" in row.keys() else 0,
+            "usageCoverageRatio": round(float(row["usage_coverage_ratio"] or 0), 4) if "usage_coverage_ratio" in row.keys() else 0.0,
+            "modelSummary": WorkflowEngine._parse_execution_context(row["model_summary_json"]) if "model_summary_json" in row.keys() else {},
         }
 
     @staticmethod

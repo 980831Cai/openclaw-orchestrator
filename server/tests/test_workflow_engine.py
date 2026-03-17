@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from datetime import timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 SERVER_ROOT = Path(__file__).resolve().parents[1]
 if str(SERVER_ROOT) not in sys.path:
@@ -855,6 +855,227 @@ class WorkflowEngineTaskQueueLinkageTests(unittest.TestCase):
         self.assertEqual(updated["queueStatus"], "blocked")
         self.assertIn("gateway timeout", updated["lastError"])
         self.assertEqual(updated["executionId"], "exec-q")
+
+
+class WorkflowEngineMeetingRoutingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp_dir.cleanup)
+        self._env_patch = patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_HOME": self._temp_dir.name,
+                "DB_PATH": str(Path(self._temp_dir.name) / "workflow-meeting.sqlite"),
+            },
+            clear=False,
+        )
+        self._env_patch.start()
+        self.addCleanup(self._env_patch.stop)
+        close_db()
+        init_database()
+        self.addCleanup(close_db)
+
+        db = get_db()
+        db.execute(
+            """
+            INSERT INTO teams (id, name, description, goal, theme, schedule_json, team_dir)
+            VALUES (?, ?, '', '', 'default', '{}', ?)
+            """,
+            ("team-meeting", "会议团队", self._temp_dir.name),
+        )
+        db.execute(
+            """
+            INSERT INTO workflows (id, team_id, name, definition_json, status)
+            VALUES (?, ?, ?, ?, 'draft')
+            """,
+            (
+                "workflow-meeting",
+                "team-meeting",
+                "会议工作流",
+                json.dumps({"nodes": {}, "edges": [], "schedule": None}, ensure_ascii=False),
+            ),
+        )
+        db.execute(
+            """
+            INSERT INTO workflow_executions (id, workflow_id, status, current_node_id, logs, context_json)
+            VALUES (?, ?, 'running', ?, '[]', '{}')
+            """,
+            ("execution-meeting", "workflow-meeting", "meeting-1"),
+        )
+        db.commit()
+
+    def test_meeting_node_inherits_workflow_team_when_node_team_is_empty(self) -> None:
+        engine = WorkflowEngine()
+        node = {
+            "type": "meeting",
+            "label": "评审会",
+            "meetingType": "review",
+            "topic": "讨论方案",
+            "participants": ["agent-a", "agent-b"],
+        }
+
+        fake_meeting_service = type(
+            "FakeMeetingService",
+            (),
+            {
+                "create_meeting": staticmethod(lambda **kwargs: {"id": "meeting-1", **kwargs}),
+                "run_meeting": staticmethod(AsyncMock(return_value={"summary": "会议完成"})),
+            },
+        )
+
+        with patch(
+            "openclaw_orchestrator.services.meeting_service.meeting_service",
+            fake_meeting_service,
+        ):
+            node_artifacts: dict[str, list[dict[str, object]]] = {}
+            asyncio.run(
+                engine._execute_meeting_node(
+                    "execution-meeting",
+                    "meeting-1",
+                    node,
+                    [],
+                    node_artifacts,
+                )
+            )
+
+        self.assertEqual(node_artifacts["meeting-1"][0]["content"], "会议完成")
+
+    def test_meeting_node_passes_inherited_workflow_team_to_meeting_service(self) -> None:
+        engine = WorkflowEngine()
+        node = {
+            "type": "meeting",
+            "label": "评审会",
+            "meetingType": "review",
+            "topic": "讨论方案",
+            "participants": ["agent-a", "agent-b"],
+        }
+        create_meeting = Mock(return_value={"id": "meeting-1"})
+        run_meeting = AsyncMock(return_value={"summary": "会议完成"})
+        fake_meeting_service = type(
+            "FakeMeetingService",
+            (),
+            {
+                "create_meeting": staticmethod(create_meeting),
+                "run_meeting": staticmethod(run_meeting),
+            },
+        )
+
+        with patch(
+            "openclaw_orchestrator.services.meeting_service.meeting_service",
+            fake_meeting_service,
+        ):
+            asyncio.run(
+                engine._execute_meeting_node(
+                    "execution-meeting",
+                    "meeting-1",
+                    node,
+                    [],
+                    {},
+                )
+            )
+
+        self.assertEqual(create_meeting.call_args.kwargs["team_id"], "team-meeting")
+
+    def test_debate_node_passes_inherited_workflow_team_to_meeting_service(self) -> None:
+        engine = WorkflowEngine()
+        node = {
+            "type": "debate",
+            "label": "方案辩论",
+            "topic": "是否切换方案",
+            "participants": ["agent-a", "agent-b"],
+            "maxRounds": 4,
+        }
+        create_meeting = Mock(return_value={"id": "meeting-debate"})
+        run_meeting = AsyncMock(return_value={"summary": "辩论完成"})
+        fake_meeting_service = type(
+            "FakeMeetingService",
+            (),
+            {
+                "create_meeting": staticmethod(create_meeting),
+                "run_meeting": staticmethod(run_meeting),
+            },
+        )
+
+        with patch(
+            "openclaw_orchestrator.services.meeting_service.meeting_service",
+            fake_meeting_service,
+        ):
+            asyncio.run(
+                engine._execute_meeting_node(
+                    "execution-meeting",
+                    "debate-1",
+                    node,
+                    [],
+                    {},
+                )
+            )
+
+        self.assertEqual(create_meeting.call_args.kwargs["team_id"], "team-meeting")
+        self.assertEqual(create_meeting.call_args.kwargs["meeting_type"], "debate")
+
+
+class WorkflowEngineUsageMetricTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp_dir.cleanup)
+        self._env_patch = patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_HOME": self._temp_dir.name,
+                "DB_PATH": str(Path(self._temp_dir.name) / "workflow-usage.sqlite"),
+            },
+            clear=False,
+        )
+        self._env_patch.start()
+        self.addCleanup(self._env_patch.stop)
+        close_db()
+        init_database()
+        self.addCleanup(close_db)
+
+    def test_record_execution_usage_metric_updates_execution_summary_fields(self) -> None:
+        db = get_db()
+        db.execute(
+            "INSERT INTO teams (id, name, description, goal, theme, schedule_json, team_dir) VALUES (?, ?, '', '', 'default', '{}', ?)",
+            ("team-usage", "用量团队", self._temp_dir.name),
+        )
+        db.execute(
+            "INSERT INTO workflows (id, team_id, name, definition_json, status) VALUES (?, ?, ?, '{}', 'draft')",
+            ("wf-usage", "team-usage", "统计流程"),
+        )
+        db.execute(
+            "INSERT INTO workflow_executions (id, workflow_id, status, logs, context_json) VALUES (?, ?, 'running', '[]', '{}')",
+            ("exec-usage", "wf-usage"),
+        )
+        db.commit()
+
+        engine = WorkflowEngine()
+        engine._record_execution_usage_metric(
+            execution_id="exec-usage",
+            node_id="node-1",
+            agent_id="agent-a",
+            result={
+                "success": True,
+                "channel": "gateway",
+                "model": "claude-3-7-sonnet",
+                "durationMs": 3210,
+                "usage": {
+                    "promptTokens": 120,
+                    "completionTokens": 45,
+                    "totalTokens": 165,
+                    "estimatedCostUsd": 0.12,
+                    "hasUsage": True,
+                },
+            },
+        )
+
+        execution = engine.get_execution("exec-usage")
+        self.assertEqual(execution["promptTokens"], 120)
+        self.assertEqual(execution["completionTokens"], 45)
+        self.assertEqual(execution["totalTokens"], 165)
+        self.assertAlmostEqual(execution["estimatedCostUsd"], 0.12)
+        self.assertEqual(execution["usageMetricsCount"], 1)
+        self.assertEqual(execution["usageSamplesCount"], 1)
+        self.assertEqual(execution["modelSummary"]["claude-3-7-sonnet"]["totalTokens"], 165)
 
 
 if __name__ == "__main__":

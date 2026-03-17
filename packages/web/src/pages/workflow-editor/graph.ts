@@ -1,6 +1,7 @@
 import { addEdge, type Connection, type Edge, type Node } from 'reactflow'
 
 import type { MeetingType, WorkflowDefinition, WorkflowEdge, WorkflowExecution, WorkflowNodeData, WorkflowSchedule } from '../../types/index.ts'
+import { createDefaultWorkflowNodeData } from './node-defaults'
 
 export const EDGE_STYLE = { stroke: '#6366F1', strokeWidth: 2 }
 export const MEETING_WORKFLOW_TYPES: Exclude<MeetingType, 'debate'>[] = [
@@ -161,6 +162,25 @@ export function toFlowEdges(workflow: WorkflowDefinition): Edge[] {
       reconnectable: 'source',
     }
   })
+}
+
+export function createWorkflowFlowNode(
+  type: WorkflowNodeData['type'],
+  nodeCount: number,
+  position?: { x: number; y: number },
+): Node<WorkflowNodeData> {
+  const resolvedPosition = position ?? { x: 180 + nodeCount * 30, y: 100 + nodeCount * 20 }
+  const data = createDefaultWorkflowNodeData(type)
+
+  return {
+    id: `${type}-${Date.now()}`,
+    type,
+    position: resolvedPosition,
+    data: {
+      ...data,
+      position: resolvedPosition,
+    },
+  }
 }
 
 export function serializeNodes(nodes: Node[], edges: Edge[]): Record<string, WorkflowNodeData> {

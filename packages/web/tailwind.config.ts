@@ -43,11 +43,12 @@ const config: Config = {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        /* ── Modern Cyber Palette ── */
         cyber: {
-          bg: '#0F0F23',
-          surface: '#1A1A2E',
-          panel: '#16213E',
-          elevated: '#1E293B',
+          bg: '#0B0F19',
+          surface: '#111827',
+          panel: '#1A2332',
+          elevated: '#1F2937',
           purple: '#6366F1',
           violet: '#8B5CF6',
           lavender: '#A78BFA',
@@ -64,8 +65,19 @@ const config: Config = {
         sm: "calc(var(--radius) - 4px)",
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', 'sans-serif'],
+        sans: ['Inter', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
         mono: ['JetBrains Mono', 'Fira Code', 'monospace'],
+      },
+      boxShadow: {
+        'glass': '0 8px 32px rgba(0, 0, 0, 0.12)',
+        'glass-lg': '0 16px 48px rgba(0, 0, 0, 0.16)',
+        'glass-hover': '0 16px 48px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(255, 255, 255, 0.08)',
+        'card': '0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.24)',
+        'card-hover': '0 8px 24px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.12)',
+        'glow-purple': '0 0 20px rgba(99, 102, 241, 0.15), 0 0 4px rgba(99, 102, 241, 0.3)',
+        'glow-cyan': '0 0 20px rgba(6, 182, 212, 0.15), 0 0 4px rgba(6, 182, 212, 0.3)',
+        'glow-green': '0 0 20px rgba(34, 197, 94, 0.15), 0 0 4px rgba(34, 197, 94, 0.3)',
+        'glow-amber': '0 0 20px rgba(245, 158, 11, 0.15), 0 0 4px rgba(245, 158, 11, 0.3)',
       },
       animation: {
         'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
@@ -75,7 +87,13 @@ const config: Config = {
         'beam': 'beam 2s linear infinite',
         'breathe': 'breathe 4s ease-in-out infinite',
         'slide-in': 'slideIn 0.3s ease-out',
+        'slide-up': 'slideUp 0.4s ease-out',
         'fade-in': 'fadeIn 0.5s ease-out',
+        'fade-in-up': 'fadeInUp 0.5s ease-out',
+        'scale-in': 'scaleIn 0.3s ease-out',
+        'stagger-in': 'staggerIn 0.4s ease-out backwards',
+        'shimmer': 'shimmer 2s linear infinite',
+        /* Kept for PixiJS office scene (used in TeamDetailPage) */
         'cartoon-bob': 'cartoonBob 3s ease-in-out infinite',
         'cartoon-wave': 'cartoonWave 4s ease-in-out infinite',
         'cartoon-sparkle': 'cartoonSparkle 2s ease-in-out infinite',
@@ -114,14 +132,29 @@ const config: Config = {
           '0%': { transform: 'translateX(20px)', opacity: '0' },
           '100%': { transform: 'translateX(0)', opacity: '1' },
         },
+        slideUp: {
+          '0%': { transform: 'translateY(12px)', opacity: '0' },
+          '100%': { transform: 'translateY(0)', opacity: '1' },
+        },
         fadeIn: {
           '0%': { opacity: '0' },
           '100%': { opacity: '1' },
         },
-        wiggle: {
-          '0%, 100%': { transform: 'rotate(0deg)' },
-          '25%': { transform: 'rotate(0.3deg)' },
-          '75%': { transform: 'rotate(-0.3deg)' },
+        fadeInUp: {
+          '0%': { opacity: '0', transform: 'translateY(8px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+        scaleIn: {
+          '0%': { opacity: '0', transform: 'scale(0.95)' },
+          '100%': { opacity: '1', transform: 'scale(1)' },
+        },
+        staggerIn: {
+          '0%': { opacity: '0', transform: 'translateY(8px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+        shimmer: {
+          '0%': { backgroundPosition: '-200% 0' },
+          '100%': { backgroundPosition: '200% 0' },
         },
         cartoonBob: {
           '0%, 100%': { transform: 'translateY(0px)' },

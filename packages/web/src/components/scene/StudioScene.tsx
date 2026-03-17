@@ -99,8 +99,9 @@ export function StudioScene({ team, teamMd, onAddMember, onViewAgent }: StudioSc
     [members, agents],
   )
 
-  const maxDesks = Math.max(enrichedMembers.length, 4)
-  const deskSlots: (TeamMember | null)[] = [...enrichedMembers, ...Array(maxDesks - enrichedMembers.length).fill(null)]
+  const expandableDeskCount = Math.max(enrichedMembers.length + 1, 2)
+  const deskSlots: (TeamMember | null)[] = [...enrichedMembers, ...Array(expandableDeskCount - enrichedMembers.length).fill(null)]
+  const maxDesks = deskSlots.length
 
   const activeLinks = useMemo(() => {
     const now = Date.now()
@@ -164,7 +165,7 @@ export function StudioScene({ team, teamMd, onAddMember, onViewAgent }: StudioSc
 
           <div className="flex items-center gap-3">
             <BulletinBoard />
-            <div className="relative rounded-xl border border-white/8 bg-white/5 px-4 py-1.5">
+            <div className="relative rounded-xl border border-white/[0.08] bg-white/5 px-4 py-1.5">
               <div className="flex items-center gap-2">
                 <div className="h-2 w-2 animate-pulse rounded-full bg-cyber-green" />
                 <span className="text-xs font-semibold tracking-wider text-white/50">{team.name} 工作室</span>
@@ -186,9 +187,16 @@ export function StudioScene({ team, teamMd, onAddMember, onViewAgent }: StudioSc
 
       <div className="relative z-20 flex h-full min-h-[560px] min-w-[1100px] items-center justify-center p-8 pt-16">
         <div className="relative flex h-full w-full max-w-5xl flex-col">
-          <div className="mb-4 flex items-start justify-between px-4">
+          <div className="mb-4 flex items-start justify-between gap-4 px-4">
             <TaskWhiteboard teamId={team.id} />
-            <ScheduleCalendar schedule={team.schedule} />
+            <div className="flex flex-col items-end gap-3">
+              <div className="rounded-2xl border border-cyber-green/15 bg-cyber-green/5 px-4 py-2 text-right shadow-[0_10px_30px_rgba(34,197,94,0.08)]">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-cyber-green/70">Studio Capacity</p>
+                <p className="mt-1 text-xs font-medium text-white/75">已入驻 {enrichedMembers.length} 名成员 · 工位会继续扩容</p>
+                <p className="mt-1 text-[10px] leading-4 text-white/35">始终保留邀请入口，可持续添加新的团队 Agent。</p>
+              </div>
+              <ScheduleCalendar schedule={team.schedule} />
+            </div>
           </div>
 
           <div className="flex flex-1 items-center gap-6">

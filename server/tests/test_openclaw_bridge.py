@@ -30,6 +30,27 @@ class OpenClawBridgeTimestampTests(IsolatedAsyncioTestCase):
         self.assertTrue(stamp.startswith(str(moment.year)))
 
 
+class OpenClawBridgeContentTests(unittest.TestCase):
+    def test_extract_text_content_filters_metadata_only_payload(self) -> None:
+        bridge = OpenClawBridge()
+
+        self.assertEqual(
+            bridge._extract_text_content(
+                {
+                    "results": [],
+                    "provider": "none",
+                    "citations": "auto",
+                    "mode": "fts-only",
+                }
+            ),
+            "",
+        )
+        self.assertEqual(
+            bridge._extract_text_content({"summary": "保留这段总结", "provider": "demo"}),
+            "保留这段总结",
+        )
+
+
 class OpenClawBridgeGovernanceTests(unittest.TestCase):
     def setUp(self) -> None:
         self._temp_dir = tempfile.TemporaryDirectory()
@@ -186,3 +207,49 @@ class OpenClawBridgeTransientSessionTests(IsolatedAsyncioTestCase):
             session_key="agent:demo:wf-12345678",
             expect_gateway_session=True,
         )
+
+
+class OpenClawBridgeUsageTests(IsolatedAsyncioTestCase):
+    async def test_invoke_agent_normalizes_model_usage_and_duration(self) -> None:
+        bridge = OpenClawBridge()
+        bridge._get_file_size = Mock(return_value=0)
+        bridge._cleanup_transient_session = AsyncMock(return_value=True)
+        bridge._fetch_gateway_reply_bundle = AsyncMock(
+            return_value={
+                "content": "done",
+                "assistantMessage": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "done"}],
+                    "model": "claude-3-7-sonnet",
+                    "usage": {
+                        "promptTokens": 120,
+                        "completionTokens": 45,
+                        "totalTokens": 165,
+                        "estimatedCostUsd": 0.12,
+                    },
+                },
+            }
+        )
+
+        fake_connector = SimpleNamespace(
+            connected=True,
+            resolve_session_key=AsyncMock(return_value="agent:demo:wf-usage"),
+            get_chat_history=AsyncMock(return_value=[]),
+            call_rpc=AsyncMock(side_effect=[{"runId": "run-1"}, {"status": "ok"}]),
+        )
+
+        with patch("openclaw_orchestrator.services.gateway_connector.gateway_connector", fake_connector):
+            result = await bridge.invoke_agent(
+                agent_id="demo",
+                message="hello",
+                session_id="wf-usage",
+                timeout_seconds=5,
+                correlation_id="corr-usage",
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["channel"], "gateway")
+        self.assertEqual(result["model"], "claude-3-7-sonnet")
+        self.assertEqual(result["usage"]["promptTokens"], 120)
+        self.assertEqual(result["usage"]["totalTokens"], 165)
+        self.assertGreaterEqual(result["durationMs"], 0)

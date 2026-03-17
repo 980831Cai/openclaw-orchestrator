@@ -47,7 +47,8 @@ class TeamServiceTests(unittest.TestCase):
     def test_create_team_auto_bootstrap_default_lead(self) -> None:
         team = self.service.create_team(
             name="平台团队",
-            description="负责平台治理",
+            description="负责平台治理与协作编排",
+            goal="让关键任务稳定推进并及时汇报风险",
             lead_mode="agent",
         )
 
@@ -58,10 +59,22 @@ class TeamServiceTests(unittest.TestCase):
         )
         self.assertTrue(file_manager.is_directory(f"agents/{team['leadAgentId']}"))
 
+        identity_content = file_manager.read_file(f"agents/{team['leadAgentId']}/IDENTITY.md")
+        soul_content = file_manager.read_file(f"agents/{team['leadAgentId']}/SOUL.md")
+        rules_content = file_manager.read_file(f"agents/{team['leadAgentId']}/AGENTS.md")
+
+        self.assertIn("平台团队 Lead", identity_content)
+        self.assertIn("我是 平台团队 的负责人", identity_content)
+        self.assertIn("负责平台治理与协作编排", identity_content)
+        self.assertIn("让关键任务稳定推进并及时汇报风险", identity_content)
+        self.assertIn("我的管理范围包括：负责平台治理与协作编排", soul_content)
+        self.assertIn("先确认 平台团队 当前目标", rules_content)
+
     def test_remove_lead_reassigns_first_member(self) -> None:
         team = self.service.create_team(
             name="稳定性团队",
             description="负责稳定性保障",
+            goal="持续识别风险并推动系统恢复",
             lead_mode="agent",
         )
         old_lead = team["leadAgentId"]
@@ -74,6 +87,10 @@ class TeamServiceTests(unittest.TestCase):
         self.assertTrue(
             any(member["agentId"] == "member-agent-1" and member["role"] == "lead" for member in updated["members"])
         )
+
+        reassigned_identity = file_manager.read_file("agents/member-agent-1/IDENTITY.md")
+        self.assertIn("稳定性团队 Lead", reassigned_identity)
+        self.assertIn("持续识别风险并推动系统恢复", reassigned_identity)
 
     def test_create_team_manual_mode_still_bootstraps_lead(self) -> None:
         team = self.service.create_team(

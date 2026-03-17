@@ -21,11 +21,11 @@ const sizeMap = {
 }
 
 const statusColors: Record<AgentStatus, string> = {
-  idle: 'bg-gray-400',
-  busy: 'bg-cyber-green',
+  idle: 'bg-white/30',
+  busy: 'bg-emerald-400',
   scheduled: 'bg-cyan-400',
-  error: 'bg-cyber-red',
-  offline: 'bg-gray-600',
+  error: 'bg-red-400',
+  offline: 'bg-white/15',
 }
 
 const statusLabels: Record<AgentStatus, string> = {
@@ -103,8 +103,8 @@ function CartoonFace({
         r={r}
         fill={`url(#head-${emoji})`}
         stroke={theme}
-        strokeWidth={s * 0.025}
-        strokeOpacity="0.5"
+        strokeWidth={s * 0.02}
+        strokeOpacity="0.35"
       />
 
       {/* Highlight on forehead */}
@@ -114,7 +114,7 @@ function CartoonFace({
         rx={r * 0.25}
         ry={r * 0.12}
         fill="white"
-        opacity="0.08"
+        opacity="0.06"
       />
 
       {/* Eyes */}
@@ -456,11 +456,12 @@ export function AgentAvatar({
 
         {/* Status label */}
         <div className={cn(
-          'absolute -bottom-1 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded-full text-[9px] font-medium border',
-          status === 'busy' && 'bg-cyber-green/20 text-cyber-green border-cyber-green/30',
-          status === 'idle' && 'bg-white/5 text-white/40 border-white/10',
-          status === 'error' && 'bg-cyber-red/20 text-cyber-red border-cyber-red/30',
-          status === 'offline' && 'bg-white/5 text-white/20 border-white/5',
+          'absolute -bottom-1 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded-full text-[9px] font-medium border backdrop-blur-sm',
+          status === 'busy' && 'bg-emerald-500/15 text-emerald-400 border-emerald-500/20',
+          status === 'idle' && 'bg-white/[0.04] text-white/35 border-white/[0.06]',
+          status === 'scheduled' && 'bg-cyan-500/15 text-cyan-400 border-cyan-500/20',
+          status === 'error' && 'bg-red-500/15 text-red-400 border-red-500/20',
+          status === 'offline' && 'bg-white/[0.02] text-white/20 border-white/[0.04]',
         )}>
           {statusLabels[status]}
         </div>
@@ -485,7 +486,7 @@ export function AgentAvatar({
       {/* Status indicator dot */}
       <div
         className={cn(
-          'absolute -bottom-0.5 -right-0.5 rounded-full border-2 border-[#1a1a2e]',
+          'absolute -bottom-0.5 -right-0.5 rounded-full border-[1.5px] border-cyber-bg',
           statusColors[status],
           status === 'busy' && 'animate-pulse',
           size === 'xs' ? 'w-2 h-2' : size === 'sm' ? 'w-2.5 h-2.5' : size === 'md' ? 'w-3 h-3' : 'w-4 h-4'
@@ -494,18 +495,18 @@ export function AgentAvatar({
 
       {/* Busy typing bubble */}
       {status === 'busy' && size !== 'sm' && size !== 'xs' && (
-        <div className="absolute -top-6 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded-full bg-cyber-panel/90 border border-white/10 text-[10px] text-white/70 whitespace-nowrap">
+        <div className="absolute -top-6 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded-full bg-white/[0.06] backdrop-blur-xl border border-white/[0.08] text-[10px] text-white/60 whitespace-nowrap">
           <span className="inline-flex gap-0.5">
-            <span className="w-1 h-1 rounded-full bg-cyber-green animate-bounce" style={{ animationDelay: '0ms' }} />
-            <span className="w-1 h-1 rounded-full bg-cyber-green animate-bounce" style={{ animationDelay: '150ms' }} />
-            <span className="w-1 h-1 rounded-full bg-cyber-green animate-bounce" style={{ animationDelay: '300ms' }} />
+            <span className="w-1 h-1 rounded-full bg-emerald-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+            <span className="w-1 h-1 rounded-full bg-emerald-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+            <span className="w-1 h-1 rounded-full bg-emerald-400 animate-bounce" style={{ animationDelay: '300ms' }} />
           </span>
         </div>
       )}
 
       {/* Error indicator */}
       {status === 'error' && size !== 'sm' && size !== 'xs' && (
-        <div className="absolute -top-5 left-1/2 -translate-x-1/2 text-cyber-red text-sm font-bold animate-bounce">
+        <div className="absolute -top-5 left-1/2 -translate-x-1/2 text-red-400 text-sm font-bold animate-bounce">
           ⚠
         </div>
       )}

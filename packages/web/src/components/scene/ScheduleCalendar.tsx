@@ -44,7 +44,7 @@ export function ScheduleCalendar({ schedule }: ScheduleCalendarProps) {
                   'w-2 h-2 rounded-sm transition-colors',
                   schedule && schedule.entries.length > i
                     ? 'bg-cyber-violet/40 group-hover:bg-cyber-violet/60'
-                    : 'bg-white/5 group-hover:bg-white/8'
+                    : 'bg-white/5 group-hover:bg-white/[0.08]'
                 )}
               />
             </div>

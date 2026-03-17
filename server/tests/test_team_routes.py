@@ -32,7 +32,9 @@ class TeamRouteDispatchTests(unittest.TestCase):
         with patch(
             "openclaw_orchestrator.routes.team_routes.team_dispatch_service.dispatch",
             new=AsyncMock(return_value=mocked_response),
-        ) as mocked_dispatch:
+        ) as mocked_dispatch, patch(
+            "openclaw_orchestrator.routes.team_routes.audit_log_service.log_event"
+        ):
             response = self.client.post(
                 "/api/teams/team-1/dispatch",
                 json={
@@ -56,7 +58,9 @@ class TeamRouteDispatchTests(unittest.TestCase):
         with patch(
             "openclaw_orchestrator.routes.team_routes.team_dispatch_service.drain_once",
             new=AsyncMock(return_value=mocked_response),
-        ) as mocked_drain:
+        ) as mocked_drain, patch(
+            "openclaw_orchestrator.routes.team_routes.audit_log_service.log_event"
+        ):
             response = self.client.post("/api/teams/team-1/queue/drain")
 
         self.assertEqual(response.status_code, 200)
@@ -116,6 +120,51 @@ class TeamRouteDispatchTests(unittest.TestCase):
         self.assertEqual(payload["leadAgentId"], "lead-team-1")
         self.assertEqual(payload["leadHeartbeat"]["alive"], True)
         self.assertEqual(payload["governanceSnapshot"]["status"], "healthy")
+
+    def test_team_usage_summary_route_delegates_to_usage_service(self) -> None:
+        summary_payload = {
+            "teamId": "team-1",
+            "executionCount": 3,
+            "successRate": 0.67,
+            "totalTokens": 1024,
+        }
+        with patch(
+            "openclaw_orchestrator.routes.team_routes.team_usage_service.get_summary",
+            return_value=summary_payload,
+        ) as mocked_summary:
+            response = self.client.get("/api/teams/team-1/usage/summary?days=30")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), summary_payload)
+        mocked_summary.assert_called_once_with("team-1", 30)
+
+    def test_team_audit_route_delegates_to_audit_service(self) -> None:
+        audit_payload = {
+            "items": [{"id": "log-1", "action": "workflow.execute", "ok": True}],
+            "total": 1,
+            "limit": 20,
+            "offset": 0,
+        }
+        with patch(
+            "openclaw_orchestrator.routes.team_routes.audit_log_service.list_logs",
+            return_value=audit_payload,
+        ) as mocked_list:
+            response = self.client.get("/api/teams/team-1/audit?action=workflow.execute&limit=20")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["teamId"], "team-1")
+        self.assertEqual(response.json()["items"][0]["id"], "log-1")
+        mocked_list.assert_called_once_with(
+            team_id="team-1",
+            action="workflow.execute",
+            resource_type=None,
+            ok=None,
+            query=None,
+            start_at=None,
+            end_at=None,
+            limit=20,
+            offset=0,
+        )
 
 
 if __name__ == "__main__":

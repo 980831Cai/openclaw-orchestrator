@@ -85,11 +85,23 @@ class TeamService:
                 (team_id, agent_id, max_order + 1),
             )
 
-    def _bootstrap_lead_agent_profile(self, *, agent_id: str, team_name: str) -> None:
+    def _bootstrap_lead_agent_profile(
+        self,
+        *,
+        agent_id: str,
+        team_name: str,
+        team_description: Optional[str] = None,
+        team_goal: Optional[str] = None,
+    ) -> None:
         """Ensure lead agent profile exists with default governance prompt."""
         from openclaw_orchestrator.services.agent_service import agent_service
 
-        agent_service.bootstrap_team_lead(agent_id=agent_id, team_name=team_name)
+        agent_service.bootstrap_team_lead(
+            agent_id=agent_id,
+            team_name=team_name,
+            team_description=team_description,
+            team_goal=team_goal,
+        )
 
     def create_team(
         self,
@@ -120,7 +132,12 @@ class TeamService:
         )
 
         if resolved_lead_agent_id:
-            self._bootstrap_lead_agent_profile(agent_id=resolved_lead_agent_id, team_name=name)
+            self._bootstrap_lead_agent_profile(
+                agent_id=resolved_lead_agent_id,
+                team_name=name,
+                team_description=description,
+                team_goal=goal,
+            )
 
         db.execute(
             """
@@ -332,9 +349,19 @@ class TeamService:
                 (team_id,),
             ).fetchone()
             next_lead = next_member["agent_id"] if next_member else self._generate_default_lead_agent_id(team_id)
-            team_name_row = db.execute("SELECT name FROM teams WHERE id = ?", (team_id,)).fetchone()
-            team_name = str(team_name_row["name"] if team_name_row and team_name_row["name"] else team_id)
-            self._bootstrap_lead_agent_profile(agent_id=next_lead, team_name=team_name)
+            team_row = db.execute(
+                "SELECT name, description, goal FROM teams WHERE id = ?",
+                (team_id,),
+            ).fetchone()
+            team_name = str(team_row["name"] if team_row and team_row["name"] else team_id)
+            team_description = str(team_row["description"] if team_row and team_row["description"] else "")
+            team_goal = str(team_row["goal"] if team_row and team_row["goal"] else "")
+            self._bootstrap_lead_agent_profile(
+                agent_id=next_lead,
+                team_name=team_name,
+                team_description=team_description,
+                team_goal=team_goal,
+            )
             db.execute(
                 "UPDATE teams SET lead_agent_id = ? WHERE id = ?",
                 (next_lead, team_id),
@@ -383,9 +410,19 @@ class TeamService:
         final_lead = current["lead_agent_id"] if "lead_agent_id" in current.keys() else None
         if not final_lead:
             bootstrap_lead = self._generate_default_lead_agent_id(team_id)
-            team_name_row = db.execute("SELECT name FROM teams WHERE id = ?", (team_id,)).fetchone()
-            team_name = str(team_name_row["name"] if team_name_row and team_name_row["name"] else team_id)
-            self._bootstrap_lead_agent_profile(agent_id=bootstrap_lead, team_name=team_name)
+            team_row = db.execute(
+                "SELECT name, description, goal FROM teams WHERE id = ?",
+                (team_id,),
+            ).fetchone()
+            team_name = str(team_row["name"] if team_row and team_row["name"] else team_id)
+            team_description = str(team_row["description"] if team_row and team_row["description"] else "")
+            team_goal = str(team_row["goal"] if team_row and team_row["goal"] else "")
+            self._bootstrap_lead_agent_profile(
+                agent_id=bootstrap_lead,
+                team_name=team_name,
+                team_description=team_description,
+                team_goal=team_goal,
+            )
             db.execute(
                 "UPDATE teams SET lead_agent_id = ? WHERE id = ?",
                 (bootstrap_lead, team_id),

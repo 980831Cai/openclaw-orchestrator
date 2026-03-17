@@ -141,8 +141,8 @@ export function EmpireOfficeBoard({ rooms, onOpenRoom, onOpenAgent }: EmpireOffi
         <StatusChip label="离线" value={roomStats.offline} tone="border-slate-400/20 bg-slate-500/10 text-slate-300" />
       </div>
 
-      <div className="mt-4 flex min-h-0 flex-col overflow-hidden rounded-[28px] border border-white/8 bg-slate-950/45 shadow-[0_16px_40px_rgba(2,6,23,0.35)]">
-        <div className="border-b border-white/8 bg-black/20 px-4 py-3">
+      <div className="mt-4 flex min-h-0 flex-col overflow-hidden rounded-[28px] border border-white/[0.08] bg-slate-950/45 shadow-[0_16px_40px_rgba(2,6,23,0.35)]">
+        <div className="border-b border-white/[0.08] bg-black/20 px-4 py-3">
           <h3 className="text-sm font-black tracking-wider text-white/85">Agent 工位总览</h3>
           <p className="mt-1 text-[11px] text-white/45">每个 Agent 独立工位，实时展示状态与当前任务。</p>
         </div>

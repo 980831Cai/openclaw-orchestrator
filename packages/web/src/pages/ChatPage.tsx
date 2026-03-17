@@ -8,6 +8,7 @@ import { useAgents } from '@/hooks/use-agents'
 import { useMonitorStore } from '@/stores/monitor-store'
 import { toast } from '@/hooks/use-toast'
 import { api } from '@/lib/api'
+import { mergeRealtimeMessages } from '@/lib/realtime-message'
 import { cn } from '@/lib/utils'
 import type { AgentListItem, SessionMessage } from '@/types'
 
@@ -122,7 +123,6 @@ export function ChatPage() {
 
     setSelectedAgent(match)
     setSelectedSession(null)
-    setMessages([])
   }, [agents, searchParams, selectedAgent])
 
   useEffect(() => {
@@ -143,9 +143,7 @@ export function ChatPage() {
 
     let disposed = false
 
-    setSessions([])
     setSelectedSession(null)
-    setMessages([])
     setSessionsLoading(true)
 
     api
@@ -179,8 +177,13 @@ export function ChatPage() {
   }, [selectedAgent])
 
   useEffect(() => {
-    if (!selectedAgent || !selectedSession) {
+    if (!selectedAgent) {
       setMessages([])
+      setMessagesLoading(false)
+      return
+    }
+
+    if (!selectedSession) {
       setMessagesLoading(false)
       return
     }
@@ -223,11 +226,7 @@ export function ChatPage() {
       return resolveMessageSessionId(m) === selectedSession
     })
     if (newMsgs.length === 0) return
-    setMessages((prev) => {
-      const existingIds = new Set(prev.map((m) => m.id))
-      const unique = newMsgs.filter((m) => !existingIds.has(m.id))
-      return unique.length > 0 ? [...prev, ...unique] : prev
-    })
+    setMessages((prev) => mergeRealtimeMessages(prev, newMsgs))
   }, [realtimeMessages, selectedAgent, selectedSession])
 
   useEffect(() => {
@@ -294,7 +293,7 @@ export function ChatPage() {
         latestMessages = await api.get<SessionMessage[]>(
           `/agents/${selectedAgent.id}/sessions/${resolvedSessionId}/messages`
         )
-        setMessages(latestMessages)
+        setMessages((prev) => mergeRealtimeMessages(prev, latestMessages))
 
         const userMessageReady = hasMessageContent(latestMessages, 'user', content)
         const lastMessage = latestMessages[latestMessages.length - 1]
@@ -345,7 +344,6 @@ export function ChatPage() {
                 onClick={() => {
                   setSelectedAgent(agent)
                   setSelectedSession(null)
-                  setMessages([])
                 }}
                 className={cn(
                   'w-full flex items-center gap-3 p-3 rounded-xl transition-all cursor-pointer text-left group',
@@ -436,7 +434,7 @@ export function ChatPage() {
 
             {/* Messages */}
             <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto p-6 space-y-4">
-              {sessionsLoading || messagesLoading ? (
+              {messages.length === 0 && (sessionsLoading || messagesLoading) ? (
                 <EmptyState
                   scene="loading"
                   title={sessionsLoading ? '加载会话中...' : '加载消息中...'}
@@ -452,6 +450,13 @@ export function ChatPage() {
                 />
               ) : (
                 <>
+                  {(sessionsLoading || messagesLoading) && (
+                    <div className="sticky top-0 z-10 flex justify-center pb-2">
+                      <span className="rounded-full border border-white/[0.08] bg-cyber-panel/85 px-3 py-1 text-[10px] text-white/45 backdrop-blur-sm">
+                        {sessionsLoading ? '正在切换会话...' : '正在同步最新消息...'}
+                      </span>
+                    </div>
+                  )}
                   {messages.map((msg) => (
                     <MessageBubble key={msg.id} message={msg} agent={selectedAgent} />
                   ))}
@@ -479,7 +484,7 @@ export function ChatPage() {
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
                     placeholder={`发送消息给 ${selectedAgent.name}...`}
-                    className="w-full bg-white/5 border-2 border-white/8 text-white rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-cyber-blue/40 transition-all placeholder:text-white/20"
+                    className="w-full bg-white/5 border-2 border-white/[0.08] text-white rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-cyber-blue/40 transition-all placeholder:text-white/20"
                     disabled={sending}
                   />
                   {input.trim() && (

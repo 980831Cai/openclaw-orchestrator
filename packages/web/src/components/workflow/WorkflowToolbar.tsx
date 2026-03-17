@@ -73,7 +73,7 @@ export const WorkflowToolbar = React.memo(function WorkflowToolbar({
         >
           <Square className="w-3.5 h-3.5 mr-1" /> 停止
         </Button>
-        <div className="w-px h-5 bg-white/8" />
+        <div className="w-px h-5 bg-white/[0.08]" />
         <Button
           size="sm"
           onClick={onSave}
