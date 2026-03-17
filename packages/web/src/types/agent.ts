@@ -2,6 +2,8 @@
 // Migrated from @openclaw/shared to local types
 
 export type AgentStatus = 'idle' | 'busy' | 'scheduled' | 'offline' | 'error'
+export type SkillCatalogSource = 'builtin' | 'platform' | 'agent-config'
+export type OpenClawPluginKind = 'plugin' | 'tool' | 'mcp'
 
 export interface AgentListItem {
   id: string
@@ -57,6 +59,36 @@ export interface AgentConfig {
   soul: AgentSoul
   rules: AgentRules
   skills: string[]
+}
+
+export interface SkillCatalogItem {
+  id: string
+  name: string
+  description: string
+  configuredCount: number
+  configuredAgents: string[]
+  sources: SkillCatalogSource[]
+}
+
+export interface OpenClawPluginField {
+  key: string
+  type: 'string' | 'number' | 'boolean' | 'object' | string
+  label: string
+  description: string
+  required: boolean
+}
+
+export interface OpenClawPluginItem {
+  id: string
+  name: string
+  description: string
+  kind: OpenClawPluginKind
+  installed: boolean
+  enabled: boolean
+  manifestPath?: string | null
+  config: Record<string, unknown>
+  fields: OpenClawPluginField[]
+  restartRequired: boolean
 }
 
 export interface AgentStatusEvent {

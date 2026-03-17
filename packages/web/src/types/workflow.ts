@@ -134,6 +134,14 @@ export type WorkflowExecutionStatus =
   | 'stopped'
   | 'waiting_approval'
 
+export interface WorkflowExecutionModelSummaryItem {
+  sampleCount: number
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  estimatedCostUsd: number
+}
+
 export interface WorkflowExecution {
   id: string
   workflowId: string
@@ -142,6 +150,14 @@ export interface WorkflowExecution {
   startedAt: string
   completedAt?: string | null
   logs: WorkflowLog[]
+  promptTokens?: number
+  completionTokens?: number
+  totalTokens?: number
+  estimatedCostUsd?: number
+  usageMetricsCount?: number
+  usageSamplesCount?: number
+  usageCoverageRatio?: number
+  modelSummary?: Record<string, WorkflowExecutionModelSummaryItem>
 }
 
 export interface WorkflowLog {

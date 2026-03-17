@@ -1,6 +1,7 @@
 import { addEdge, type Connection, type Edge, type Node } from 'reactflow'
 
 import type { MeetingType, WorkflowDefinition, WorkflowEdge, WorkflowExecution, WorkflowNodeData, WorkflowSchedule } from '../../types/index.ts'
+import { createDefaultWorkflowNodeData } from './node-defaults'
 
 export const EDGE_STYLE = { stroke: '#6366F1', strokeWidth: 2 }
 export const MEETING_WORKFLOW_TYPES: Exclude<MeetingType, 'debate'>[] = [
@@ -68,31 +69,31 @@ export function getExecutionBadge(status: WorkflowExecution['status']): { tone: 
   if (status === 'running') {
     return {
       tone: 'bg-cyber-green/10 text-cyber-green border-cyber-green/20 animate-pulse',
-      label: '������',
+      label: '进行中',
     }
   }
   if (status === 'waiting_approval') {
     return {
       tone: 'bg-cyber-amber/10 text-cyber-amber border-cyber-amber/20',
-      label: '������',
+      label: '待审批',
     }
   }
   if (status === 'completed') {
     return {
       tone: 'bg-cyber-blue/10 text-cyber-blue border-cyber-blue/20',
-      label: '�����',
+      label: '已完成',
     }
   }
   if (status === 'failed') {
     return {
       tone: 'bg-red-500/10 text-red-300 border-red-500/20',
-      label: 'ʧ��',
+      label: '失败',
     }
   }
   if (status === 'stopped') {
     return {
       tone: 'bg-white/5 text-white/50 border-white/10',
-      label: '��ֹͣ',
+      label: '已停止',
     }
   }
   return {
@@ -163,6 +164,25 @@ export function toFlowEdges(workflow: WorkflowDefinition): Edge[] {
   })
 }
 
+export function createWorkflowFlowNode(
+  type: WorkflowNodeData['type'],
+  nodeCount: number,
+  position?: { x: number; y: number },
+): Node<WorkflowNodeData> {
+  const resolvedPosition = position ?? { x: 180 + nodeCount * 30, y: 100 + nodeCount * 20 }
+  const data = createDefaultWorkflowNodeData(type)
+
+  return {
+    id: `${type}-${Date.now()}`,
+    type,
+    position: resolvedPosition,
+    data: {
+      ...data,
+      position: resolvedPosition,
+    },
+  }
+}
+
 export function serializeNodes(nodes: Node[], edges: Edge[]): Record<string, WorkflowNodeData> {
   return Object.fromEntries(
     nodes.map((node) => {
@@ -229,6 +249,7 @@ export function upsertConnectedEdge(
   replaceEdgeId?: string,
 ): Edge[] {
   if (!connection.source || !connection.target) return current
+  if (connection.source === connection.target) return current
 
   const sourceNode = nodes.find((node) => node.id === connection.source)
   const nextEdge = buildEdge(connection)

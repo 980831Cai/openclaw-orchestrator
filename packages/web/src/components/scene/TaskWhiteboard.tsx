@@ -14,7 +14,7 @@ interface TaskWhiteboardProps {
 const STATUS_COLORS: Record<string, { bg: string; border: string; dot: string }> = {
   active: { bg: 'bg-cyber-green/8', border: 'border-cyber-green/20', dot: 'bg-cyber-green' },
   completed: { bg: 'bg-cyber-blue/8', border: 'border-cyber-blue/15', dot: 'bg-cyber-blue' },
-  archived: { bg: 'bg-white/3', border: 'border-white/8', dot: 'bg-white/30' },
+  archived: { bg: 'bg-white/3', border: 'border-white/[0.08]', dot: 'bg-white/30' },
 }
 
 const STICKY_ROTATIONS = ['-1deg', '0.5deg', '-0.3deg', '0.8deg', '-0.6deg']

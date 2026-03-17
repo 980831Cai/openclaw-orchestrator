@@ -19,6 +19,7 @@ from typing import Any, Optional
 
 from openclaw_orchestrator.config import settings
 from openclaw_orchestrator.services.live_feed_service import live_feed_service
+from openclaw_orchestrator.utils.message_content import extract_visible_text
 from openclaw_orchestrator.utils.time import utc_now_iso
 from openclaw_orchestrator.websocket.ws_handler import broadcast
 
@@ -181,24 +182,51 @@ class SessionWatcher:
 
     @staticmethod
     def _normalize_content(content: Any) -> str:
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                if isinstance(item, dict):
-                    text = item.get("text")
-                    if isinstance(text, str) and text.strip():
-                        parts.append(text)
-                elif isinstance(item, str) and item.strip():
-                    parts.append(item)
-            return "\n".join(parts)
-        if isinstance(content, dict):
-            text = content.get("text")
-            if isinstance(text, str):
-                return text
-            return json.dumps(content, ensure_ascii=False)
-        return ""
+        return extract_visible_text(content)
+
+    def _resolve_session_id(self, agent_id: str, file_path: str) -> str:
+        raw_session_id = Path(file_path).stem
+        aliases = self._get_session_aliases(agent_id)
+        return aliases.get(raw_session_id, raw_session_id)
+
+    def _get_session_aliases(self, agent_id: str) -> dict[str, str]:
+        sessions_dir = Path(settings.openclaw_home) / "agents" / agent_id / "sessions"
+        store_path = sessions_dir / "sessions.json"
+        try:
+            mtime = store_path.stat().st_mtime
+        except OSError:
+            return {}
+
+        cached = self._session_alias_cache.get(agent_id)
+        if cached and cached[0] == mtime:
+            return cached[1]
+
+        aliases: dict[str, str] = {}
+        try:
+            raw = json.loads(store_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            logger.warning("Failed to read session alias store for %s", agent_id, exc_info=True)
+            return {}
+
+        if isinstance(raw, dict):
+            prefix = f"agent:{agent_id}:"
+            for session_key, entry in raw.items():
+                if not isinstance(session_key, str) or not session_key.startswith(prefix):
+                    continue
+                logical_session_id = session_key[len(prefix):]
+                if not logical_session_id:
+                    continue
+                aliases[logical_session_id] = logical_session_id
+                if isinstance(entry, dict):
+                    session_uuid = entry.get("sessionId")
+                    if isinstance(session_uuid, str) and session_uuid.strip():
+                        aliases[session_uuid.strip()] = logical_session_id
+                    session_file = entry.get("sessionFile")
+                    if isinstance(session_file, str) and session_file.strip():
+                        aliases[Path(session_file).stem] = logical_session_id
+
+        self._session_alias_cache[agent_id] = (mtime, aliases)
+        return aliases
 
     def _resolve_session_id(self, agent_id: str, file_path: str) -> str:
         raw_session_id = Path(file_path).stem

@@ -5,9 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import threading
 import uuid
+from copy import deepcopy
+from pathlib import Path
 from typing import Any, Optional
 
+from openclaw_orchestrator.config import settings
 from openclaw_orchestrator.database.db import get_db
 from openclaw_orchestrator.services.notification_service import notification_service
 from openclaw_orchestrator.services.openclaw_bridge import openclaw_bridge
@@ -28,6 +32,16 @@ class WorkflowEngine:
 
     def __init__(self) -> None:
         self._running_executions: dict[str, dict[str, Any]] = {}
+        self._execution_lock = threading.Lock()  # 保护 _running_executions 的并发访问
+        self._approval_timeout_tasks: dict[str, asyncio.Task[Any]] = {}
+
+    @staticmethod
+    def _utcnow():
+        return utc_now()
+
+    @classmethod
+    def _utcnow_iso(cls) -> str:
+        return utc_now_iso()
 
     @staticmethod
     def _utcnow():
@@ -150,8 +164,255 @@ class WorkflowEngine:
         db.commit()
         return self.get_workflow(workflow_id)
 
+    @staticmethod
+    def _workflow_session_id(workflow_id: str) -> str:
+        normalized = re.sub(r"[^A-Za-z0-9_-]+", "-", str(workflow_id or "").strip())
+        normalized = normalized.strip("-") or "unknown"
+        return f"workflow-{normalized}"
+
+    def _workflow_id_for_execution(self, execution_id: str) -> str | None:
+        db = get_db()
+        row = db.execute(
+            "SELECT workflow_id FROM workflow_executions WHERE id = ?",
+            (execution_id,),
+        ).fetchone()
+        if not row:
+            return None
+        workflow_id = row["workflow_id"]
+        return str(workflow_id).strip() if workflow_id else None
+
+    @staticmethod
+    def _normalize_usage_result(result: dict[str, Any]) -> dict[str, Any]:
+        usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+        prompt_tokens = max(int(usage.get("promptTokens") or 0), 0)
+        completion_tokens = max(int(usage.get("completionTokens") or 0), 0)
+        total_tokens = max(int(usage.get("totalTokens") or (prompt_tokens + completion_tokens) or 0), 0)
+        estimated_cost_usd = round(float(usage.get("estimatedCostUsd") or 0.0), 6)
+        duration_ms = result.get("durationMs")
+        if duration_ms in (None, ""):
+            duration_ms = round(float(result.get("elapsed") or 0) * 1000)
+        return {
+            "model": str(result.get("model") or "").strip(),
+            "channel": str(result.get("channel") or "").strip(),
+            "promptTokens": prompt_tokens,
+            "completionTokens": completion_tokens,
+            "totalTokens": total_tokens,
+            "estimatedCostUsd": estimated_cost_usd,
+            "durationMs": max(int(duration_ms or 0), 0),
+            "hasUsage": bool(usage.get("hasUsage")) or any(
+                value > 0 for value in (prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd)
+            ),
+        }
+
+    def _record_execution_usage_metric(
+        self,
+        *,
+        execution_id: str,
+        node_id: str,
+        agent_id: str,
+        result: dict[str, Any],
+    ) -> None:
+        workflow = self._safe_get_workflow_by_execution(execution_id)
+        workflow_id = str(workflow.get("id") or "").strip() if workflow else ""
+        team_id = str(workflow.get("teamId") or "").strip() if workflow else ""
+        if not workflow_id or not team_id:
+            return
+
+        usage_result = self._normalize_usage_result(result)
+        db = get_db()
+        db.execute(
+            """
+            INSERT INTO execution_usage_metrics (
+                execution_id, workflow_id, team_id, node_id, agent_id, model, channel,
+                prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd,
+                duration_ms, has_usage
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                execution_id,
+                workflow_id,
+                team_id,
+                node_id,
+                str(agent_id or "").strip(),
+                usage_result["model"],
+                usage_result["channel"],
+                usage_result["promptTokens"],
+                usage_result["completionTokens"],
+                usage_result["totalTokens"],
+                usage_result["estimatedCostUsd"],
+                usage_result["durationMs"],
+                1 if usage_result["hasUsage"] else 0,
+            ),
+        )
+        self._refresh_execution_usage_summary(execution_id, db=db)
+        db.commit()
+
+    def _refresh_execution_usage_summary(self, execution_id: str, db: Any | None = None) -> None:
+        owns_db = db is None
+        db = db or get_db()
+        totals = db.execute(
+            """
+            SELECT
+                COUNT(*) AS metrics_count,
+                SUM(prompt_tokens) AS prompt_tokens,
+                SUM(completion_tokens) AS completion_tokens,
+                SUM(total_tokens) AS total_tokens,
+                SUM(estimated_cost_usd) AS estimated_cost_usd,
+                SUM(has_usage) AS usage_samples_count
+            FROM execution_usage_metrics
+            WHERE execution_id = ?
+            """,
+            (execution_id,),
+        ).fetchone()
+        model_rows = db.execute(
+            """
+            SELECT
+                COALESCE(NULLIF(model, ''), 'unknown') AS model_name,
+                COUNT(*) AS sample_count,
+                SUM(prompt_tokens) AS prompt_tokens,
+                SUM(completion_tokens) AS completion_tokens,
+                SUM(total_tokens) AS total_tokens,
+                SUM(estimated_cost_usd) AS estimated_cost_usd
+            FROM execution_usage_metrics
+            WHERE execution_id = ?
+            GROUP BY model_name
+            ORDER BY total_tokens DESC, sample_count DESC
+            """,
+            (execution_id,),
+        ).fetchall()
+
+        metrics_count = int(totals["metrics_count"] or 0) if totals else 0
+        usage_samples_count = int(totals["usage_samples_count"] or 0) if totals else 0
+        coverage_ratio = round(usage_samples_count / metrics_count, 4) if metrics_count else 0.0
+        model_summary = {
+            row["model_name"]: {
+                "sampleCount": int(row["sample_count"] or 0),
+                "promptTokens": int(row["prompt_tokens"] or 0),
+                "completionTokens": int(row["completion_tokens"] or 0),
+                "totalTokens": int(row["total_tokens"] or 0),
+                "estimatedCostUsd": round(float(row["estimated_cost_usd"] or 0), 6),
+            }
+            for row in model_rows
+        }
+        db.execute(
+            """
+            UPDATE workflow_executions
+            SET prompt_tokens = ?,
+                completion_tokens = ?,
+                total_tokens = ?,
+                estimated_cost_usd = ?,
+                usage_metrics_count = ?,
+                usage_samples_count = ?,
+                usage_coverage_ratio = ?,
+                model_summary_json = ?
+            WHERE id = ?
+            """,
+            (
+                int(totals["prompt_tokens"] or 0) if totals else 0,
+                int(totals["completion_tokens"] or 0) if totals else 0,
+                int(totals["total_tokens"] or 0) if totals else 0,
+                round(float(totals["estimated_cost_usd"] or 0), 6) if totals else 0.0,
+                metrics_count,
+                usage_samples_count,
+                coverage_ratio,
+                json.dumps(model_summary, ensure_ascii=False),
+                execution_id,
+            ),
+        )
+        if owns_db:
+            db.commit()
+
+    @staticmethod
+    def _delete_file_if_exists(path: Path) -> None:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            return
+
+    def _workflow_related_session_ids(self, workflow_id: str) -> set[str]:
+        db = get_db()
+        session_ids = {self._workflow_session_id(workflow_id)}
+        rows = db.execute(
+            "SELECT id FROM workflow_executions WHERE workflow_id = ?",
+            (workflow_id,),
+        ).fetchall()
+        for row in rows:
+            execution_id = str(row["id"] or "").strip()
+            if execution_id:
+                session_ids.add(f"wf-{execution_id[:8]}")
+        return session_ids
+
+    def _cleanup_workflow_session_files(self, workflow_id: str) -> None:
+        session_ids = self._workflow_related_session_ids(workflow_id)
+        agents_root = Path(settings.openclaw_home) / "agents"
+        if not agents_root.exists():
+            return
+
+        for agent_dir in agents_root.iterdir():
+            sessions_dir = agent_dir / "sessions"
+            if not sessions_dir.is_dir():
+                continue
+
+            for session_id in session_ids:
+                self._delete_file_if_exists(sessions_dir / f"{session_id}.jsonl")
+
+            store_path = sessions_dir / "sessions.json"
+            if not store_path.exists():
+                continue
+
+            try:
+                raw_store = json.loads(store_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+
+            if not isinstance(raw_store, dict):
+                continue
+
+            retained_store: dict[str, Any] = {}
+            mutated = False
+            for key, entry in raw_store.items():
+                remove_entry = isinstance(key, str) and any(
+                    key.endswith(f":{session_id}") for session_id in session_ids
+                )
+                if isinstance(entry, dict):
+                    entry_session_id = str(entry.get("sessionId") or "").strip()
+                    entry_session_file = str(entry.get("sessionFile") or "").strip()
+                    entry_session_stem = (
+                        Path(entry_session_file).stem if entry_session_file else ""
+                    )
+                    if (
+                        entry_session_id in session_ids
+                        or entry_session_stem in session_ids
+                    ):
+                        remove_entry = True
+
+                if not remove_entry:
+                    retained_store[key] = entry
+                    continue
+
+                mutated = True
+                if isinstance(entry, dict):
+                    entry_session_id = str(entry.get("sessionId") or "").strip()
+                    entry_session_file = str(entry.get("sessionFile") or "").strip()
+                    if entry_session_file:
+                        self._delete_file_if_exists(Path(entry_session_file))
+                    if entry_session_id:
+                        self._delete_file_if_exists(
+                            sessions_dir / f"{entry_session_id}.jsonl"
+                        )
+
+            if mutated:
+                try:
+                    store_path.write_text(
+                        json.dumps(retained_store, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except OSError:
+                    continue
+
     def delete_workflow(self, workflow_id: str) -> None:
         db = get_db()
+        self._cleanup_workflow_session_files(workflow_id)
         db.execute("DELETE FROM workflows WHERE id = ?", (workflow_id,))
         db.commit()
 
@@ -161,10 +422,19 @@ class WorkflowEngine:
         *,
         trigger_source: str = "manual",
         scheduled_for: str | None = None,
+        expected_team_id: str | None = None,
+        linked_task_id: str | None = None,
+        trigger_event_id: str | None = None,
     ) -> dict[str, Any]:
         db = get_db()
         workflow = self.get_workflow(workflow_id)
         self._validate_workflow_definition(workflow, require_runnable=True)
+
+        normalized_expected_team_id = str(expected_team_id or "").strip()
+        workflow_team_id = str(workflow.get("teamId") or "").strip()
+        if normalized_expected_team_id and workflow_team_id != normalized_expected_team_id:
+            raise WorkflowValidationError("workflow.team_id and task.team_id mismatch")
+
         if self.has_active_execution(workflow_id):
             raise WorkflowValidationError(
                 "工作流已有运行中或待审批的执行，不能重复触发"
@@ -175,6 +445,9 @@ class WorkflowEngine:
             {
                 "triggerSource": trigger_source,
                 "scheduledFor": scheduled_for,
+                "expectedTeamId": normalized_expected_team_id or None,
+                "linkedTaskId": str(linked_task_id or "").strip() or None,
+                "triggerEventId": str(trigger_event_id or "").strip() or None,
             },
             default=str,
         )
@@ -199,6 +472,7 @@ class WorkflowEngine:
             "message": (
                 f"工作流开始执行（source={trigger_source}"
                 + (f", scheduledFor={scheduled_for}" if scheduled_for else "")
+                + (f", linkedTaskId={linked_task_id}" if linked_task_id else "")
                 + ")"
             ),
             "level": "info",
@@ -233,9 +507,10 @@ class WorkflowEngine:
         return row is not None
 
     def stop_execution(self, execution_id: str) -> None:
-        control = self._running_executions.get(execution_id)
-        if control:
-            control["abort"] = True
+        with self._execution_lock:
+            control = self._running_executions.get(execution_id)
+            if control:
+                control["abort"] = True
 
         workflow = self._safe_get_workflow_by_execution(execution_id)
         execution = self._safe_get_execution(execution_id)
@@ -261,8 +536,10 @@ class WorkflowEngine:
                 """,
                 ("Execution stopped", execution_id),
             )
+        self._refresh_execution_usage_summary(execution_id, db=db)
         db.commit()
         for approval in pending_approvals:
+            self._clear_approval_timeout_task(approval["id"])
             broadcast(
                 {
                     "type": "approval_update",
@@ -366,9 +643,12 @@ class WorkflowEngine:
                 f"Execution {execution_id} is not waiting for approval (status={row['status']})"
             )
 
-        if not approved:
-            workflow = self.get_workflow(row["workflow_id"])
-            current_node_id = row["current_node_id"] or None
+        workflow = self.get_workflow(row["workflow_id"])
+        stored = self._parse_execution_context(row["context_json"])
+        stored_signature = str(stored.get("workflowSignature") or "").strip()
+        current_signature = self._build_workflow_signature(workflow)
+        current_node_id = row["current_node_id"] or None
+        if stored_signature and stored_signature != current_signature:
             db.execute(
                 "UPDATE workflow_executions SET status = 'failed', completed_at = datetime('now') WHERE id = ?",
                 (execution_id,),
@@ -378,8 +658,8 @@ class WorkflowEngine:
                 execution_id,
                 {
                     "timestamp": self._utcnow_iso(),
-                    "nodeId": row["current_node_id"] or "__approval__",
-                    "message": f"审批被驳回: {reject_reason or '无原因'}",
+                    "nodeId": current_node_id or "__approval__",
+                    "message": "审批恢复前检测到工作流定义已变更，已阻止使用旧上下文继续执行",
                     "level": "error",
                 },
             )
@@ -397,32 +677,116 @@ class WorkflowEngine:
             )
             notification_service.create_notification(
                 type="workflow_error",
-                title="工作流审批被驳回",
-                message=reject_reason or "审批未通过，工作流已终止",
+                title="工作流恢复失败",
+                message="工作流定义已变更，旧审批上下文不能继续恢复，请重新发起执行。",
                 execution_id=execution_id,
                 node_id=row["current_node_id"],
             )
             return self.get_execution(execution_id)
 
-        workflow = self.get_workflow(row["workflow_id"])
+        node_artifacts = stored.get("node_artifacts", {})
+        if not isinstance(node_artifacts, dict):
+            node_artifacts = {}
+        control = stored.get("control", {})
+        if not isinstance(control, dict):
+            control = {}
+        control.update({"abort": False, "paused": False, "failed": False})
+
+        if not approved:
+            retry_node_id = self._find_retryable_task_for_approval(
+                workflow,
+                current_node_id,
+            )
+            if not retry_node_id:
+                await self._mark_failed(
+                    execution_id,
+                    "审批被驳回，但未找到可回退的上游任务节点",
+                )
+                return self.get_execution(execution_id)
+
+            retry_workflow = deepcopy(workflow)
+            retry_node = dict(retry_workflow.get("nodes", {}).get(retry_node_id) or {})
+            approval_node = dict(workflow.get("nodes", {}).get(current_node_id) or {})
+            retry_node["task"] = self._append_approval_feedback_to_task(
+                str(retry_node.get("task") or ""),
+                approval_title=str(
+                    approval_node.get("title")
+                    or approval_node.get("label")
+                    or current_node_id
+                    or "审批"
+                ),
+                reject_reason=reject_reason,
+            )
+            retry_workflow["nodes"][retry_node_id] = retry_node
+            node_artifacts.pop(current_node_id, None)
+            node_artifacts.pop(retry_node_id, None)
+            stored.update(
+                {
+                    "node_artifacts": node_artifacts,
+                    "control": control,
+                    "workflowSignature": current_signature,
+                }
+            )
+            self._running_executions[execution_id] = control
+            db.execute(
+                "UPDATE workflow_executions SET status = 'running', current_node_id = ?, completed_at = NULL, context_json = ? WHERE id = ?",
+                (retry_node_id, json.dumps(stored, default=str), execution_id),
+            )
+            db.commit()
+            self._append_log(
+                execution_id,
+                {
+                    "timestamp": self._utcnow_iso(),
+                    "nodeId": current_node_id or "__approval__",
+                    "message": f"审批未通过，已将意见拼接回任务节点 {retry_node.get('label', retry_node_id)} 并重新执行",
+                    "level": "warn",
+                },
+            )
+            broadcast(
+                {
+                    "type": "workflow_update",
+                    "payload": self._build_workflow_signal(
+                        execution_id=execution_id,
+                        workflow=retry_workflow,
+                        status="running",
+                        current_node_id=retry_node_id,
+                        node=retry_node,
+                    ),
+                    "timestamp": self._utcnow_iso(),
+                }
+            )
+            asyncio.ensure_future(
+                self._resume_after_approval(
+                    execution_id,
+                    retry_workflow,
+                    control,
+                    [retry_node_id],
+                    None,
+                    node_artifacts,
+                )
+            )
+            return self.get_execution(execution_id)
+
         nodes = workflow["nodes"]
         edges = workflow["edges"]
-        current_node_id = row["current_node_id"]
         next_targets = self._resolve_next_targets(
             current_node_id,
             nodes.get(current_node_id, {}),
             edges,
             None,
         )
-        stored = json.loads(row["context_json"] or "{}")
-        node_artifacts = stored.get("node_artifacts", {})
-        control = stored.get("control", {})
-        control.update({"abort": False, "paused": False, "failed": False})
+        stored.update(
+            {
+                "node_artifacts": node_artifacts,
+                "control": control,
+                "workflowSignature": current_signature,
+            }
+        )
         self._running_executions[execution_id] = control
 
         db.execute(
-            "UPDATE workflow_executions SET status = 'running' WHERE id = ?",
-            (execution_id,),
+            "UPDATE workflow_executions SET status = 'running', current_node_id = ?, completed_at = NULL, context_json = ? WHERE id = ?",
+            (current_node_id, json.dumps(stored, default=str), execution_id),
         )
         db.commit()
         broadcast(
@@ -487,6 +851,7 @@ class WorkflowEngine:
                 f"Execution {row['execution_id']} is not waiting for approval (status={execution_row['status']})"
             )
 
+        self._clear_approval_timeout_task(approval_id)
         next_status = "approved" if approved else "rejected"
         db.execute(
             """
@@ -598,6 +963,104 @@ class WorkflowEngine:
                 targets.append(target)
         return targets
 
+    @staticmethod
+    def _incoming_node_ids(
+        target_node_id: str | None,
+        edges: list[dict[str, str]],
+    ) -> list[str]:
+        if not target_node_id:
+            return []
+
+        incoming: list[str] = []
+        seen: set[str] = set()
+        for edge in edges:
+            if not isinstance(edge, dict):
+                continue
+            source_id = str(edge.get("from") or "").strip()
+            candidate_target_id = str(edge.get("to") or "").strip()
+            if candidate_target_id != target_node_id or not source_id or source_id in seen:
+                continue
+            seen.add(source_id)
+            incoming.append(source_id)
+        return incoming
+
+    @classmethod
+    def _find_retryable_task_for_approval(
+        cls,
+        workflow: dict[str, Any],
+        approval_node_id: str | None,
+    ) -> str | None:
+        nodes = workflow.get("nodes", {}) or {}
+        edges = workflow.get("edges", []) or []
+        frontier: list[tuple[str, int]] = [
+            (node_id, 1) for node_id in cls._incoming_node_ids(approval_node_id, edges)
+        ]
+        visited: set[str] = set()
+        matched_node_ids: set[str] = set()
+        matched_distance: int | None = None
+
+        while frontier:
+            node_id, distance = frontier.pop(0)
+            if node_id in visited:
+                continue
+            visited.add(node_id)
+            node = nodes.get(node_id)
+            if not isinstance(node, dict):
+                continue
+
+            node_type = str(node.get("type") or "task").strip().lower()
+            if node_type == "task":
+                if matched_distance is None:
+                    matched_distance = distance
+                if distance == matched_distance:
+                    matched_node_ids.add(node_id)
+                continue
+
+            if matched_distance is not None and distance >= matched_distance:
+                continue
+
+            for parent_node_id in cls._incoming_node_ids(node_id, edges):
+                if parent_node_id not in visited:
+                    frontier.append((parent_node_id, distance + 1))
+
+        if len(matched_node_ids) > 1:
+            raise WorkflowValidationError(
+                "审批节点上游存在多个可回退 task 节点，请先拆分流程或改为串行审批"
+            )
+        if matched_node_ids:
+            return next(iter(matched_node_ids))
+        return None
+
+    @staticmethod
+    def _append_approval_feedback_to_task(
+        task_prompt: str,
+        *,
+        approval_title: str,
+        reject_reason: str,
+    ) -> str:
+        base_prompt = str(task_prompt or "").strip()
+        feedback = (
+            "【审批反馈】\n"
+            f"本次提交未通过“{approval_title or '审批'}”。请保留原任务目标，"
+            "根据以下意见修订后重新执行。\n"
+            f"审批意见：{reject_reason or '未提供具体意见，请补齐产物并自检后重新提交。'}"
+        )
+        if not base_prompt:
+            return feedback
+        return f"{base_prompt}\n\n{feedback}"
+
+    @staticmethod
+    def _is_timeout_failure_message(message: str) -> bool:
+        lowered = str(message or "").strip().lower()
+        if not lowered:
+            return False
+        return (
+            "did not respond within" in lowered
+            or "timed out" in lowered
+            or lowered.endswith("timeout")
+            or " timeout" in lowered
+        )
+
     async def _run_nodes(
         self,
         execution_id: str,
@@ -647,6 +1110,7 @@ class WorkflowEngine:
             "UPDATE workflow_executions SET status = 'completed', completed_at = datetime('now') WHERE id = ?",
             (execution_id,),
         )
+        self._refresh_execution_usage_summary(execution_id, db=db)
         db.commit()
 
         total_artifacts = self._count_materialized_artifacts(node_artifacts)
@@ -680,6 +1144,17 @@ class WorkflowEngine:
         execution_context = self._parse_execution_context(
             row["context_json"] if row else None
         )
+        linked_task_id = str(execution_context.get("linkedTaskId") or "").strip()
+        trigger_event_id = str(execution_context.get("triggerEventId") or "").strip()
+        self._sync_linked_entities(
+            db,
+            linked_task_id=linked_task_id,
+            trigger_event_id=trigger_event_id,
+            execution_id=execution_id,
+            terminal_status="completed",
+        )
+        db.commit()
+
         trigger_source = str(execution_context.get("triggerSource") or "manual").strip().lower()
         should_notify_completion = not (
             trigger_source == "schedule" and total_artifacts == 0
@@ -805,13 +1280,21 @@ class WorkflowEngine:
                     return
 
             self._update_execution_node(execution_id, current_node_id)
-            result = await self._execute_node(
-                execution_id,
-                current_node_id,
-                node,
-                edges,
-                node_artifacts,
-            )
+            try:
+                result = await self._execute_node(
+                    execution_id,
+                    current_node_id,
+                    node,
+                    edges,
+                    node_artifacts,
+                )
+            except Exception as exc:
+                control["failed"] = True
+                await self._mark_failed(
+                    execution_id,
+                    f"节点执行异常: {current_node_id}: {exc}",
+                )
+                return
             if result == "__paused__":
                 control["paused"] = True
                 return
@@ -906,6 +1389,55 @@ class WorkflowEngine:
             return "drop"
         return "wait"
 
+    @staticmethod
+    def _sync_linked_entities(
+        db: Any,
+        *,
+        linked_task_id: str,
+        trigger_event_id: str,
+        execution_id: str,
+        terminal_status: str,
+    ) -> None:
+        if linked_task_id:
+            from openclaw_orchestrator.services.task_service import task_service
+
+            try:
+                if terminal_status == "completed":
+                    task_service.set_queue_status(
+                        linked_task_id,
+                        "done",
+                        execution_id=execution_id,
+                    )
+                elif terminal_status == "failed":
+                    task_service.set_queue_status(
+                        linked_task_id,
+                        "blocked",
+                        execution_id=execution_id,
+                        last_error="workflow execution failed",
+                    )
+            except Exception:
+                pass
+
+        if trigger_event_id:
+            if terminal_status == "completed":
+                db.execute(
+                    """
+                    UPDATE trigger_events
+                    SET status = 'completed', linked_execution_id = ?, updated_at = datetime('now')
+                    WHERE id = ?
+                    """,
+                    (execution_id, trigger_event_id),
+                )
+            elif terminal_status == "failed":
+                db.execute(
+                    """
+                    UPDATE trigger_events
+                    SET status = 'failed', linked_execution_id = ?, updated_at = datetime('now')
+                    WHERE id = ?
+                    """,
+                    (execution_id, trigger_event_id),
+                )
+
     async def _mark_failed(self, execution_id: str, message: str) -> None:
         self._append_log(
             execution_id,
@@ -917,9 +1449,25 @@ class WorkflowEngine:
             },
         )
         db = get_db()
+        context_row = db.execute(
+            "SELECT context_json FROM workflow_executions WHERE id = ?",
+            (execution_id,),
+        ).fetchone()
+        context = self._parse_execution_context(context_row["context_json"] if context_row else None)
+        linked_task_id = str(context.get("linkedTaskId") or "").strip()
+        trigger_event_id = str(context.get("triggerEventId") or "").strip()
+
         db.execute(
             "UPDATE workflow_executions SET status = 'failed', completed_at = datetime('now') WHERE id = ?",
             (execution_id,),
+        )
+        self._refresh_execution_usage_summary(execution_id, db=db)
+        self._sync_linked_entities(
+            db,
+            linked_task_id=linked_task_id,
+            trigger_event_id=trigger_event_id,
+            execution_id=execution_id,
+            terminal_status="failed",
         )
         db.commit()
         broadcast(
@@ -1003,9 +1551,12 @@ class WorkflowEngine:
         upstream_artifacts: list[dict[str, Any]],
         node_artifacts: dict[str, list[dict[str, Any]]],
     ) -> None:
+        from openclaw_orchestrator.services.task_service import task_service
+
         label = node.get("label", node_id)
         agent_id = node.get("agentId", "unknown")
         task_prompt = node.get("task", "")
+        task_id = str(node.get("taskId") or "").strip() or None
         max_retries = node.get("maxRetries", 0)
         retry_delay = node.get("retryDelayMs", 2000) / 1000.0
         timeout_seconds = node.get("timeoutSeconds", 120)
@@ -1061,17 +1612,36 @@ class WorkflowEngine:
         )
 
         full_prompt = self._build_task_prompt(
-            label, task_prompt, upstream_artifacts, execution_id, node_id
+            label,
+            task_prompt,
+            upstream_artifacts,
+            execution_id,
+            node_id,
+            team_context=str(node.get("teamContext") or "").strip() or None,
         )
+
+        if task_id:
+            task_service.set_queue_status(
+                task_id,
+                "running",
+                execution_id=execution_id,
+                node_id=node_id,
+            )
 
         attempt = 0
         result: dict[str, Any] = {"success": False, "content": ""}
         while attempt <= max_retries:
             try:
+                workflow_id = self._workflow_id_for_execution(execution_id)
+                session_id = (
+                    self._workflow_session_id(workflow_id)
+                    if workflow_id
+                    else f"wf-{execution_id[:8]}"
+                )
                 result = await openclaw_bridge.invoke_agent(
                     agent_id=agent_id,
                     message=full_prompt,
-                    session_id=f"wf-{execution_id[:8]}",
+                    session_id=session_id,
                     timeout_seconds=timeout_seconds,
                     correlation_id=f"{execution_id[:8]}-{node_id}",
                     model=agent_model,
@@ -1102,20 +1672,27 @@ class WorkflowEngine:
                 raise RuntimeError(failure_reason)
             except Exception as err:
                 attempt += 1
-                if attempt > max_retries:
+                error_message = str(err)
+                last_error_message = error_message
+                should_retry = (
+                    attempt <= max_retries
+                    and not self._is_timeout_failure_message(error_message)
+                )
+                if not should_retry:
+                    actual_retries = max(attempt - 1, 0)
                     self._append_log(
                         execution_id,
                         {
                             "timestamp": self._utcnow_iso(),
                             "nodeId": node_id,
-                            "message": f"节点执行失败（已重试 {max_retries} 次）: {err}",
+                            "message": f"节点执行失败（已重试 {actual_retries} 次）: {err}",
                             "level": "error",
                         },
                     )
                     notification_service.create_notification(
                         type="workflow_error",
                         title=f"节点失败: {label}",
-                        message=f"Agent {agent_id} 在 {max_retries + 1} 次尝试后仍未响应: {err}",
+                        message=f"节点 {label} 执行失败（已重试 {actual_retries} 次）: {err}",
                         execution_id=execution_id,
                         node_id=node_id,
                     )
@@ -1131,15 +1708,38 @@ class WorkflowEngine:
                 )
                 await asyncio.sleep(retry_delay)
 
+        self._record_execution_usage_metric(
+            execution_id=execution_id,
+            node_id=node_id,
+            agent_id=agent_id,
+            result=result,
+        )
+
         if not result.get("success"):
             node_artifacts[node_id] = []
+            failure_message = f"节点执行失败: {label} (agent={agent_id})，未产生有效输出"
+            if task_id:
+                task_service.set_queue_status(
+                    task_id,
+                    "blocked",
+                    execution_id=execution_id,
+                    node_id=node_id,
+                    last_error=last_error_message or str(result.get("content") or "") or failure_message,
+                )
             await self._mark_failed(
                 execution_id,
-                f"节点执行失败: {label} (agent={agent_id})，未产生有效输出",
+                failure_message,
             )
             return "__failed__"
 
         node_artifacts[node_id] = result.get("artifacts", [])
+        if task_id:
+            task_service.set_queue_status(
+                task_id,
+                "done",
+                execution_id=execution_id,
+                node_id=node_id,
+            )
         return None
 
     @staticmethod
@@ -1189,15 +1789,25 @@ class WorkflowEngine:
                 },
             )
 
+        has_materialized_output = WorkflowEngine._has_materialized_artifacts(
+            normalized_artifacts
+        )
+        has_explicit_artifacts = any(
+            WorkflowEngine._is_materialized_artifact(artifact)
+            and str(artifact.get("type") or "").strip().lower() != "agent_response"
+            for artifact in normalized_artifacts
+            if isinstance(artifact, dict)
+        )
+
         if not result.get("success"):
             return False, str(result.get("content") or "Agent invocation failed"), normalized_artifacts
         if require_response and len(content) < min_output_length:
             return False, "Agent returned no usable output", normalized_artifacts
         if success_pattern and success_pattern.lower() not in content.lower():
             return False, f"Output did not match success pattern: {success_pattern}", normalized_artifacts
-        if require_artifacts and not WorkflowEngine._has_materialized_artifacts(
-            normalized_artifacts
-        ):
+        if not has_materialized_output:
+            return False, "Agent produced no materialized output", normalized_artifacts
+        if require_artifacts and not has_explicit_artifacts:
             return False, "Task requires at least one artifact", normalized_artifacts
         return True, "", normalized_artifacts
 
@@ -1206,12 +1816,19 @@ class WorkflowEngine:
         if not isinstance(artifact, dict):
             return False
 
-        artifact_type = str(artifact.get("type") or "").strip().lower()
-        if artifact_type != "agent_response":
-            return True
+        if artifact.get("success") is False:
+            return False
 
         content = str(artifact.get("content") or "").strip()
-        return bool(content)
+        if content:
+            return True
+
+        artifact_type = str(artifact.get("type") or "").strip().lower()
+        if artifact_type == "agent_response":
+            return False
+
+        filename = str(artifact.get("filename") or "").strip()
+        return bool(filename)
 
     @classmethod
     def _has_materialized_artifacts(cls, artifacts: list[dict[str, Any]]) -> bool:
@@ -1233,25 +1850,111 @@ class WorkflowEngine:
         return total
 
     @staticmethod
+    def _build_workflow_signature(workflow: dict[str, Any]) -> str:
+        signature_payload = {
+            "schedule": workflow.get("schedule"),
+            "nodes": workflow.get("nodes") or {},
+            "edges": workflow.get("edges") or [],
+        }
+        return json.dumps(
+            signature_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+
+    @staticmethod
     def _build_task_prompt(
         label: str,
         task_prompt: str,
         upstream_artifacts: list[dict[str, Any]],
         execution_id: str,
         node_id: str,
+        team_context: str | None = None,
     ) -> str:
-        parts = [f"## 任务: {label}"]
-        if task_prompt:
-            parts.append(f"\n{task_prompt}")
-        parts.append(f"\n[工作流执行 ID: {execution_id[:8]}, 节点: {node_id}]")
+        parts = [
+            "你正在执行一个工作流节点任务。",
+            f"节点标题：{label}",
+            f"执行ID：{execution_id[:8]}",
+            f"节点ID：{node_id}",
+            "",
+            "节点目标：",
+            task_prompt.strip() if task_prompt and task_prompt.strip() else "请基于上下文完成当前节点目标。",
+            "",
+            "执行要求：",
+            "1. 优先完成当前节点目标，不要偏离当前节点范围。",
+            "2. 如果引用上游产物，先提炼关键信息，再给出最终结果。",
+            "3. 输出尽量具体、可执行，可直接作为下游输入。",
+            "4. 如果存在阻塞、缺失信息或风险，请明确写出。",
+            "",
+            "建议输出结构：",
+            "- 结论 / 结果",
+            "- 关键依据",
+            "- 下一步建议（如有）",
+        ]
+        if team_context and team_context.strip():
+            parts.extend(["", "### 团队必要上下文：", team_context.strip()])
+
         if upstream_artifacts:
-            parts.append("\n### 上游节点产出：")
-            for artifact in upstream_artifacts:
-                agent = artifact.get("agentId", "unknown")
-                content = artifact.get("content", "")
+            parts.extend(["", "上游产物："])
+            for artifact in upstream_artifacts[:8]:
+                agent = str(artifact.get("agentId") or "unknown").strip()
+                name = str(
+                    artifact.get("filename") or artifact.get("type") or "artifact"
+                ).strip()
+                content = str(artifact.get("content") or "").strip()
                 preview = content[:300] if content else "(空)"
-                parts.append(f"\n**{agent}** 的输出:\n{preview}")
+                parts.append(f"- {name} | 来自 {agent}")
+                parts.append(preview)
+        else:
+            parts.extend(["", "上游产物：", "- 无"])
         return "\n".join(parts)
+
+    @staticmethod
+    def _build_task_session_id(
+        execution_id: str,
+        task_id: str | None,
+        agent_id: str,
+    ) -> str:
+        normalized_agent = re.sub(r"[^A-Za-z0-9_-]+", "-", str(agent_id or "agent")).strip("-") or "agent"
+        normalized_task = re.sub(r"[^A-Za-z0-9_-]+", "-", str(task_id or "")).strip("-")
+        normalized_exec = re.sub(r"[^A-Za-z0-9_-]+", "-", str(execution_id or "exec")).strip("-") or "exec"
+        if normalized_task:
+            return f"task-{normalized_task}-{normalized_agent}"
+        return f"wf-{normalized_exec[:8]}-{normalized_agent}"
+
+    @staticmethod
+    def _resolve_context_level(
+        node: dict[str, Any],
+        upstream_artifacts: list[dict[str, Any]],
+    ) -> str:
+        risk_level = str(node.get("riskLevel") or "").strip().lower()
+        if risk_level in {"high", "critical", "p0"}:
+            return "L3"
+        if bool(node.get("requiresDependency")) or bool(upstream_artifacts):
+            return "L2"
+        return "L1"
+
+    @staticmethod
+    def _build_discussion_manual(node_type: str) -> str:
+        if node_type == "debate":
+            return "\n".join(
+                [
+                    "执行说明：",
+                    "1. 正反双方需要按轮次回应上一轮观点。",
+                    "2. 每轮只输出你本轮的立场、论据和回应。",
+                    "3. 如果认为已经达成共识，需要明确写出“同意”或“达成共识”。",
+                    "4. 最后由裁判输出总结。",
+                ]
+            )
+        return "\n".join(
+            [
+                "执行说明：",
+                "1. 参会 Agent 需要先阅读已有记录，再只追加你自己的发言。",
+                "2. 发言应尽量给出观点、依据、风险和建议。",
+                "3. 主持人会在最后总结共识、分歧和行动项。",
+            ]
+        )
 
     def _execute_condition_node(
         self,
@@ -1411,9 +2114,23 @@ class WorkflowEngine:
         topic = node.get("topic", label)
         topic_description = node.get("topicDescription", "")
         participants = node.get("participants", [])
-        team_id = node.get("teamId", "default")
+        workflow_id = self._workflow_id_for_execution(execution_id)
+        workflow = self.get_workflow(workflow_id) if workflow_id else None
+        inherited_team_id = (
+            str(workflow.get("teamId") or "").strip()
+            if isinstance(workflow, dict)
+            else ""
+        )
+        explicit_team_id = str(node.get("teamId") or "").strip()
+        team_id = explicit_team_id or inherited_team_id or "default"
         lead_agent_id = node.get("leadAgentId") or node.get("judgeAgentId")
         max_rounds = node.get("maxRounds", 3)
+        discussion_manual = self._build_discussion_manual(node_type)
+        topic_description = "\n\n".join(
+            part.strip()
+            for part in (topic_description, discussion_manual)
+            if isinstance(part, str) and part.strip()
+        )
 
         if not participants:
             self._append_log(
@@ -1451,6 +2168,11 @@ class WorkflowEngine:
         )
 
         try:
+            workflow_session_id = (
+                self._workflow_session_id(workflow_id)
+                if workflow_id
+                else f"wf-{execution_id[:8]}"
+            )
             meeting = meeting_service.create_meeting(
                 team_id=team_id,
                 meeting_type=meeting_type,
@@ -1460,7 +2182,11 @@ class WorkflowEngine:
                 lead_agent_id=lead_agent_id,
                 max_rounds=max_rounds,
             )
-            result = await meeting_service.run_meeting(meeting["id"])
+            result = await meeting_service.run_meeting(
+                meeting["id"],
+                session_id=workflow_session_id,
+                correlation_prefix=f"wf-{execution_id[:8]}-{node_id}",
+            )
             summary = result.get("summary", "")
             self._append_log(
                 execution_id,
@@ -1525,9 +2251,18 @@ class WorkflowEngine:
             },
         )
 
-        control = self._running_executions.get(execution_id, {})
+        with self._execution_lock:
+            control = self._running_executions.get(execution_id, {})
         execution_context = self._get_execution_context(execution_id)
-        execution_context.update({"node_artifacts": node_artifacts, "control": control})
+        execution_context.update(
+            {
+                "node_artifacts": node_artifacts,
+                "control": control,
+                "workflowSignature": self._build_workflow_signature(
+                    self._safe_get_workflow_by_execution(execution_id)
+                ),
+            }
+        )
         context_json = json.dumps(execution_context, default=str)
 
         db = get_db()
@@ -1566,6 +2301,16 @@ class WorkflowEngine:
                 ),
                 "timestamp": self._utcnow_iso(),
             }
+        )
+
+        timeout_minutes = max(int(node.get("timeoutMinutes") or 5), 1)
+        on_timeout = str(node.get("onTimeout") or "reject").strip().lower()
+        self._schedule_approval_timeout(
+            approval_id=approval_id,
+            execution_id=execution_id,
+            node_id=node_id,
+            timeout_minutes=timeout_minutes,
+            on_timeout=on_timeout,
         )
 
         approver_agent_id = self._resolve_approval_agent_id(node.get("approver"))
@@ -1773,7 +2518,7 @@ class WorkflowEngine:
                     node=node,
                     extra=extra,
                 ),
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": self._utcnow_iso(),
             }
         )
 
@@ -1987,6 +2732,14 @@ class WorkflowEngine:
             "startedAt": row["started_at"],
             "completedAt": row["completed_at"] or None,
             "logs": json.loads(row["logs"] or "[]"),
+            "promptTokens": int(row["prompt_tokens"] or 0) if "prompt_tokens" in row.keys() else 0,
+            "completionTokens": int(row["completion_tokens"] or 0) if "completion_tokens" in row.keys() else 0,
+            "totalTokens": int(row["total_tokens"] or 0) if "total_tokens" in row.keys() else 0,
+            "estimatedCostUsd": round(float(row["estimated_cost_usd"] or 0), 6) if "estimated_cost_usd" in row.keys() else 0.0,
+            "usageMetricsCount": int(row["usage_metrics_count"] or 0) if "usage_metrics_count" in row.keys() else 0,
+            "usageSamplesCount": int(row["usage_samples_count"] or 0) if "usage_samples_count" in row.keys() else 0,
+            "usageCoverageRatio": round(float(row["usage_coverage_ratio"] or 0), 4) if "usage_coverage_ratio" in row.keys() else 0.0,
+            "modelSummary": WorkflowEngine._parse_execution_context(row["model_summary_json"]) if "model_summary_json" in row.keys() else {},
         }
 
     @staticmethod
@@ -2055,17 +2808,25 @@ class WorkflowEngine:
     ) -> str:
         artifact_lines: list[str] = []
         for artifact in upstream_artifacts[:5]:
-            artifact_name = str(artifact.get("filename") or artifact.get("type") or "artifact")
+            artifact_name = str(
+                artifact.get("filename") or artifact.get("type") or "artifact"
+            )
             artifact_content = str(artifact.get("content") or "").strip()
             artifact_preview = artifact_content[:240]
             artifact_lines.append(f"- {artifact_name}: {artifact_preview}")
         artifacts_block = "\n".join(artifact_lines) if artifact_lines else "- 无上游产物"
 
         return (
-            "你现在是工作流审批代理，请只返回 JSON，不要输出其他文本。\n"
-            "允许的返回格式只有两种：\n"
+            "你是工作流审批代理。你只返回 JSON，不要输出任何额外文字、解释或 Markdown。\n"
+            "只允许以下两种格式：\n"
             '{"decision":"approve","reason":"..."}\n'
             '{"decision":"reject","reason":"..."}\n\n'
+            "请基于以下维度完成审批：\n"
+            "1. 当前节点目标是否已经完成。\n"
+            "2. 上游产物是否充分、具体、可落地。\n"
+            "3. 是否存在明显风险、阻塞、遗漏或不一致。\n"
+            "4. 如果拒绝，reason 必须明确指出风险或缺口；这段 reason 会拼接到原任务后面，驱动最近上游 task 重新执行。\n"
+            "5. 不要给笼统评价，reason 要尽量具体、可执行。\n\n"
             f"workflowId: {workflow_id}\n"
             f"nodeId: {node_id}\n"
             f"title: {title}\n"
@@ -2146,10 +2907,16 @@ class WorkflowEngine:
         )
 
         try:
+            workflow_id = self._workflow_id_for_execution(execution_id)
+            session_id = (
+                self._workflow_session_id(workflow_id)
+                if workflow_id
+                else f"approval-{approval_id[:8]}"
+            )
             result = await openclaw_bridge.invoke_agent(
                 agent_id=approver_agent_id,
                 message=prompt,
-                session_id=f"approval-{approval_id[:8]}",
+                session_id=session_id,
                 timeout_seconds=min(timeout_minutes * 60, 3600),
                 correlation_id=f"approval-{approval_id[:8]}",
             )
@@ -2195,6 +2962,106 @@ class WorkflowEngine:
                 approved=approved,
                 reject_reason=reason,
                 resolved_by=f"agent:{approver_agent_id}",
+            )
+        except ValueError:
+            return
+
+    def _schedule_approval_timeout(
+        self,
+        *,
+        approval_id: str,
+        execution_id: str,
+        node_id: str,
+        timeout_minutes: int,
+        on_timeout: str,
+    ) -> None:
+        self._clear_approval_timeout_task(approval_id)
+        if timeout_minutes <= 0 or on_timeout != "reject":
+            return
+
+        task = asyncio.create_task(
+            self._await_approval_timeout(
+                approval_id=approval_id,
+                execution_id=execution_id,
+                node_id=node_id,
+                timeout_minutes=timeout_minutes,
+                on_timeout=on_timeout,
+            )
+        )
+        self._approval_timeout_tasks[approval_id] = task
+
+        def _cleanup(done_task: asyncio.Task[Any]) -> None:
+            current_task = self._approval_timeout_tasks.get(approval_id)
+            if current_task is done_task:
+                self._approval_timeout_tasks.pop(approval_id, None)
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+
+        task.add_done_callback(_cleanup)
+
+    def _clear_approval_timeout_task(self, approval_id: str) -> None:
+        task = self._approval_timeout_tasks.pop(approval_id, None)
+        if not task:
+            return
+        current_task = asyncio.current_task()
+        if task is not current_task and not task.done():
+            task.cancel()
+
+    async def _await_approval_timeout(
+        self,
+        *,
+        approval_id: str,
+        execution_id: str,
+        node_id: str,
+        timeout_minutes: int,
+        on_timeout: str,
+    ) -> None:
+        await asyncio.sleep(timeout_minutes * 60)
+        await self._expire_approval_after_timeout(
+            approval_id=approval_id,
+            execution_id=execution_id,
+            node_id=node_id,
+            timeout_minutes=timeout_minutes,
+            on_timeout=on_timeout,
+        )
+
+    async def _expire_approval_after_timeout(
+        self,
+        *,
+        approval_id: str,
+        execution_id: str,
+        node_id: str,
+        timeout_minutes: int,
+        on_timeout: str,
+    ) -> None:
+        if on_timeout != "reject":
+            return
+
+        db = get_db()
+        approval_row = db.execute(
+            "SELECT status FROM approvals WHERE id = ?",
+            (approval_id,),
+        ).fetchone()
+        if not approval_row or approval_row["status"] != "pending":
+            return
+
+        execution_row = db.execute(
+            "SELECT status FROM workflow_executions WHERE id = ?",
+            (execution_id,),
+        ).fetchone()
+        if not execution_row or execution_row["status"] != "waiting_approval":
+            return
+
+        try:
+            await self.resolve_approval(
+                approval_id,
+                approved=False,
+                reject_reason=f"approval timeout after {timeout_minutes} minute(s)",
+                resolved_by="system:timeout",
             )
         except ValueError:
             return

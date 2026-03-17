@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from typing import Optional
 
 from openclaw_orchestrator.services.chat_service import ChatDeliveryError, chat_service
 from openclaw_orchestrator.services.live_feed_service import live_feed_service
@@ -14,6 +15,8 @@ router = APIRouter()
 
 class SendMessageRequest(BaseModel):
     content: str
+    teamId: Optional[str] = None
+    autoDispatch: bool = False
 
 
 @router.get("/agents/{agent_id}/sessions")
@@ -36,8 +39,16 @@ async def send_message(agent_id: str, session_id: str, req: SendMessageRequest):
     if not req.content:
         raise HTTPException(status_code=400, detail="content is required")
     try:
-        return await chat_service.send_message(agent_id, session_id, req.content)
-    except (ChatDeliveryError, RuntimeError) as exc:
+        result = await chat_service.send_message(agent_id, session_id, req.content)
+        if req.autoDispatch and req.teamId:
+            dispatch_result = await chat_service.dispatch_team_intent(
+                req.teamId,
+                req.content,
+                requested_by=f"chat:{agent_id}:{session_id}",
+            )
+            result["dispatch"] = dispatch_result
+        return result
+    except (ChatDeliveryError, RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 

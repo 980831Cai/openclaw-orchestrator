@@ -9,13 +9,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from concurrent.futures import Future
 from typing import Any
 
 from fastapi import WebSocket
 
-# Connected WebSocket clients
-_clients: set[WebSocket] = set()
+logger = logging.getLogger(__name__)
+
+# Heartbeat configuration (seconds)
+HEARTBEAT_INTERVAL = 30
+HEARTBEAT_TIMEOUT = 90
+
+# Connected WebSocket clients: ws -> last_pong_timestamp (or None)
+_clients: dict[WebSocket, float | None] = {}
 _main_loop: asyncio.AbstractEventLoop | None = None
 
 
@@ -25,7 +32,7 @@ async def handle_ws_connection(websocket: WebSocket) -> None:
 
     await websocket.accept()
     _main_loop = asyncio.get_running_loop()
-    _clients.add(websocket)
+    _clients[websocket] = None
     print("WebSocket client connected")
 
     # Send welcome message

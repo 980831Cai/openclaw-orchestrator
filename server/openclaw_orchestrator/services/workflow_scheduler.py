@@ -21,6 +21,8 @@ from zoneinfo import ZoneInfo
 
 from croniter import croniter
 
+from openclaw_orchestrator.services.lead_governance_service import lead_governance_service
+from openclaw_orchestrator.services.team_dispatch_service import team_dispatch_service
 from openclaw_orchestrator.services.workflow_engine import (
     WorkflowValidationError,
     workflow_engine,
@@ -122,10 +124,17 @@ class WorkflowScheduler:
                 next_run_at.isoformat(),
             )
             try:
-                await workflow_engine.execute_workflow(
-                    workflow_id,
-                    trigger_source="schedule",
-                    scheduled_for=next_run_at.isoformat(),
+                await team_dispatch_service.dispatch(
+                    team_id=str(workflow.get("teamId") or "").strip(),
+                    workflow_id=workflow_id,
+                    content=f"定时触发工作流 {workflow.get('name') or workflow_id}",
+                    source="schedule",
+                    actor_id="workflow.scheduler",
+                    session_id=next_run_at.isoformat(),
+                    idempotency_key=f"schedule:{workflow_id}:{next_run_at.isoformat()}",
+                    title=f"定时执行: {workflow.get('name') or workflow_id}",
+                    planned_by="scheduler",
+                    auto_drain=True,
                 )
             except WorkflowValidationError as exc:
                 logger.warning(
@@ -141,6 +150,11 @@ class WorkflowScheduler:
         for workflow_id in list(self._states):
             if workflow_id not in active_workflow_ids:
                 self._states.pop(workflow_id, None)
+
+        try:
+            lead_governance_service.maybe_run(now_utc=now_utc)
+        except Exception:
+            logger.exception("Lead governance tick failed")
 
     def get_next_run_at(
         self,

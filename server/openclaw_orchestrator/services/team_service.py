@@ -32,18 +32,93 @@ TEAM_MD_TEMPLATE = """# {name}
 class TeamService:
     """Service for managing teams."""
 
+    @staticmethod
+    def _normalize_lead_mode(value: Optional[str]) -> str:
+        mode = str(value or "agent").strip().lower()
+        return mode if mode in {"agent", "manual"} else "agent"
+
+    @staticmethod
+    def _normalize_schedule(row: Any) -> dict[str, Any] | None:
+        schedule_config = row["schedule_config"] if "schedule_config" in row.keys() else None
+        if schedule_config and schedule_config != "{}":
+            try:
+                parsed = json.loads(schedule_config)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+
+        # 兼容历史字段 schedule_json
+        schedule_json = row["schedule_json"] if "schedule_json" in row.keys() else None
+        if schedule_json and schedule_json != "{}":
+            try:
+                parsed = json.loads(schedule_json)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+        return None
+
+    @staticmethod
+    def _generate_default_lead_agent_id(team_id: str) -> str:
+        return f"lead-{team_id[:8]}"
+
+    def _ensure_lead_member(self, team_id: str, agent_id: str) -> None:
+        db = get_db()
+        member = db.execute(
+            "SELECT 1 FROM team_members WHERE team_id = ? AND agent_id = ?",
+            (team_id, agent_id),
+        ).fetchone()
+        if member:
+            db.execute(
+                "UPDATE team_members SET role = 'lead' WHERE team_id = ? AND agent_id = ?",
+                (team_id, agent_id),
+            )
+        else:
+            max_order_row = db.execute(
+                "SELECT MAX(join_order) as m FROM team_members WHERE team_id = ?",
+                (team_id,),
+            ).fetchone()
+            max_order = max_order_row["m"] or 0
+            db.execute(
+                "INSERT INTO team_members (team_id, agent_id, role, join_order) VALUES (?, ?, 'lead', ?)",
+                (team_id, agent_id, max_order + 1),
+            )
+
+    def _bootstrap_lead_agent_profile(
+        self,
+        *,
+        agent_id: str,
+        team_name: str,
+        team_description: Optional[str] = None,
+        team_goal: Optional[str] = None,
+    ) -> None:
+        """Ensure lead agent profile exists with default governance prompt."""
+        from openclaw_orchestrator.services.agent_service import agent_service
+
+        agent_service.bootstrap_team_lead(
+            agent_id=agent_id,
+            team_name=team_name,
+            team_description=team_description,
+            team_goal=team_goal,
+        )
+
     def create_team(
         self,
         name: str,
         description: str,
         goal: Optional[str] = None,
         theme: Optional[str] = None,
+        lead_mode: Optional[str] = None,
         lead_agent_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """Create a new team with directory structure."""
         db = get_db()
         team_id = str(uuid.uuid4())
         team_dir = os.path.join("teams", team_id)
+        normalized_mode = self._normalize_lead_mode(lead_mode)
+
+        resolved_lead_agent_id = str(lead_agent_id or "").strip() or self._generate_default_lead_agent_id(team_id)
 
         file_manager.ensure_dir(team_dir)
         file_manager.ensure_dir(os.path.join(team_dir, "active"))
@@ -56,8 +131,21 @@ class TeamService:
             TEAM_MD_TEMPLATE.format(name=name, goal=goal or "待定义"),
         )
 
+        if resolved_lead_agent_id:
+            self._bootstrap_lead_agent_profile(
+                agent_id=resolved_lead_agent_id,
+                team_name=name,
+                team_description=description,
+                team_goal=goal,
+            )
+
         db.execute(
-            "INSERT INTO teams (id, name, description, goal, theme, team_dir, lead_agent_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            """
+            INSERT INTO teams (
+                id, name, description, goal, theme, team_dir,
+                lead_agent_id, lead_mode, default_workflow_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
             (
                 team_id,
                 name,
@@ -65,10 +153,19 @@ class TeamService:
                 goal or "",
                 theme or "default",
                 file_manager.get_full_path(team_dir),
-                lead_agent_id,
+                resolved_lead_agent_id,
+                normalized_mode,
             ),
         )
+
+        if resolved_lead_agent_id:
+            db.execute(
+                "INSERT INTO team_members (team_id, agent_id, role, join_order) VALUES (?, ?, 'lead', 1)",
+                (team_id, resolved_lead_agent_id),
+            )
+
         db.commit()
+        self._update_agent_to_agent_config(team_id)
         return self.get_team(team_id)
 
     def get_team(self, team_id: str) -> dict[str, Any]:
@@ -79,7 +176,7 @@ class TeamService:
             raise ValueError(f"Team not found: {team_id}")
 
         members = self._get_team_members(team_id)
-        schedule = json.loads(row["schedule_config"]) if row["schedule_config"] and row["schedule_config"] != "{}" else None
+        schedule = self._normalize_schedule(row)
 
         return {
             "id": row["id"],
@@ -91,6 +188,8 @@ class TeamService:
             "teamDir": row["team_dir"],
             "theme": row["theme"],
             "leadAgentId": row["lead_agent_id"] if "lead_agent_id" in row.keys() else None,
+            "defaultWorkflowId": row["default_workflow_id"] if "default_workflow_id" in row.keys() else None,
+            "leadMode": row["lead_mode"] if "lead_mode" in row.keys() else "agent",
             "createdAt": row["created_at"],
         }
 
@@ -227,14 +326,112 @@ class TeamService:
         return row["lead_agent_id"] if row else None
 
     def remove_member(self, team_id: str, agent_id: str) -> None:
-        """Remove a member from a team."""
+        """Remove a member from a team.
+
+        If the removed member is current lead, auto-assign the earliest remaining
+        member as new lead.
+        """
         db = get_db()
+        old_lead = db.execute(
+            "SELECT lead_agent_id FROM teams WHERE id = ?",
+            (team_id,),
+        ).fetchone()
+        removed_was_lead = bool(old_lead and old_lead["lead_agent_id"] == agent_id)
+
         db.execute(
             "DELETE FROM team_members WHERE team_id = ? AND agent_id = ?",
             (team_id, agent_id),
         )
+
+        if removed_was_lead:
+            next_member = db.execute(
+                "SELECT agent_id FROM team_members WHERE team_id = ? ORDER BY join_order ASC LIMIT 1",
+                (team_id,),
+            ).fetchone()
+            next_lead = next_member["agent_id"] if next_member else self._generate_default_lead_agent_id(team_id)
+            team_row = db.execute(
+                "SELECT name, description, goal FROM teams WHERE id = ?",
+                (team_id,),
+            ).fetchone()
+            team_name = str(team_row["name"] if team_row and team_row["name"] else team_id)
+            team_description = str(team_row["description"] if team_row and team_row["description"] else "")
+            team_goal = str(team_row["goal"] if team_row and team_row["goal"] else "")
+            self._bootstrap_lead_agent_profile(
+                agent_id=next_lead,
+                team_name=team_name,
+                team_description=team_description,
+                team_goal=team_goal,
+            )
+            db.execute(
+                "UPDATE teams SET lead_agent_id = ? WHERE id = ?",
+                (next_lead, team_id),
+            )
+            self._ensure_lead_member(team_id, next_lead)
+
         db.commit()
         self._update_agent_to_agent_config(team_id)
+
+    def set_execution_config(
+        self,
+        team_id: str,
+        *,
+        default_workflow_id: Optional[str] = None,
+        lead_mode: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Set default workflow + lead mode for team execution."""
+        db = get_db()
+
+        current = db.execute(
+            "SELECT id, lead_agent_id, lead_mode, default_workflow_id FROM teams WHERE id = ?",
+            (team_id,),
+        ).fetchone()
+        if not current:
+            raise ValueError(f"Team not found: {team_id}")
+
+        updates: list[str] = []
+        values: list[Any] = []
+
+        if default_workflow_id is not None:
+            normalized_wf = str(default_workflow_id).strip() or None
+            updates.append("default_workflow_id = ?")
+            values.append(normalized_wf)
+
+        normalized_mode = None
+        if lead_mode is not None:
+            normalized_mode = self._normalize_lead_mode(lead_mode)
+            updates.append("lead_mode = ?")
+            values.append(normalized_mode)
+
+        if updates:
+            values.append(team_id)
+            db.execute(f"UPDATE teams SET {', '.join(updates)} WHERE id = ?", values)
+
+        # 任意模式下都不允许团队长期处于无 lead 状态
+        final_lead = current["lead_agent_id"] if "lead_agent_id" in current.keys() else None
+        if not final_lead:
+            bootstrap_lead = self._generate_default_lead_agent_id(team_id)
+            team_row = db.execute(
+                "SELECT name, description, goal FROM teams WHERE id = ?",
+                (team_id,),
+            ).fetchone()
+            team_name = str(team_row["name"] if team_row and team_row["name"] else team_id)
+            team_description = str(team_row["description"] if team_row and team_row["description"] else "")
+            team_goal = str(team_row["goal"] if team_row and team_row["goal"] else "")
+            self._bootstrap_lead_agent_profile(
+                agent_id=bootstrap_lead,
+                team_name=team_name,
+                team_description=team_description,
+                team_goal=team_goal,
+            )
+            db.execute(
+                "UPDATE teams SET lead_agent_id = ? WHERE id = ?",
+                (bootstrap_lead, team_id),
+            )
+            self._ensure_lead_member(team_id, bootstrap_lead)
+
+        db.commit()
+        self._update_agent_to_agent_config(team_id)
+        return self.get_team(team_id)
 
     def update_schedule(self, team_id: str, schedule: dict[str, Any]) -> dict[str, Any]:
         """Update team schedule configuration and sync to OpenClaw runtime.
@@ -259,7 +456,108 @@ class TeamService:
             logger.error("Failed to sync schedule for team %s: %s", team_id, exc)
             sync_result["syncError"] = str(exc)
 
+        # Bridge: when team has default workflow, derive workflow scheduler cron from team roster schedule
+        workflow_sync = self._sync_default_workflow_schedule(team_id, schedule)
+        if workflow_sync is not None:
+            sync_result["defaultWorkflowSync"] = workflow_sync
+
         return sync_result
+
+    def _derive_workflow_schedule_from_team_schedule(
+        self, schedule: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        mode = str(schedule.get("type") or schedule.get("mode") or "").strip().lower()
+        timezone_name = str(schedule.get("timezone") or "UTC").strip() or "UTC"
+        entries = schedule.get("entries")
+        if not isinstance(entries, list) or not entries:
+            return None
+
+        if mode == "time-based":
+            first = entries[0] if isinstance(entries[0], dict) else {}
+            start_time = str(first.get("startTime") or "09:00").strip()
+            if ":" not in start_time:
+                return None
+            hour_text, minute_text = start_time.split(":", 1)
+            try:
+                hour = max(0, min(23, int(hour_text)))
+                minute = max(0, min(59, int(minute_text)))
+            except ValueError:
+                return None
+            return {
+                "enabled": True,
+                "cron": f"{minute} {hour} * * *",
+                "timezone": timezone_name,
+            }
+
+        if mode == "custom":
+            first = entries[0] if isinstance(entries[0], dict) else {}
+            custom_rule = str(first.get("customRule") or "").strip()
+            if not custom_rule:
+                return None
+            return {
+                "enabled": True,
+                "cron": custom_rule,
+                "timezone": timezone_name,
+            }
+
+        return None
+
+    def _sync_default_workflow_schedule(
+        self,
+        team_id: str,
+        schedule: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        db = get_db()
+        row = db.execute(
+            "SELECT default_workflow_id FROM teams WHERE id = ?",
+            (team_id,),
+        ).fetchone()
+        if not row:
+            return {"synced": False, "reason": f"team_not_found:{team_id}"}
+
+        default_workflow_id = str(row["default_workflow_id"] or "").strip()
+        if not default_workflow_id:
+            return None
+
+        workflow = db.execute(
+            "SELECT id FROM workflows WHERE id = ? AND team_id = ?",
+            (default_workflow_id, team_id),
+        ).fetchone()
+        if not workflow:
+            return {
+                "synced": False,
+                "workflowId": default_workflow_id,
+                "reason": "workflow_not_in_team",
+            }
+
+        derived = self._derive_workflow_schedule_from_team_schedule(schedule)
+        if derived is None:
+            return {
+                "synced": False,
+                "workflowId": default_workflow_id,
+                "reason": "schedule_mode_not_mappable",
+            }
+
+        try:
+            from openclaw_orchestrator.services.workflow_engine import workflow_engine
+
+            workflow_engine.update_workflow(default_workflow_id, {"schedule": derived})
+            return {
+                "synced": True,
+                "workflowId": default_workflow_id,
+                "schedule": derived,
+            }
+        except Exception as exc:
+            logger.warning(
+                "Failed to sync default workflow schedule for team %s: %s",
+                team_id,
+                exc,
+            )
+            return {
+                "synced": False,
+                "workflowId": default_workflow_id,
+                "reason": str(exc),
+            }
 
     def get_team_md(self, team_id: str) -> str:
         """Get team.md content."""

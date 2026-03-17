@@ -20,8 +20,12 @@ export function useTeams() {
     setLoading(false)
   }, [setSelectedTeam, setLoading])
 
-  const createTeam = useCallback(async (name: string, description: string) => {
-    const data = await api.post<Team>('/teams', { name, description })
+  const createTeam = useCallback(async (name: string, description: string, goal?: string) => {
+    const data = await api.post<Team>('/teams', {
+      name,
+      description,
+      goal: goal?.trim() || undefined,
+    })
     await fetchTeams()
     return data
   }, [fetchTeams])

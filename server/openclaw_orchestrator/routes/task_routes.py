@@ -19,11 +19,21 @@ class CreateTaskRequest(BaseModel):
     title: str
     description: str = ""
     participantAgentIds: list[str] = []
+    queueStatus: str = "backlog"
+    parentTaskId: Optional[str] = None
+    plannedBy: Optional[str] = None
+    workflowId: Optional[str] = None
+    triggerEventId: Optional[str] = None
 
 
 class UpdateTaskStatusRequest(BaseModel):
     status: str
     summary: Optional[str] = None
+    queueStatus: Optional[str] = None
+    executionId: Optional[str] = None
+    nodeId: Optional[str] = None
+    blockedReason: Optional[str] = None
+    lastError: Optional[str] = None
 
 
 class CreateArtifactRequest(BaseModel):
@@ -41,7 +51,15 @@ def create_task(team_id: str, req: CreateTaskRequest):
     if not req.title:
         raise HTTPException(status_code=400, detail="Task title is required")
     return task_service.create_task(
-        team_id, req.title, req.description, req.participantAgentIds
+        team_id,
+        req.title,
+        req.description,
+        req.participantAgentIds,
+        queue_status=req.queueStatus,
+        parent_task_id=req.parentTaskId,
+        planned_by=req.plannedBy,
+        workflow_id=req.workflowId,
+        trigger_event_id=req.triggerEventId,
     )
 
 
@@ -63,7 +81,18 @@ def update_task_status(task_id: str, req: UpdateTaskStatusRequest):
     try:
         if req.status == "completed":
             return task_service.complete_task(task_id, req.summary)
-        return task_service.update_task_status(task_id, req.status)
+
+        task = task_service.update_task_status(task_id, req.status)
+        if req.queueStatus is not None:
+            task = task_service.set_queue_status(
+                task_id,
+                req.queueStatus,
+                execution_id=req.executionId,
+                node_id=req.nodeId,
+                blocked_reason=req.blockedReason,
+                last_error=req.lastError,
+            )
+        return task
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

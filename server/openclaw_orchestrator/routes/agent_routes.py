@@ -1,10 +1,12 @@
 """Agent API routes."""
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 from typing import Any, Optional
 
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
 from openclaw_orchestrator.services.agent_service import agent_service
+from openclaw_orchestrator.services.openclaw_catalog_service import openclaw_catalog_service
 
 router = APIRouter()
 
@@ -23,6 +25,17 @@ class UpdateAgentRequest(BaseModel):
 
 class UpdateSkillsRequest(BaseModel):
     skills: list[str]
+
+
+class UpsertSkillCatalogRequest(BaseModel):
+    id: str
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+
+class UpdatePluginRequest(BaseModel):
+    enabled: Optional[bool] = None
+    config: Optional[dict[str, Any]] = None
 
 
 @router.get("/agents")
@@ -81,3 +94,29 @@ def update_skills(agent_id: str, req: UpdateSkillsRequest):
         return agent["skills"]
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/skills/catalog")
+def list_skill_catalog():
+    return openclaw_catalog_service.list_skill_catalog()
+
+
+@router.put("/skills/catalog")
+def upsert_skill_catalog(req: UpsertSkillCatalogRequest):
+    try:
+        return openclaw_catalog_service.upsert_skill_catalog_item(req.model_dump(exclude_none=True))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/openclaw/plugins")
+def list_openclaw_plugins():
+    return openclaw_catalog_service.list_plugins()
+
+
+@router.put("/openclaw/plugins/{plugin_id}")
+def update_openclaw_plugin(plugin_id: str, req: UpdatePluginRequest):
+    try:
+        return openclaw_catalog_service.update_plugin(plugin_id, req.model_dump(exclude_none=True))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

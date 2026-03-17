@@ -98,9 +98,9 @@ export function EmptyState({
   const config = sceneConfig[scene]
 
   return (
-    <div className={cn('flex flex-col items-center justify-center py-16 animate-fade-in', className)}>
+    <div className={cn('flex flex-col items-center justify-center py-12 animate-fade-in', className)}>
       {/* Logo mascot */}
-      <div className="relative mb-5">
+      <div className="relative mb-4">
         <Logo size="xl" mood={config.mood} animated />
 
         {/* Floating emoji */}
@@ -109,24 +109,19 @@ export function EmptyState({
             {config.emoji}
           </div>
         )}
-
-        {/* Decorative sparkles */}
-        <div className="absolute -left-4 top-2 text-[10px] text-cyber-purple/30 animate-cartoon-sparkle" style={{ animationDelay: '0s' }}>✦</div>
-        <div className="absolute -right-5 bottom-4 text-[8px] text-cyber-lavender/25 animate-cartoon-sparkle" style={{ animationDelay: '0.8s' }}>✦</div>
-        <div className="absolute left-0 -bottom-1 text-[6px] text-cyber-violet/20 animate-cartoon-sparkle" style={{ animationDelay: '1.4s' }}>✦</div>
       </div>
 
       {/* Text */}
-      <h3 className="text-white/60 text-lg font-semibold mb-1">
+      <h3 className="text-white/50 text-base font-semibold mb-1">
         {title || config.defaultTitle}
       </h3>
-      <p className="text-white/25 text-sm max-w-[280px] text-center leading-relaxed">
+      <p className="text-white/20 text-[13px] max-w-[280px] text-center leading-relaxed">
         {description || config.defaultDesc}
       </p>
 
       {/* Optional action button */}
       {action && (
-        <div className="mt-5">
+        <div className="mt-4">
           {action}
         </div>
       )}

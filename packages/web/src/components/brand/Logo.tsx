@@ -46,19 +46,30 @@ export function Logo({
       >
         <svg viewBox="0 0 100 100" className="w-full h-full" aria-label="OpenClaw Logo">
           <defs>
-            {/* Main gradient */}
+            {/* Main gradient — richer indigo-to-purple */}
             <radialGradient id="paw-grad" cx="45%" cy="40%">
-              <stop offset="0%" stopColor="#A78BFA" stopOpacity="0.9" />
-              <stop offset="100%" stopColor="#6366F1" stopOpacity="0.8" />
+              <stop offset="0%" stopColor="#A78BFA" stopOpacity="0.95" />
+              <stop offset="70%" stopColor="#818CF8" stopOpacity="0.85" />
+              <stop offset="100%" stopColor="#6366F1" stopOpacity="0.75" />
             </radialGradient>
-            {/* Pad glow */}
+            {/* Pad glow — softer, more premium feel */}
             <radialGradient id="pad-glow" cx="50%" cy="50%">
-              <stop offset="0%" stopColor="#C4B5FD" stopOpacity="0.6" />
-              <stop offset="100%" stopColor="#8B5CF6" stopOpacity="0.3" />
+              <stop offset="0%" stopColor="#DDD6FE" stopOpacity="0.5" />
+              <stop offset="100%" stopColor="#8B5CF6" stopOpacity="0.2" />
             </radialGradient>
             {/* Circuit glow */}
             <filter id="circuit-glow">
-              <feGaussianBlur stdDeviation="1" />
+              <feGaussianBlur stdDeviation="0.8" />
+            </filter>
+            {/* Subtle outer glow for paw */}
+            <filter id="paw-outer-glow" x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur in="SourceAlpha" stdDeviation="3" result="blur" />
+              <feFlood floodColor="#6366F1" floodOpacity="0.15" />
+              <feComposite in2="blur" operator="in" />
+              <feMerge>
+                <feMergeNode />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
             </filter>
           </defs>
 
@@ -69,9 +80,10 @@ export function Logo({
             rx="28"
             ry="24"
             fill="url(#paw-grad)"
+            filter="url(#paw-outer-glow)"
             stroke="#7C3AED"
-            strokeWidth="1.5"
-            strokeOpacity="0.4"
+            strokeWidth="1"
+            strokeOpacity="0.3"
           />
 
           {/* Highlight on palm */}
@@ -79,13 +91,13 @@ export function Logo({
 
           {/* ── Toe beans (4 toes) ── */}
           {/* Left outer toe */}
-          <ellipse cx="26" cy="38" rx="10" ry="12" fill="url(#paw-grad)" stroke="#7C3AED" strokeWidth="1.2" strokeOpacity="0.3" />
+          <ellipse cx="26" cy="38" rx="10" ry="12" fill="url(#paw-grad)" stroke="#7C3AED" strokeWidth="0.8" strokeOpacity="0.25" />
           {/* Left inner toe */}
-          <ellipse cx="40" cy="30" rx="9" ry="11" fill="url(#paw-grad)" stroke="#7C3AED" strokeWidth="1.2" strokeOpacity="0.3" />
+          <ellipse cx="40" cy="30" rx="9" ry="11" fill="url(#paw-grad)" stroke="#7C3AED" strokeWidth="0.8" strokeOpacity="0.25" />
           {/* Right inner toe */}
-          <ellipse cx="58" cy="30" rx="9" ry="11" fill="url(#paw-grad)" stroke="#7C3AED" strokeWidth="1.2" strokeOpacity="0.3" />
+          <ellipse cx="58" cy="30" rx="9" ry="11" fill="url(#paw-grad)" stroke="#7C3AED" strokeWidth="0.8" strokeOpacity="0.25" />
           {/* Right outer toe */}
-          <ellipse cx="72" cy="38" rx="10" ry="12" fill="url(#paw-grad)" stroke="#7C3AED" strokeWidth="1.2" strokeOpacity="0.3" />
+          <ellipse cx="72" cy="38" rx="10" ry="12" fill="url(#paw-grad)" stroke="#7C3AED" strokeWidth="0.8" strokeOpacity="0.25" />
 
           {/* ── Paw pads (toe beans - pink) ── */}
           <ellipse cx="26" cy="38" rx="5" ry="6" fill="url(#pad-glow)" />
@@ -173,10 +185,10 @@ export function Logo({
 
       {showText && (
         <div className="flex flex-col">
-          <span className={cn('font-bold text-white/90 tracking-tight leading-tight', sizeMap[size].text)}>
+          <span className={cn('font-bold text-white/85 tracking-tight leading-tight', sizeMap[size].text)}>
             OpenClaw
           </span>
-          <span className="text-white/30 text-[9px] tracking-widest uppercase leading-tight">
+          <span className="text-white/25 text-[9px] tracking-[0.2em] uppercase leading-tight font-medium">
             Orchestrator
           </span>
         </div>

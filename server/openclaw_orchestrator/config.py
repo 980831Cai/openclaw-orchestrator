@@ -62,6 +62,50 @@ class Settings(BaseSettings):
                     "Empty = no auth (dev mode). Set to enable.",
     )
 
+    # Team-scoped context budgets (prompt injection)
+    context_budget_total_chars: int = Field(
+        default=6000,
+        alias="CONTEXT_BUDGET_TOTAL_CHARS",
+        description="Total character budget for team-scoped context injection.",
+    )
+    context_budget_team_chars: int = Field(
+        default=2200,
+        alias="CONTEXT_BUDGET_TEAM_CHARS",
+        description="Character budget for team.md (long-term rules).",
+    )
+    context_budget_task_chars: int = Field(
+        default=2600,
+        alias="CONTEXT_BUDGET_TASK_CHARS",
+        description="Character budget for current task context.",
+    )
+    context_budget_meeting_chars: int = Field(
+        default=1200,
+        alias="CONTEXT_BUDGET_MEETING_CHARS",
+        description="Character budget for recent meeting summaries.",
+    )
+    context_budget_meeting_items: int = Field(
+        default=2,
+        alias="CONTEXT_BUDGET_MEETING_ITEMS",
+        description="Maximum number of recent meeting summaries to include.",
+    )
+
+    # Task handoff & layered-read strategy
+    handoff_validation_mode: str = Field(
+        default="strict",
+        alias="HANDOFF_VALIDATION_MODE",
+        description="Handoff validation mode: strict / lenient / disabled.",
+    )
+    context_l2_handoff_items: int = Field(
+        default=3,
+        alias="CONTEXT_L2_HANDOFF_ITEMS",
+        description="How many recent handoffs to read at L2.",
+    )
+    context_l3_handoff_items: int = Field(
+        default=8,
+        alias="CONTEXT_L3_HANDOFF_ITEMS",
+        description="How many recent handoffs to read at L3 fallback.",
+    )
+
     @property
     def db_path(self) -> str:
         return os.environ.get(

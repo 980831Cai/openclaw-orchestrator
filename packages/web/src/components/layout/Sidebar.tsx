@@ -108,9 +108,13 @@ export function Sidebar({ expanded: expandedProp, onExpandedChange }: SidebarPro
   return (
     <aside
         className={cn(
-          'fixed left-0 top-0 z-40 flex h-screen flex-col overflow-y-auto border-r border-white/5 bg-cyber-bg/95 py-4 backdrop-blur-sm transition-all duration-300',
+          'fixed left-0 top-0 z-40 flex h-screen flex-col overflow-y-auto border-r border-white/[0.06] py-4 transition-all duration-300 ease-out',
         )}
-        style={{ width: expanded ? SIDEBAR_EXPANDED_WIDTH : SIDEBAR_COLLAPSED_WIDTH }}
+        style={{
+          width: expanded ? SIDEBAR_EXPANDED_WIDTH : SIDEBAR_COLLAPSED_WIDTH,
+          background: 'linear-gradient(180deg, rgba(11, 15, 25, 0.97) 0%, rgba(11, 15, 25, 0.99) 100%)',
+          backdropFilter: 'blur(24px)',
+        }}
         onMouseEnter={() => setExpanded(true)}
         onMouseLeave={() => setExpanded(false)}
       >
@@ -120,9 +124,9 @@ export function Sidebar({ expanded: expandedProp, onExpandedChange }: SidebarPro
           </div>
         </div>
 
-        <div className="mx-4 mb-3 h-px bg-gradient-to-r from-transparent via-white/8 to-transparent" />
+        <div className="mx-4 mb-3 h-px bg-gradient-to-r from-transparent via-white/[0.06] to-transparent" />
 
-        <nav className="flex w-full flex-1 flex-col gap-1 px-2">
+        <nav className="flex w-full flex-1 flex-col gap-0.5 px-2">
           {navItems.map((item) => (
             <NavLink
               key={item.path}
@@ -131,8 +135,8 @@ export function Sidebar({ expanded: expandedProp, onExpandedChange }: SidebarPro
               className={({ isActive }) =>
                 cn(
                   'relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-200',
-                  'hover:bg-white/5',
-                  isActive ? 'bg-white/5 text-white' : 'text-white/40 hover:text-white/70'
+                  'hover:bg-white/[0.04]',
+                  isActive ? 'bg-white/[0.06] text-white/90' : 'text-white/35 hover:text-white/65'
                 )
               }
             >
@@ -144,7 +148,7 @@ export function Sidebar({ expanded: expandedProp, onExpandedChange }: SidebarPro
                       style={{ backgroundColor: `var(--color-${item.color}, #6366F1)` }}
                     />
                   ) : null}
-                  <item.icon className={cn('h-5 w-5 flex-shrink-0 transition-colors', isActive ? `text-${item.color}` : undefined)} />
+                  <item.icon className={cn('h-[18px] w-[18px] flex-shrink-0 transition-colors', isActive ? `text-${item.color}` : undefined)} />
                   <span
                     className={cn(
                       'whitespace-nowrap transition-all duration-300',
@@ -159,12 +163,12 @@ export function Sidebar({ expanded: expandedProp, onExpandedChange }: SidebarPro
           ))}
         </nav>
 
-        <div className="mt-auto w-full space-y-1 px-2">
+        <div className="mt-auto w-full space-y-0.5 px-2">
           <button
             onClick={() => {
               window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))
             }}
-            className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-xl px-3 py-2 text-white/20 transition-colors hover:bg-white/5 hover:text-white/40"
+            className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-xl px-3 py-2 text-white/20 transition-colors hover:bg-white/[0.04] hover:text-white/40"
           >
             <Command className="h-3.5 w-3.5 flex-shrink-0" />
             <span
@@ -209,11 +213,11 @@ export function Sidebar({ expanded: expandedProp, onExpandedChange }: SidebarPro
           />
 
           {expanded ? (
-            <div className="rounded-xl border border-white/6 bg-white/[0.03] p-2.5 text-[10px] text-white/45">
+            <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-2.5 text-[10px] text-white/45">
               <div className="flex items-center justify-between gap-2">
                 <div className="min-w-0">
-                  <p className="truncate font-medium text-white/75">{gatewayRuntime?.gatewayUrl ?? '等待读取 Gateway 配置'}</p>
-                  <p className="mt-1 truncate text-white/30">
+                  <p className="truncate font-medium text-white/70">{gatewayRuntime?.gatewayUrl ?? '等待读取 Gateway 配置'}</p>
+                  <p className="mt-1 truncate text-white/25">
                     {gatewayRuntime?.host && gatewayRuntime?.port
                       ? `${gatewayRuntime.host}:${gatewayRuntime.port}`
                       : '尚未获取目标端口'}
@@ -222,35 +226,35 @@ export function Sidebar({ expanded: expandedProp, onExpandedChange }: SidebarPro
                 <button
                   type="button"
                   onClick={() => void loadGatewayRuntime()}
-                  className="rounded-md border border-white/8 px-2 py-1 text-[10px] text-white/40 transition hover:border-white/15 hover:text-white/70"
+                  className="rounded-md border border-white/[0.06] px-2 py-1 text-[10px] text-white/35 transition hover:border-white/10 hover:text-white/65"
                   disabled={runtimeBusy}
                 >
                   刷新
                 </button>
               </div>
 
-              {gatewayRuntime?.message ? <p className="mt-2 text-white/35">{gatewayRuntime.message}</p> : null}
+              {gatewayRuntime?.message ? <p className="mt-2 text-white/30">{gatewayRuntime.message}</p> : null}
               {runtimeActionError ? (
-                <div className="mt-2 whitespace-pre-wrap rounded-lg border border-cyber-red/20 bg-cyber-red/8 px-2.5 py-2 text-[10px] leading-5 text-cyber-red/90">
+                <div className="mt-2 whitespace-pre-wrap rounded-lg border border-cyber-red/15 bg-cyber-red/[0.06] px-2.5 py-2 text-[10px] leading-5 text-cyber-red/85">
                   {runtimeActionError}
                 </div>
               ) : null}
               {gatewayRuntime?.logTail ? (
-                <div className="mt-2 rounded-lg border border-white/8 bg-black/20 px-2.5 py-2">
-                  <p className="mb-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-white/55">
+                <div className="mt-2 rounded-lg border border-white/[0.06] bg-black/20 px-2.5 py-2">
+                  <p className="mb-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-white/45">
                     最近运行日志
                   </p>
-                  <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-[10px] leading-5 text-white/70">
+                  <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-[10px] leading-5 text-white/60">
                     {gatewayRuntime.logTail}
                   </pre>
                 </div>
               ) : null}
               {gatewayRuntime?.errorLogTail ? (
-                <div className="mt-2 rounded-lg border border-cyber-amber/15 bg-black/20 px-2.5 py-2">
-                  <p className="mb-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-cyber-amber/75">
+                <div className="mt-2 rounded-lg border border-cyber-amber/10 bg-black/20 px-2.5 py-2">
+                  <p className="mb-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-cyber-amber/65">
                     最近错误日志
                   </p>
-                  <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-[10px] leading-5 text-cyber-amber/85">
+                  <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-[10px] leading-5 text-cyber-amber/80">
                     {gatewayRuntime.errorLogTail}
                   </pre>
                 </div>
@@ -282,7 +286,7 @@ export function Sidebar({ expanded: expandedProp, onExpandedChange }: SidebarPro
             </div>
           ) : null}
 
-          {expanded ? <div className="animate-fade-in py-1 text-center text-[9px] text-white/10">v0.1.0</div> : null}
+          {expanded ? <div className="animate-fade-in py-1 text-center text-[9px] text-white/[0.08]">v0.1.0</div> : null}
         </div>
       </aside>
   )
@@ -314,7 +318,7 @@ function OverallStatus({
         <TooltipTrigger asChild>
           <button
             type="button"
-            className="flex w-full items-center justify-center gap-2 rounded-xl px-3 py-2 text-white/35 transition-colors hover:bg-white/5 hover:text-white/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyber-cyan/60"
+            className="flex w-full items-center justify-center gap-2 rounded-xl px-3 py-2 text-white/30 transition-colors hover:bg-white/[0.04] hover:text-white/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyber-purple/40"
             aria-label="系统状态明细"
           >
             <span className={cn('h-2 w-2 flex-shrink-0 rounded-full', toneClass)} />
@@ -332,7 +336,7 @@ function OverallStatus({
           side="right"
           align="end"
           sideOffset={8}
-          className="w-56 border-white/10 bg-cyber-panel/95 p-3 text-white/85 backdrop-blur-xl"
+          className="w-56 border-white/[0.08] bg-cyber-surface/95 p-3 text-white/85 backdrop-blur-2xl"
         >
           <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/45">状态明细</p>
           <div className="space-y-2">
@@ -375,7 +379,7 @@ function ActionButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg border border-white/8 bg-white/[0.04] px-2 py-1.5 text-[10px] font-medium text-white/65 transition hover:border-white/15 hover:bg-white/[0.08] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+      className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg border border-white/[0.06] bg-white/[0.03] px-2 py-1.5 text-[10px] font-medium text-white/55 transition hover:border-white/10 hover:bg-white/[0.06] hover:text-white/85 disabled:cursor-not-allowed disabled:opacity-40"
     >
       {icon}
       <span>{label}</span>

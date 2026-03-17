@@ -9,10 +9,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import UTC, datetime
 from typing import Any
 
 from openclaw_orchestrator.config import settings
+from openclaw_orchestrator.utils.message_content import extract_visible_text
 
 logger = logging.getLogger(__name__)
 
@@ -47,24 +49,7 @@ class ChatService:
 
     @staticmethod
     def _extract_text_content(content: Any) -> str:
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                if isinstance(item, dict):
-                    text = item.get("text")
-                    if isinstance(text, str) and text.strip():
-                        parts.append(text)
-                elif isinstance(item, str) and item.strip():
-                    parts.append(item)
-            return "\n".join(parts)
-        if isinstance(content, dict):
-            text = content.get("text")
-            if isinstance(text, str):
-                return text
-            return json.dumps(content, ensure_ascii=False)
-        return ""
+        return extract_visible_text(content)
 
     @classmethod
     def _normalize_entry(
@@ -360,6 +345,63 @@ class ChatService:
         if gateway_messages:
             return gateway_messages
         return self._get_messages_from_files(agent_id, session_id, limit, offset)
+
+    @staticmethod
+    def _extract_workflow_id_from_text(content: str) -> str | None:
+        match = re.search(r"(?:workflow|工作流)\s*[:：#-]?\s*([A-Za-z0-9-]{6,})", content)
+        if not match:
+            return None
+        return str(match.group(1)).strip() or None
+
+    @staticmethod
+    def _derive_task_title(content: str) -> str:
+        text = (content or "").strip()
+        if not text:
+            return "对话派发任务"
+        first_line = text.splitlines()[0].strip()
+        if len(first_line) <= 64:
+            return first_line
+        return first_line[:64].rstrip() + "..."
+
+    async def dispatch_team_intent(
+        self,
+        team_id: str,
+        content: str,
+        *,
+        requested_by: str = "chat",
+        session_id: str = "",
+    ) -> dict[str, Any]:
+        """Dispatch chat intent to team queue first, then drain queue."""
+        from openclaw_orchestrator.services.team_dispatch_service import team_dispatch_service
+
+        normalized_content = str(content or "").strip()
+        if not normalized_content:
+            return {"action": "none", "reason": "empty_content"}
+
+        explicit_workflow_id = self._extract_workflow_id_from_text(normalized_content)
+        dispatch = await team_dispatch_service.dispatch(
+            team_id=team_id,
+            content=normalized_content,
+            source="chat",
+            actor_id=requested_by,
+            session_id=session_id,
+            workflow_id=explicit_workflow_id,
+            planned_by=requested_by,
+            title=self._derive_task_title(normalized_content),
+            auto_drain=True,
+        )
+
+        task = dispatch.get("task") if isinstance(dispatch.get("task"), dict) else {}
+        drain = dispatch.get("drain") if isinstance(dispatch.get("drain"), dict) else {}
+        return {
+            "action": "dispatchTask",
+            "taskId": task.get("id"),
+            "workflowId": task.get("workflowId"),
+            "executionId": drain.get("executionId"),
+            "triggerEventId": dispatch.get("triggerEventId"),
+            "deduplicated": bool(dispatch.get("deduplicated")),
+            "requestedBy": requested_by,
+        }
 
     async def send_message(
         self, agent_id: str, session_id: str, content: str

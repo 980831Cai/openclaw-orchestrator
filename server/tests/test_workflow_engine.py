@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from datetime import timezone
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 SERVER_ROOT = Path(__file__).resolve().parents[1]
 if str(SERVER_ROOT) not in sys.path:
@@ -14,6 +14,7 @@ if str(SERVER_ROOT) not in sys.path:
 
 from openclaw_orchestrator.database.db import close_db, get_db
 from openclaw_orchestrator.database.init_db import init_database
+from openclaw_orchestrator.services.task_service import task_service
 from openclaw_orchestrator.services.workflow_engine import (
     WorkflowEngine,
     WorkflowValidationError,
@@ -143,6 +144,50 @@ class WorkflowEngineArtifactTests(unittest.TestCase):
         self.assertEqual(
             WorkflowEngine._count_materialized_artifacts({"task-1": artifacts}),
             1,
+        )
+
+    def test_build_task_prompt_appends_team_context_section(self) -> None:
+        prompt = WorkflowEngine._build_task_prompt(
+            label="实现功能",
+            task_prompt="请完成需求",
+            upstream_artifacts=[],
+            execution_id="execution-1234",
+            node_id="node-1",
+            team_context="## 团队规则\n保持代码简洁",
+        )
+
+        self.assertIn("### 团队必要上下文：", prompt)
+        self.assertIn("保持代码简洁", prompt)
+
+    def test_build_task_session_id_prefers_task_scope(self) -> None:
+        session_id = WorkflowEngine._build_task_session_id(
+            execution_id="execution-abcdef",
+            task_id="task-123",
+            agent_id="agent-a",
+        )
+        self.assertEqual(session_id, "task-task-123-agent-a")
+
+    def test_resolve_context_level_uses_risk_and_dependencies(self) -> None:
+        self.assertEqual(
+            WorkflowEngine._resolve_context_level(
+                node={"riskLevel": "high"},
+                upstream_artifacts=[],
+            ),
+            "L3",
+        )
+        self.assertEqual(
+            WorkflowEngine._resolve_context_level(
+                node={"requiresDependency": True},
+                upstream_artifacts=[{"a": 1}],
+            ),
+            "L2",
+        )
+        self.assertEqual(
+            WorkflowEngine._resolve_context_level(
+                node={},
+                upstream_artifacts=[],
+            ),
+            "L1",
         )
 
 
@@ -680,6 +725,357 @@ class WorkflowEngineCreateWorkflowTests(unittest.TestCase):
             engine.create_workflow("default", "中文工作流", {"nodes": {}, "edges": []})
 
         self.assertEqual(str(exc_info.exception), "Team not found: default")
+
+
+class WorkflowEngineTaskQueueLinkageTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp_dir.cleanup)
+        self._env_patch = patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_HOME": self._temp_dir.name,
+                "DB_PATH": str(Path(self._temp_dir.name) / "workflow-queue.sqlite"),
+            },
+            clear=False,
+        )
+        self._env_patch.start()
+        self.addCleanup(self._env_patch.stop)
+        close_db()
+        init_database()
+        self.addCleanup(close_db)
+
+        db = get_db()
+        db.execute(
+            """
+            INSERT INTO teams (id, name, description, goal, theme, schedule_json, team_dir)
+            VALUES (?, ?, '', '', 'default', '{}', ?)
+            """,
+            ("team-q", "队列团队", self._temp_dir.name),
+        )
+        db.execute(
+            """
+            INSERT INTO workflows (id, team_id, name, definition_json, status)
+            VALUES (?, ?, ?, ?, 'draft')
+            """,
+            ("wf-q", "team-q", "队列工作流", json.dumps({"nodes": {}, "edges": []})),
+        )
+        db.execute(
+            """
+            INSERT INTO workflow_executions (id, workflow_id, status, current_node_id, logs, context_json)
+            VALUES (?, ?, 'running', ?, '[]', '{}')
+            """,
+            ("exec-q", "wf-q", "node-1"),
+        )
+        db.commit()
+
+    def test_execute_task_node_updates_task_queue_to_done(self) -> None:
+        task = task_service.create_task(
+            team_id="team-q",
+            title="任务节点",
+            description="执行后应完成",
+            participant_agent_ids=["agent-a"],
+        )
+        node = {
+            "id": "node-1",
+            "type": "task",
+            "label": "执行节点",
+            "agentId": "agent-a",
+            "task": "请完成任务",
+            "taskId": task["id"],
+        }
+
+        engine = WorkflowEngine()
+        workflow = {
+            "id": "wf-q",
+            "teamId": "team-q",
+            "name": "队列工作流",
+            "nodes": {"node-1": node},
+            "edges": [],
+        }
+
+        with patch.object(engine, "_safe_get_workflow_by_execution", return_value=workflow), patch(
+            "openclaw_orchestrator.services.workflow_engine.openclaw_bridge.invoke_agent",
+            new=AsyncMock(return_value={"success": True, "content": "summary: 已完成\nto: agent-b"}),
+        ), patch(
+            "openclaw_orchestrator.services.workflow_engine.broadcast"
+        ), patch(
+            "openclaw_orchestrator.services.workflow_engine.notification_service.create_notification"
+        ):
+            result = asyncio.run(
+                engine._execute_task_node("exec-q", "node-1", node, [], {})
+            )
+
+        self.assertIsNone(result)
+        updated = task_service.get_task(task["id"])
+        self.assertEqual(updated["queueStatus"], "done")
+        self.assertEqual(updated["executionId"], "exec-q")
+        self.assertEqual(updated["lastNodeId"], "node-1")
+
+    def test_execute_task_node_failure_updates_task_to_blocked(self) -> None:
+        task = task_service.create_task(
+            team_id="team-q",
+            title="失败节点",
+            description="失败后应阻塞",
+            participant_agent_ids=["agent-a"],
+        )
+        node = {
+            "id": "node-err",
+            "type": "task",
+            "label": "失败节点",
+            "agentId": "agent-a",
+            "task": "请执行",
+            "taskId": task["id"],
+            "maxRetries": 0,
+        }
+
+        engine = WorkflowEngine()
+        workflow = {
+            "id": "wf-q",
+            "teamId": "team-q",
+            "name": "队列工作流",
+            "nodes": {"node-err": node},
+            "edges": [],
+        }
+
+        with patch.object(engine, "_safe_get_workflow_by_execution", return_value=workflow), patch(
+            "openclaw_orchestrator.services.workflow_engine.openclaw_bridge.invoke_agent",
+            new=AsyncMock(side_effect=RuntimeError("gateway timeout")),
+        ), patch.object(engine, "_mark_failed", new=AsyncMock(return_value=None)), patch(
+            "openclaw_orchestrator.services.workflow_engine.broadcast"
+        ), patch(
+            "openclaw_orchestrator.services.workflow_engine.notification_service.create_notification"
+        ):
+            result = asyncio.run(
+                engine._execute_task_node("exec-q", "node-err", node, [], {})
+            )
+
+        self.assertEqual(result, "__failed__")
+        updated = task_service.get_task(task["id"])
+        self.assertEqual(updated["queueStatus"], "blocked")
+        self.assertIn("gateway timeout", updated["lastError"])
+        self.assertEqual(updated["executionId"], "exec-q")
+
+
+class WorkflowEngineMeetingRoutingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp_dir.cleanup)
+        self._env_patch = patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_HOME": self._temp_dir.name,
+                "DB_PATH": str(Path(self._temp_dir.name) / "workflow-meeting.sqlite"),
+            },
+            clear=False,
+        )
+        self._env_patch.start()
+        self.addCleanup(self._env_patch.stop)
+        close_db()
+        init_database()
+        self.addCleanup(close_db)
+
+        db = get_db()
+        db.execute(
+            """
+            INSERT INTO teams (id, name, description, goal, theme, schedule_json, team_dir)
+            VALUES (?, ?, '', '', 'default', '{}', ?)
+            """,
+            ("team-meeting", "会议团队", self._temp_dir.name),
+        )
+        db.execute(
+            """
+            INSERT INTO workflows (id, team_id, name, definition_json, status)
+            VALUES (?, ?, ?, ?, 'draft')
+            """,
+            (
+                "workflow-meeting",
+                "team-meeting",
+                "会议工作流",
+                json.dumps({"nodes": {}, "edges": [], "schedule": None}, ensure_ascii=False),
+            ),
+        )
+        db.execute(
+            """
+            INSERT INTO workflow_executions (id, workflow_id, status, current_node_id, logs, context_json)
+            VALUES (?, ?, 'running', ?, '[]', '{}')
+            """,
+            ("execution-meeting", "workflow-meeting", "meeting-1"),
+        )
+        db.commit()
+
+    def test_meeting_node_inherits_workflow_team_when_node_team_is_empty(self) -> None:
+        engine = WorkflowEngine()
+        node = {
+            "type": "meeting",
+            "label": "评审会",
+            "meetingType": "review",
+            "topic": "讨论方案",
+            "participants": ["agent-a", "agent-b"],
+        }
+
+        fake_meeting_service = type(
+            "FakeMeetingService",
+            (),
+            {
+                "create_meeting": staticmethod(lambda **kwargs: {"id": "meeting-1", **kwargs}),
+                "run_meeting": staticmethod(AsyncMock(return_value={"summary": "会议完成"})),
+            },
+        )
+
+        with patch(
+            "openclaw_orchestrator.services.meeting_service.meeting_service",
+            fake_meeting_service,
+        ):
+            node_artifacts: dict[str, list[dict[str, object]]] = {}
+            asyncio.run(
+                engine._execute_meeting_node(
+                    "execution-meeting",
+                    "meeting-1",
+                    node,
+                    [],
+                    node_artifacts,
+                )
+            )
+
+        self.assertEqual(node_artifacts["meeting-1"][0]["content"], "会议完成")
+
+    def test_meeting_node_passes_inherited_workflow_team_to_meeting_service(self) -> None:
+        engine = WorkflowEngine()
+        node = {
+            "type": "meeting",
+            "label": "评审会",
+            "meetingType": "review",
+            "topic": "讨论方案",
+            "participants": ["agent-a", "agent-b"],
+        }
+        create_meeting = Mock(return_value={"id": "meeting-1"})
+        run_meeting = AsyncMock(return_value={"summary": "会议完成"})
+        fake_meeting_service = type(
+            "FakeMeetingService",
+            (),
+            {
+                "create_meeting": staticmethod(create_meeting),
+                "run_meeting": staticmethod(run_meeting),
+            },
+        )
+
+        with patch(
+            "openclaw_orchestrator.services.meeting_service.meeting_service",
+            fake_meeting_service,
+        ):
+            asyncio.run(
+                engine._execute_meeting_node(
+                    "execution-meeting",
+                    "meeting-1",
+                    node,
+                    [],
+                    {},
+                )
+            )
+
+        self.assertEqual(create_meeting.call_args.kwargs["team_id"], "team-meeting")
+
+    def test_debate_node_passes_inherited_workflow_team_to_meeting_service(self) -> None:
+        engine = WorkflowEngine()
+        node = {
+            "type": "debate",
+            "label": "方案辩论",
+            "topic": "是否切换方案",
+            "participants": ["agent-a", "agent-b"],
+            "maxRounds": 4,
+        }
+        create_meeting = Mock(return_value={"id": "meeting-debate"})
+        run_meeting = AsyncMock(return_value={"summary": "辩论完成"})
+        fake_meeting_service = type(
+            "FakeMeetingService",
+            (),
+            {
+                "create_meeting": staticmethod(create_meeting),
+                "run_meeting": staticmethod(run_meeting),
+            },
+        )
+
+        with patch(
+            "openclaw_orchestrator.services.meeting_service.meeting_service",
+            fake_meeting_service,
+        ):
+            asyncio.run(
+                engine._execute_meeting_node(
+                    "execution-meeting",
+                    "debate-1",
+                    node,
+                    [],
+                    {},
+                )
+            )
+
+        self.assertEqual(create_meeting.call_args.kwargs["team_id"], "team-meeting")
+        self.assertEqual(create_meeting.call_args.kwargs["meeting_type"], "debate")
+
+
+class WorkflowEngineUsageMetricTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp_dir.cleanup)
+        self._env_patch = patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_HOME": self._temp_dir.name,
+                "DB_PATH": str(Path(self._temp_dir.name) / "workflow-usage.sqlite"),
+            },
+            clear=False,
+        )
+        self._env_patch.start()
+        self.addCleanup(self._env_patch.stop)
+        close_db()
+        init_database()
+        self.addCleanup(close_db)
+
+    def test_record_execution_usage_metric_updates_execution_summary_fields(self) -> None:
+        db = get_db()
+        db.execute(
+            "INSERT INTO teams (id, name, description, goal, theme, schedule_json, team_dir) VALUES (?, ?, '', '', 'default', '{}', ?)",
+            ("team-usage", "用量团队", self._temp_dir.name),
+        )
+        db.execute(
+            "INSERT INTO workflows (id, team_id, name, definition_json, status) VALUES (?, ?, ?, '{}', 'draft')",
+            ("wf-usage", "team-usage", "统计流程"),
+        )
+        db.execute(
+            "INSERT INTO workflow_executions (id, workflow_id, status, logs, context_json) VALUES (?, ?, 'running', '[]', '{}')",
+            ("exec-usage", "wf-usage"),
+        )
+        db.commit()
+
+        engine = WorkflowEngine()
+        engine._record_execution_usage_metric(
+            execution_id="exec-usage",
+            node_id="node-1",
+            agent_id="agent-a",
+            result={
+                "success": True,
+                "channel": "gateway",
+                "model": "claude-3-7-sonnet",
+                "durationMs": 3210,
+                "usage": {
+                    "promptTokens": 120,
+                    "completionTokens": 45,
+                    "totalTokens": 165,
+                    "estimatedCostUsd": 0.12,
+                    "hasUsage": True,
+                },
+            },
+        )
+
+        execution = engine.get_execution("exec-usage")
+        self.assertEqual(execution["promptTokens"], 120)
+        self.assertEqual(execution["completionTokens"], 45)
+        self.assertEqual(execution["totalTokens"], 165)
+        self.assertAlmostEqual(execution["estimatedCostUsd"], 0.12)
+        self.assertEqual(execution["usageMetricsCount"], 1)
+        self.assertEqual(execution["usageSamplesCount"], 1)
+        self.assertEqual(execution["modelSummary"]["claude-3-7-sonnet"]["totalTokens"], 165)
 
 
 if __name__ == "__main__":

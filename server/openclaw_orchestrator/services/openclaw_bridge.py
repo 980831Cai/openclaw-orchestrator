@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from openclaw_orchestrator.config import settings
+from openclaw_orchestrator.utils.message_content import extract_visible_text
 from openclaw_orchestrator.utils.time import utc_from_timestamp, utc_now, utc_now_iso
 
 logger = logging.getLogger(__name__)
@@ -124,27 +125,102 @@ class OpenClawBridge:
 
     @staticmethod
     def _extract_text_content(content: Any) -> str:
-        if isinstance(content, str):
-            return content.strip()
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                if isinstance(item, dict):
-                    text = item.get("text")
-                    if isinstance(text, str) and text.strip():
-                        parts.append(text.strip())
-                elif isinstance(item, str) and item.strip():
-                    parts.append(item.strip())
-            return "\n".join(parts).strip()
-        if isinstance(content, dict):
-            text = content.get("text")
-            if isinstance(text, str):
-                return text.strip()
-            try:
-                return json.dumps(content, ensure_ascii=False)
-            except TypeError:
-                return str(content)
-        return ""
+        return extract_visible_text(content)
+
+    @staticmethod
+    def _normalize_lookup_key(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+    @classmethod
+    def _find_nested_value(cls, payload: Any, target_keys: set[str]) -> Any:
+        if isinstance(payload, dict):
+            for key, value in payload.items():
+                if cls._normalize_lookup_key(str(key)) in target_keys and value not in (None, ""):
+                    return value
+            for value in payload.values():
+                found = cls._find_nested_value(value, target_keys)
+                if found not in (None, ""):
+                    return found
+        if isinstance(payload, list):
+            for item in payload:
+                found = cls._find_nested_value(item, target_keys)
+                if found not in (None, ""):
+                    return found
+        return None
+
+    @staticmethod
+    def _coerce_int(value: Any) -> int:
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _coerce_float(value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @classmethod
+    def _extract_usage_summary(cls, *candidates: Any) -> dict[str, Any]:
+        prompt_keys = {"prompttokens", "inputtokens", "prompttokencount", "inputtokencount"}
+        completion_keys = {"completiontokens", "outputtokens", "completiontokencount", "outputtokencount"}
+        total_keys = {"totaltokens", "tokentotal", "tokenusage", "tokenstotal"}
+        cost_keys = {"estimatedcostusd", "costusd", "cost", "estimatedcost"}
+
+        prompt_raw = completion_raw = total_raw = cost_raw = None
+        for candidate in candidates:
+            if prompt_raw is None:
+                prompt_raw = cls._find_nested_value(candidate, prompt_keys)
+            if completion_raw is None:
+                completion_raw = cls._find_nested_value(candidate, completion_keys)
+            if total_raw is None:
+                total_raw = cls._find_nested_value(candidate, total_keys)
+            if cost_raw is None:
+                cost_raw = cls._find_nested_value(candidate, cost_keys)
+
+        prompt_tokens = cls._coerce_int(prompt_raw)
+        completion_tokens = cls._coerce_int(completion_raw)
+        total_tokens = cls._coerce_int(total_raw) or (prompt_tokens + completion_tokens)
+        estimated_cost_usd = round(cls._coerce_float(cost_raw), 6)
+        has_usage = any(raw is not None for raw in (prompt_raw, completion_raw, total_raw, cost_raw))
+
+        return {
+            "promptTokens": prompt_tokens,
+            "completionTokens": completion_tokens,
+            "totalTokens": total_tokens,
+            "estimatedCostUsd": estimated_cost_usd,
+            "hasUsage": has_usage,
+        }
+
+    @classmethod
+    def _extract_model_hint(cls, *candidates: Any) -> str | None:
+        model_keys = {"model", "modelname", "modelid"}
+        for candidate in candidates:
+            value = cls._find_nested_value(candidate, model_keys)
+            if value not in (None, ""):
+                return str(value).strip() or None
+        return None
+
+    @classmethod
+    def _normalize_agent_result_payload(
+        cls,
+        payload: dict[str, Any],
+        *,
+        start_time,
+        default_model: str | None = None,
+        usage_candidates: list[Any] | None = None,
+    ) -> dict[str, Any]:
+        elapsed_seconds = round((utc_now() - start_time).total_seconds(), 2)
+        duration_ms = max(int(elapsed_seconds * 1000), 0)
+        usage = cls._extract_usage_summary(*(usage_candidates or []), payload)
+        normalized = dict(payload)
+        normalized["elapsed"] = elapsed_seconds
+        normalized["durationMs"] = duration_ms
+        normalized["model"] = cls._extract_model_hint(*(usage_candidates or []), payload) or (str(default_model).strip() if default_model else None)
+        normalized["usage"] = usage
+        return normalized
 
     @classmethod
     def _normalize_transcript_message(
@@ -206,12 +282,12 @@ class OpenClawBridge:
 
         return self._main_session_key(agent_id)
 
-    async def _fetch_gateway_reply(
+    async def _fetch_gateway_reply_bundle(
         self,
         *,
         session_key: str,
         assistant_count_before: int,
-    ) -> str:
+    ) -> dict[str, Any]:
         from openclaw_orchestrator.services.gateway_connector import gateway_connector
 
         history = await gateway_connector.get_chat_history(
@@ -228,7 +304,23 @@ class OpenClawBridge:
             for message in candidates
             if isinstance(message, dict)
         ]
-        return "\n\n".join(text for text in texts if text).strip()
+        assistant_message = candidates[-1] if candidates else None
+        return {
+            "content": "\n\n".join(text for text in texts if text).strip(),
+            "assistantMessage": assistant_message if isinstance(assistant_message, dict) else None,
+        }
+
+    async def _fetch_gateway_reply(
+        self,
+        *,
+        session_key: str,
+        assistant_count_before: int,
+    ) -> str:
+        bundle = await self._fetch_gateway_reply_bundle(
+            session_key=session_key,
+            assistant_count_before=assistant_count_before,
+        )
+        return str(bundle.get("content") or "")
 
     async def invoke_agent(
         self,
@@ -262,8 +354,19 @@ class OpenClawBridge:
         session_id = session_id or f"orchestrator-{correlation_id}"
         cleanup_transient_session = self.is_transient_session_id(session_id)
         start_time = utc_now()
+        agent_result: dict[str, Any] = {}
+        wait_result: dict[str, Any] = {}
+        reply_bundle: dict[str, Any] = {}
 
         async def finalize(payload: dict[str, Any]) -> dict[str, Any]:
+            normalized = self._normalize_agent_result_payload(
+                payload,
+                start_time=start_time,
+                default_model=model,
+                usage_candidates=[agent_result, wait_result, reply_bundle, reply_bundle.get("assistantMessage")],
+            )
+            if not str(normalized.get("channel") or "").strip():
+                normalized["channel"] = "gateway" if gateway_used else "webhook+jsonl"
             if cleanup_transient_session:
                 cleaned = await self._cleanup_transient_session(
                     agent_id=agent_id,
@@ -278,7 +381,7 @@ class OpenClawBridge:
                         session_key=gateway_session_key,
                         expect_gateway_session=gateway_used,
                     )
-            return payload
+            return normalized
 
         gateway_session_key: str | None = None
         gateway_run_id: str | None = None
@@ -317,13 +420,15 @@ class OpenClawBridge:
                     }
                     if gateway_request_label:
                         params["label"] = gateway_request_label
-                    agent_result = await gateway_connector.call_rpc(
+                    if model:
+                        params["model"] = model
+                    raw_agent_result = await gateway_connector.call_rpc(
                         "agent",
                         params,
                         timeout=10.0,
                     )
-                    if isinstance(agent_result, dict):
-                        gateway_run_id = str(agent_result.get("runId") or "").strip() or None
+                    agent_result = raw_agent_result if isinstance(raw_agent_result, dict) else {}
+                    gateway_run_id = str(agent_result.get("runId") or "").strip() or None
                     if gateway_run_id:
                         gateway_used = True
                         logger.info(
@@ -335,25 +440,19 @@ class OpenClawBridge:
         except Exception as e:
             logger.warning("Gateway agent failed for %s: %s", agent_id, e)
 
-        # Record the current file offset BEFORE sending, so we only read new content
         session_file = self._agent_session_path(agent_id, session_id)
         pre_offset = self._get_file_size(session_file)
 
         if not gateway_used:
-            # Gateway unavailable — try Webhook, then JSONL direct write
             webhook_ok = await self._send_webhook(agent_id, message, session_id, correlation_id, model=model)
-
             if not webhook_ok:
-                # Fallback: write directly to JSONL (manual trigger)
                 self._write_user_message(agent_id, session_id, message, correlation_id)
-
-        elapsed = (utc_now() - start_time).total_seconds()
 
         if gateway_used and gateway_run_id and gateway_session_key:
             try:
                 from openclaw_orchestrator.services.gateway_connector import gateway_connector
 
-                wait_result = await gateway_connector.call_rpc(
+                raw_wait_result = await gateway_connector.call_rpc(
                     "agent.wait",
                     {
                         "runId": gateway_run_id,
@@ -361,39 +460,30 @@ class OpenClawBridge:
                     },
                     timeout=float(timeout_seconds) + 5.0,
                 )
-                status = (
-                    str(wait_result.get("status") or "").strip()
-                    if isinstance(wait_result, dict)
-                    else ""
-                )
+                wait_result = raw_wait_result if isinstance(raw_wait_result, dict) else {}
+                status = str(wait_result.get("status") or "").strip()
                 if status == "ok":
-                    response = await self._fetch_gateway_reply(
+                    reply_bundle = await self._fetch_gateway_reply_bundle(
                         session_key=gateway_session_key,
                         assistant_count_before=assistant_count_before,
                     )
                     return await finalize({
                         "success": True,
-                        "content": response,
+                        "content": reply_bundle.get("content") or "",
                         "sessionId": session_id,
                         "sessionKey": gateway_session_key,
                         "correlationId": correlation_id,
-                        "elapsed": round(elapsed, 2),
                         "channel": "gateway",
                         "runId": gateway_run_id,
                     })
                 if status == "error":
-                    error_message = (
-                        str(wait_result.get("error") or "").strip()
-                        if isinstance(wait_result, dict)
-                        else ""
-                    )
+                    error_message = str(wait_result.get("error") or "").strip()
                     return await finalize({
                         "success": False,
                         "content": error_message or f"Agent {agent_id} execution failed",
                         "sessionId": session_id,
                         "sessionKey": gateway_session_key,
                         "correlationId": correlation_id,
-                        "elapsed": round(elapsed, 2),
                         "channel": "gateway",
                         "runId": gateway_run_id,
                     })
@@ -404,7 +494,6 @@ class OpenClawBridge:
                     "sessionId": session_id,
                     "sessionKey": gateway_session_key,
                     "correlationId": correlation_id,
-                    "elapsed": round(elapsed, 2),
                     "channel": "gateway",
                     "runId": gateway_run_id,
                 })
@@ -419,8 +508,8 @@ class OpenClawBridge:
                 "content": response,
                 "sessionId": session_id,
                 "correlationId": correlation_id,
-                "elapsed": round(elapsed, 2),
                 "channel": "webhook+jsonl",
+                "model": str(model).strip() if model else None,
             })
 
         return await finalize({
@@ -428,7 +517,7 @@ class OpenClawBridge:
             "content": f"Agent {agent_id} did not respond within {timeout_seconds}s",
             "sessionId": session_id,
             "correlationId": correlation_id,
-            "elapsed": round(elapsed, 2),
+            "channel": "webhook+jsonl" if not gateway_used else "gateway",
         })
 
     async def send_agent_message(
@@ -713,6 +802,39 @@ class OpenClawBridge:
             if entry.is_dir():
                 result[entry.name] = self.read_heartbeat_status(entry.name)
         return result
+
+    def report_team_governance_summary(
+        self,
+        team_id: str,
+        report: dict[str, Any],
+    ) -> bool:
+        """Persist latest team governance summary for OpenClaw-level aggregation."""
+        normalized_team_id = str(team_id or "").strip()
+        if not normalized_team_id:
+            return False
+
+        report_dir = self._home / "teams" / normalized_team_id / "governance"
+        latest_path = report_dir / "latest-report.json"
+        history_path = report_dir / "reports.jsonl"
+
+        payload = {
+            **(report or {}),
+            "teamId": normalized_team_id,
+            "reportedAt": str((report or {}).get("reportedAt") or self._utcnow_iso()),
+        }
+
+        try:
+            report_dir.mkdir(parents=True, exist_ok=True)
+            latest_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            with open(history_path, "a", encoding="utf-8") as fp:
+                fp.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            return True
+        except OSError as exc:
+            logger.warning("Failed to persist governance summary for team %s: %s", normalized_team_id, exc)
+            return False
 
     # ════════════════════════════════════════════════════════════
     # 4. JSONL Response Polling

@@ -1,25 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+
+import { GitBranch, Loader2, Plus } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
-import ReactFlow, {
-  Background,
-  Controls,
-  MiniMap,
-  Panel,
-  useEdgesState,
-  useNodesState,
-  type Connection,
-  type Edge,
-  type Node,
-} from 'reactflow'
-import 'reactflow/dist/style.css'
-import { GitBranch, Loader2, Merge, MessageSquare, Play, Plus, Save, Square, Split, Swords, Trash2, UserCheck, Zap } from 'lucide-react'
+import { useEdgesState, useNodesState, type Connection, type Edge } from 'reactflow'
+
 import { EmptyState } from '@/components/brand/EmptyState'
-import { ApprovalNodeComponent } from '@/components/workflow/ApprovalNode'
-import { ConditionNodeComponent } from '@/components/workflow/ConditionNode'
-import { DebateNodeComponent } from '@/components/workflow/DebateNode'
-import { JoinNodeComponent } from '@/components/workflow/JoinNode'
-import { MeetingNodeComponent } from '@/components/workflow/MeetingNode'
-import { TaskNodeComponent } from '@/components/workflow/TaskNode'
+import { NodePropertiesPanel } from '@/components/workflow/NodePropertiesPanel'
+import { WorkflowCanvas } from '@/components/workflow/editor/WorkflowCanvas'
+import { WorkflowCanvasDock } from '@/components/workflow/editor/WorkflowCanvasDock'
+import { WorkflowCanvasTopbar } from '@/components/workflow/editor/WorkflowCanvasTopbar'
+import { WorkflowEditorShell } from '@/components/workflow/editor/WorkflowEditorShell'
+import { WorkflowNodePalette } from '@/components/workflow/editor/WorkflowNodePalette'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -29,44 +20,28 @@ import { toast } from '@/hooks/use-toast'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { useMonitorStore } from '@/stores/monitor-store'
-import { MEETING_TYPE_LABELS } from '@/types'
-import type { AgentListItem, ApprovalRecord, MeetingType, TeamListItem, WorkflowDefinition, WorkflowExecution, WorkflowNodeData, WorkflowSchedule } from '@/types'
-import {
-  ACTIVE_EXECUTION_STATUSES,
-  findLatestActiveExecution,
-  isExecutionActive,
-  mergeExecutionWithSignal,
-  reconcileExecutionSelection,
-  resolveWaitingApprovalFocusNodeId,
-} from './workflow-editor/execution-state'
-import {
-  EDGE_STYLE,
-  DEBATE_ROUND_OPTIONS,
-  DEFAULT_WORKFLOW_TIMEZONE,
-  MEETING_WORKFLOW_TYPES,
-  createDefaultSchedule,
-  fromDateTimeLocalValue,
-  getExecutionBadge,
-  normalizeConditionHandle,
-  normalizeSchedule,
-  serializeEdges,
-  serializeNodes,
-  toDateTimeLocalValue,
-  toFlowEdges,
-  toFlowNodes,
-  upsertConnectedEdge,
-} from './workflow-editor/graph'
-import { resolveApprovalQueryId, selectPendingApproval } from './workflow-editor/approval-selection'
-import { workflowNodeTypes } from './workflow-editor/shared'
+import type { AgentListItem, ApprovalRecord, TeamListItem, WorkflowDefinition, WorkflowExecution, WorkflowNodeData, WorkflowSchedule } from '@/types'
 
-const nodeTypes = {
-  task: TaskNodeComponent,
-  condition: ConditionNodeComponent,
-  join: JoinNodeComponent,
-  parallel: JoinNodeComponent,
-  approval: ApprovalNodeComponent,
-  meeting: MeetingNodeComponent,
-  debate: DebateNodeComponent,
+import { resolveApprovalQueryId, selectPendingApproval } from './workflow-editor/approval-selection'
+import { ACTIVE_EXECUTION_STATUSES, isExecutionActive, mergeExecutionWithSignal, reconcileExecutionSelection } from './workflow-editor/execution-state'
+import { haveWorkflowGraphChanges, prepareWorkflowGraphForSave } from './workflow-editor/graph-persistence'
+import { createDefaultSchedule } from './workflow-editor/graph'
+import { createWorkflowFlowNode, fromDateTimeLocalValue, getExecutionBadge, normalizeConditionHandle, normalizeSchedule, toDateTimeLocalValue, toFlowEdges, toFlowNodes, upsertConnectedEdge } from './workflow-editor/graph'
+import { getWorkflowNodeInstructionManual } from './workflow-editor/node-instructions'
+import { haveWorkflowScheduleChanges, prepareWorkflowScheduleForSave } from './workflow-editor/schedule-persistence'
+import { buildTeamScopedAgentOptions, collectNodeRelatedAgentIds, resolveWorkflowTeam } from './workflow-editor/team-agent-options'
+
+function ToggleButton({ checked, onToggle, label }: { checked: boolean; onToggle: () => void; label: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className={cn('inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs transition-colors', checked ? 'border-emerald-400/35 bg-emerald-400/15 text-emerald-200' : 'border-white/10 bg-white/5 text-white/45')}
+    >
+      <span className={cn('h-2.5 w-2.5 rounded-full', checked ? 'bg-emerald-300' : 'bg-white/25')} />
+      {label}
+    </button>
+  )
 }
 
 function ScheduleToggle({
@@ -115,101 +90,69 @@ export function WorkflowEditorPage() {
   const [selected, setSelected] = useState<WorkflowDefinition | null>(null)
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
-  const [saving, setSaving] = useState(false)
   const [execution, setExecution] = useState<WorkflowExecution | null>(null)
-  const [createDialogOpen, setCreateDialogOpen] = useState(false)
-  const [creating, setCreating] = useState(false)
-  const [newName, setNewName] = useState('')
-  const [newTeamId, setNewTeamId] = useState('default')
-  const [teamOptions, setTeamOptions] = useState<TeamListItem[]>([])
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
-  const [agents, setAgents] = useState<AgentListItem[]>([])
-  const [schedule, setSchedule] = useState<WorkflowSchedule>(createDefaultSchedule())
   const [pendingApproval, setPendingApproval] = useState<ApprovalRecord | null>(null)
   const [approvalBusy, setApprovalBusy] = useState<'approve' | 'reject' | null>(null)
-  const approvalPanelRef = useRef<HTMLDivElement | null>(null)
-  const lastApprovalFocusKeyRef = useRef<string | null>(null)
+  const [creating, setCreating] = useState(false)
+  const [createDialogOpen, setCreateDialogOpen] = useState(false)
+  const [newName, setNewName] = useState('')
+  const [newTeamId, setNewTeamId] = useState('')
+  const [teamOptions, setTeamOptions] = useState<TeamListItem[]>([])
+  const [agents, setAgents] = useState<AgentListItem[]>([])
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [autosaveState, setAutosaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [schedule, setSchedule] = useState<WorkflowSchedule>(createDefaultSchedule())
+  const [edgeReconnectSuccessful, setEdgeReconnectSuccessful] = useState(true)
+  const autosaveRequestIdRef = useRef(0)
+
   const requestedWorkflowId = searchParams.get('workflowId')
   const requestedExecutionId = searchParams.get('executionId')
   const requestedApprovalId = searchParams.get('approvalId')
-  const selectedWorkflowId = requestedWorkflowId || selected?.id || null
-  const [edgeReconnectSuccessful, setEdgeReconnectSuccessful] = useState(true)
   const workflowSignals = useMonitorStore((state) => state.workflowSignals)
 
   const selectedNode = useMemo(() => nodes.find((node) => node.id === selectedNodeId) ?? null, [nodes, selectedNodeId])
+  const selectedNodeInstructionManual = useMemo(() => getWorkflowNodeInstructionManual((selectedNode?.data as WorkflowNodeData | undefined)?.type), [selectedNode])
   const executionIsActive = useMemo(() => isExecutionActive(execution?.status), [execution?.status])
-  const selectedNodeUpstreamOptions = useMemo(() => {
-    if (!selectedNodeId) return []
-    const upstreamIds = edges.filter((edge) => edge.target === selectedNodeId).map((edge) => edge.source)
-    return upstreamIds.map((sourceId) => {
-      const sourceNode = nodes.find((node) => node.id === sourceId)
-      const sourceData = sourceNode?.data as WorkflowNodeData | undefined
-      return {
-        id: sourceId,
-        label: sourceData?.label || sourceId,
-        type: sourceData?.type || 'task',
-      }
-    })
-  }, [edges, nodes, selectedNodeId])
+  const currentWorkflowTeam = useMemo(() => resolveWorkflowTeam(teamOptions, selected?.teamId || newTeamId), [newTeamId, selected?.teamId, teamOptions])
+  const scopedAgents = useMemo(() => buildTeamScopedAgentOptions({ team: currentWorkflowTeam, allAgents: agents, extraAgentIds: collectNodeRelatedAgentIds(selectedNode?.data as WorkflowNodeData | undefined) }), [agents, currentWorkflowTeam, selectedNode])
+  const selectedNodeUpstreamOptions = useMemo(() => edges.filter((edge) => edge.target === selectedNodeId).map((edge) => {
+    const sourceNode = nodes.find((node) => node.id === edge.source)
+    const sourceData = sourceNode?.data as WorkflowNodeData | undefined
+    return { id: edge.source, label: sourceData?.label || edge.source, type: sourceData?.type || 'task' }
+  }), [edges, nodes, selectedNodeId])
+  const selectedConditionConnections = useMemo(() => {
+    if (!selectedNode || (selectedNode.data as WorkflowNodeData).type !== 'condition') return { yes: null, no: null }
+    const resolveTarget = (handleId: 'yes' | 'no') => {
+      const edge = edges.find((item) => item.source === selectedNode.id && normalizeConditionHandle(String(item.sourceHandle || item.label || '')) === handleId)
+      if (!edge) return null
+      const targetNode = nodes.find((node) => node.id === edge.target)
+      const targetData = targetNode?.data as WorkflowNodeData | undefined
+      return { label: targetData?.label || edge.target, agentId: targetData && 'agentId' in targetData ? targetData.agentId : undefined }
+    }
+    return { yes: resolveTarget('yes'), no: resolveTarget('no') }
+  }, [edges, nodes, selectedNode])
+  const statusBadge = execution ? getExecutionBadge(execution.status) : null
+  const autosaveLabel = autosaveState === 'saving' ? '自动保存中' : autosaveState === 'saved' ? '已自动保存' : autosaveState === 'error' ? '草稿待保存' : '等待修改'
 
   const executionDecorations = useMemo(() => {
     const failedNodeIds = new Set<string>()
     const successfulNodeIds = new Set<string>()
-
     if (execution) {
-      for (const log of execution.logs) {
-        if (!log.nodeId || log.nodeId.startsWith('__')) continue
+      execution.logs.forEach((log) => {
+        if (!log.nodeId || log.nodeId.startsWith('__')) return
         if (log.level === 'error') {
           failedNodeIds.add(log.nodeId)
           successfulNodeIds.delete(log.nodeId)
-        } else if (!failedNodeIds.has(log.nodeId)) {
-          successfulNodeIds.add(log.nodeId)
+          return
         }
-      }
+        if (!failedNodeIds.has(log.nodeId)) successfulNodeIds.add(log.nodeId)
+      })
     }
 
     return {
-      nodes: nodes.map((node) => {
-        const executionState =
-          execution?.currentNodeId === node.id && executionIsActive
-            ? 'running'
-            : failedNodeIds.has(node.id)
-              ? 'failed'
-              : successfulNodeIds.has(node.id)
-                ? 'success'
-                : 'idle'
-
-        return {
-          ...node,
-          data: {
-            ...(node.data as WorkflowNodeData),
-            executionState,
-          },
-        }
-      }),
-      edges: edges.map((edge) => {
-        const sourceState =
-          execution?.currentNodeId === edge.source && executionIsActive
-            ? 'running'
-            : failedNodeIds.has(edge.source)
-              ? 'failed'
-              : successfulNodeIds.has(edge.source)
-                ? 'success'
-                : 'idle'
-
-        return {
-          ...edge,
-          animated: sourceState === 'running',
-          style:
-            sourceState === 'running'
-              ? { ...EDGE_STYLE, stroke: '#f59e0b', strokeDasharray: '6 4' }
-              : sourceState === 'failed'
-                ? { ...EDGE_STYLE, stroke: '#ef4444' }
-                : sourceState === 'success'
-                  ? { ...EDGE_STYLE, stroke: '#22c55e' }
-                  : EDGE_STYLE,
-        }
-      }),
+      nodes: nodes.map((node) => ({ ...node, data: { ...(node.data as WorkflowNodeData), executionState: execution?.currentNodeId === node.id && executionIsActive ? 'running' : failedNodeIds.has(node.id) ? 'failed' : successfulNodeIds.has(node.id) ? 'success' : 'idle' } })),
+      edges,
     }
   }, [edges, execution, executionIsActive, nodes])
 
@@ -220,405 +163,168 @@ export function WorkflowEditorPage() {
     setSchedule(normalizeSchedule(workflow.schedule))
     setSelectedNodeId(null)
     setExecution(null)
+    setPendingApproval(null)
+    setAutosaveState('idle')
   }, [setEdges, setNodes])
-
-  const openWorkflow = useCallback((workflow: WorkflowDefinition, executionId?: string | null, approvalId?: string | null) => {
-    setSearchParams((current) => {
-      const next = new URLSearchParams(current)
-      next.set('workflowId', workflow.id)
-      if (executionId) {
-        next.set('executionId', executionId)
-      } else {
-        next.delete('executionId')
-      }
-      if (approvalId) {
-        next.set('approvalId', approvalId)
-      } else {
-        next.delete('approvalId')
-      }
-      return next
-    })
-    loadWorkflow(workflow)
-  }, [loadWorkflow, setSearchParams])
 
   const replaceSelectionQuery = useCallback((workflowId?: string | null, executionId?: string | null, approvalId?: string | null) => {
     setSearchParams((current) => {
       const next = new URLSearchParams(current)
-      if (workflowId) {
-        next.set('workflowId', workflowId)
-      } else {
-        next.delete('workflowId')
-      }
-      if (executionId) {
-        next.set('executionId', executionId)
-      } else {
-        next.delete('executionId')
-      }
-      if (approvalId) {
-        next.set('approvalId', approvalId)
-      } else {
-        next.delete('approvalId')
-      }
+      if (workflowId) next.set('workflowId', workflowId)
+      else next.delete('workflowId')
+      if (executionId) next.set('executionId', executionId)
+      else next.delete('executionId')
+      if (approvalId) next.set('approvalId', approvalId)
+      else next.delete('approvalId')
       return next
     })
   }, [setSearchParams])
 
+  const openWorkflow = useCallback((workflow: WorkflowDefinition, executionId?: string | null, approvalId?: string | null) => {
+    replaceSelectionQuery(workflow.id, executionId, approvalId)
+    loadWorkflow(workflow)
+  }, [loadWorkflow, replaceSelectionQuery])
+
   const fetchWorkflows = useCallback(async () => {
-    try {
-      const data = await api.get<WorkflowDefinition[]>('/workflows')
-      setWorkflows(data)
-      if (!selectedWorkflowId && data[0]) {
-        loadWorkflow(data[0])
-      } else if (selectedWorkflowId) {
-        const next = data.find((workflow) => workflow.id === selectedWorkflowId)
-        if (next) {
-          setSelected(next)
-          setNodes(toFlowNodes(next))
-          setEdges(toFlowEdges(next))
-          setSchedule(normalizeSchedule(next.schedule))
-          setSelectedNodeId((current) => (current && next.nodes[current] ? current : null))
-        } else if (data[0]) {
-          const fallbackWorkflow =
-            (selected?.id ? data.find((workflow) => workflow.id === selected.id) : null) ?? data[0]
-          toast({
-            title: '无效工作流链接',
-            description: `未找到工作流 ${requestedWorkflowId || selectedWorkflowId}，已切换到 ${fallbackWorkflow.name}`,
-            variant: 'destructive',
-          })
-          replaceSelectionQuery(fallbackWorkflow.id, null)
-          loadWorkflow(fallbackWorkflow)
-        } else {
-          replaceSelectionQuery(null, null)
-          setSelected(null)
-          setNodes([])
-          setEdges([])
-          setSelectedNodeId(null)
-          setExecution(null)
-        }
-      }
-    } catch (error) {
-      toast({ title: '工作流加载失败', description: error instanceof Error ? error.message : '未知错误', variant: 'destructive' })
+    const data = await api.get<WorkflowDefinition[]>('/workflows')
+    setWorkflows(data)
+    const requested = requestedWorkflowId ? data.find((workflow) => workflow.id === requestedWorkflowId) : null
+    if (requested) {
+      if (selected?.id !== requested.id) loadWorkflow(requested)
+      return
     }
-  }, [loadWorkflow, replaceSelectionQuery, requestedWorkflowId, selected?.id, selectedWorkflowId, setEdges, setNodes])
+    if (selected?.id) {
+      const refreshed = data.find((workflow) => workflow.id === selected.id)
+      if (refreshed) setSelected(refreshed)
+      return
+    }
+    if (data[0]) openWorkflow(data[0])
+  }, [loadWorkflow, openWorkflow, requestedWorkflowId, selected?.id])
 
   const refreshExecution = useCallback(async (executionId: string) => {
+    const data = await api.get<WorkflowExecution>(`/executions/${executionId}`)
+    setExecution(data)
+  }, [])
+
+  const persistWorkflow = useCallback(async (showToastMessage: boolean) => {
+    if (!selected) return false
+    const preparedSchedule = prepareWorkflowScheduleForSave(schedule)
+    if (!preparedSchedule.ok) {
+      setAutosaveState('error')
+      if (showToastMessage) toast({ title: '保存失败', description: preparedSchedule.error, variant: 'destructive' })
+      return false
+    }
     try {
-      const data = await api.get<WorkflowExecution>(`/executions/${executionId}`)
-      setExecution(data)
-    } catch {
-      // ignore polling errors, the next tick may succeed
+      const preparedGraph = prepareWorkflowGraphForSave(nodes, edges)
+      const updated = await api.put<WorkflowDefinition>(`/workflows/${selected.id}`, { name: selected.name, nodes: preparedGraph.nodes, edges: preparedGraph.edges, schedule: preparedSchedule.schedule })
+      setSelected(updated)
+      setWorkflows((current) => current.map((workflow) => workflow.id === updated.id ? updated : workflow))
+      setSchedule(normalizeSchedule(updated.schedule))
+      setAutosaveState('saved')
+      if (showToastMessage) toast({ title: '工作流已保存' })
+      return true
+    } catch (error) {
+      console.error(error)
+      setAutosaveState('error')
+      if (showToastMessage) toast({ title: '保存失败', description: error instanceof Error ? error.message : '未知错误', variant: 'destructive' })
+      return false
     }
-  }, [])
+  }, [edges, nodes, schedule, selected])
 
-  const restoreExecution = useCallback(async (workflowId: string, executionId?: string | null) => {
-    try {
-      const executions = await api.get<WorkflowExecution[]>(`/workflows/${workflowId}/executions`)
-      const requested = executionId
-        ? executions.find((item) => item.id === executionId && item.workflowId === workflowId) ?? null
-        : null
-
-      if (executionId && !requested) {
-        toast({
-          title: '无效执行链接',
-          description: `执行 ${executionId} 不存在或不属于当前工作流，已清除无效执行定位。`,
-          variant: 'destructive',
-        })
-        replaceSelectionQuery(workflowId, null)
-      }
-
-      if (requested) {
-        setExecution(requested)
-        return
-      }
-
-      setExecution((current) => reconcileExecutionSelection({
-        workflowId,
-        requestedExecutionId: requested ? executionId : undefined,
-        currentExecution: current,
-        executions,
-      }))
-    } catch {
-      // ignore restore errors; only clear query when the workflow execution list proves it is invalid
-    }
-  }, [replaceSelectionQuery])
-
+  useEffect(() => { void fetchWorkflows().catch((error) => { console.error(error); toast({ title: '工作流加载失败', description: error instanceof Error ? error.message : '未知错误', variant: 'destructive' }) }) }, [fetchWorkflows])
+  useEffect(() => { void Promise.all([api.get<AgentListItem[]>('/agents'), api.get<TeamListItem[]>('/teams')]).then(([agentData, teamData]) => { setAgents(agentData); setTeamOptions(teamData); if (!newTeamId && teamData[0]) setNewTeamId(teamData[0].id) }).catch((error) => console.error(error)) }, [newTeamId])
   useEffect(() => {
-    fetchWorkflows()
-  }, [fetchWorkflows])
-
+    if (!selected?.id) { setExecution(null); return }
+    void api.get<WorkflowExecution[]>(`/workflows/${selected.id}/executions`).then((executions) => setExecution((current) => reconcileExecutionSelection({ workflowId: selected.id, requestedExecutionId, currentExecution: current, executions }))).catch((error) => console.error(error))
+  }, [requestedExecutionId, selected?.id])
   useEffect(() => {
-    if (!selected?.id) {
-      setExecution(null)
-      return
-    }
-
-    void restoreExecution(selected.id, requestedExecutionId)
-  }, [requestedExecutionId, restoreExecution, selected?.id])
-
-  useEffect(() => {
-    const fetchAgentOptions = async () => {
-      try {
-        const data = await api.get<AgentListItem[]>('/agents')
-        setAgents(data)
-      } catch {
-        // keep manual input fallback available even if agent list fails
-      }
-    }
-
-    void fetchAgentOptions()
-  }, [])
-
-  useEffect(() => {
-    const fetchTeams = async () => {
-      try {
-        const data = await api.get<TeamListItem[]>('/teams')
-        setTeamOptions(data)
-        setNewTeamId((current) => {
-          const normalized = current.trim()
-          if (normalized && data.some((team) => team.id === normalized)) {
-            return normalized
-          }
-          return data[0]?.id || ''
-        })
-      } catch {
-        setTeamOptions([])
-      }
-    }
-
-    void fetchTeams()
-  }, [])
-
-  useEffect(() => {
-    if (!execution || !ACTIVE_EXECUTION_STATUSES.includes(execution.status)) {
-      return undefined
-    }
-
-    const timer = window.setInterval(() => {
-      void refreshExecution(execution.id)
-    }, 2500)
-
+    if (!execution || !ACTIVE_EXECUTION_STATUSES.includes(execution.status)) return
+    const timer = window.setInterval(() => { void refreshExecution(execution.id).catch((error) => console.error(error)) }, 2500)
     return () => window.clearInterval(timer)
   }, [execution, refreshExecution])
-
   useEffect(() => {
-    if (!execution?.id || execution.status !== 'waiting_approval') {
-      setPendingApproval(null)
-      return undefined
-    }
-
-    let cancelled = false
-
-    const syncPendingApproval = async () => {
-      try {
-        const approvals = await api.get<ApprovalRecord[]>(`/approvals?execution_id=${execution.id}`)
-        if (cancelled) return
-        const nextPending = selectPendingApproval(approvals, requestedApprovalId)
-        const nextApprovalQueryId = resolveApprovalQueryId(approvals, requestedApprovalId)
-        setPendingApproval(nextPending)
-        if (nextApprovalQueryId !== requestedApprovalId) {
-          replaceSelectionQuery(selected?.id ?? execution.workflowId, execution.id, nextApprovalQueryId)
-        }
-      } catch {
-        if (!cancelled) {
-          setPendingApproval(null)
-        }
-      }
-    }
-
-    void syncPendingApproval()
-    const timer = window.setInterval(() => {
-      void syncPendingApproval()
-    }, 2500)
-
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [execution?.id, execution?.status, execution?.workflowId, replaceSelectionQuery, requestedApprovalId, selected?.id])
-
-  useEffect(() => {
-    if (execution?.status !== 'waiting_approval') {
-      lastApprovalFocusKeyRef.current = null
-      return
-    }
-
-    const focusKey = requestedApprovalId || pendingApproval?.id || execution.id
-    if (!focusKey || lastApprovalFocusKeyRef.current === focusKey) {
-      return
-    }
-
-    lastApprovalFocusKeyRef.current = focusKey
-    approvalPanelRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
-  }, [execution?.id, execution?.status, pendingApproval?.id, requestedApprovalId])
-
-  useEffect(() => {
-    const focusNodeId = resolveWaitingApprovalFocusNodeId({
-      status: execution?.status,
-      currentNodeId: execution?.currentNodeId,
-      pendingApprovalNodeId: pendingApproval?.nodeId,
-      availableNodeIds: nodes.map((node) => node.id),
-    })
-
-    if (focusNodeId && focusNodeId !== selectedNodeId) {
-      setSelectedNodeId(focusNodeId)
-    }
-  }, [execution?.currentNodeId, execution?.status, nodes, pendingApproval?.nodeId, selectedNodeId])
-
-  useEffect(() => {
-    if (!execution?.id) {
-      return
-    }
-
+    if (!execution?.id) return
     const signal = workflowSignals.get(execution.id)
-    if (!signal) {
-      return
-    }
-
-    setExecution((current) => (current ? mergeExecutionWithSignal(current, signal) : current))
+    if (!signal) return
+    setExecution((current) => current ? mergeExecutionWithSignal(current, signal) : current)
   }, [execution?.id, workflowSignals])
-
   useEffect(() => {
-    if (!selected?.id) {
-      setExecution(null)
-      return undefined
-    }
-
-    if (
-      execution?.workflowId === selected.id &&
-      ACTIVE_EXECUTION_STATUSES.includes(execution.status)
-    ) {
-      return undefined
-    }
-
+    if (!execution?.id || execution.status !== 'waiting_approval') { setPendingApproval(null); return }
     let cancelled = false
-
-    void api
-      .get<WorkflowExecution[]>(`/workflows/${selected.id}/executions`)
-      .then((executions) => {
-        if (cancelled) return
-
-        const requestedExecution =
-          requestedExecutionId
-            ? executions.find((item) => item.id === requestedExecutionId && item.workflowId === selected.id) ?? null
-            : null
-
-        if (requestedExecutionId && !requestedExecution) {
-          toast({
-            title: '无效执行链接',
-            description: `执行 ${requestedExecutionId} 不存在或不属于当前工作流，已清除无效执行定位。`,
-            variant: 'destructive',
-          })
-          replaceSelectionQuery(selected.id, null)
-        }
-
-        setExecution((current) => {
-          return reconcileExecutionSelection({
-            workflowId: selected.id,
-            requestedExecutionId: requestedExecution ? requestedExecutionId : undefined,
-            currentExecution: current,
-            executions,
-          })
-        })
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setExecution((current) =>
-            current?.workflowId === selected.id &&
-            ((requestedExecutionId && current.id === requestedExecutionId) || isExecutionActive(current.status))
-              ? current
-              : null
-          )
-        }
-      })
-
-    return () => {
-      cancelled = true
+    const syncApprovals = async () => {
+      const approvals = await api.get<ApprovalRecord[]>(`/approvals?execution_id=${execution.id}`)
+      if (cancelled) return
+      const nextPending = selectPendingApproval(approvals, requestedApprovalId)
+      setPendingApproval(nextPending)
+      replaceSelectionQuery(selected?.id || null, execution.id, resolveApprovalQueryId(approvals, requestedApprovalId))
     }
-  }, [execution?.status, execution?.workflowId, replaceSelectionQuery, requestedExecutionId, selected?.id])
+    void syncApprovals().catch((error) => console.error(error))
+    const timer = window.setInterval(() => { void syncApprovals().catch((error) => console.error(error)) }, 2500)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [execution?.id, execution?.status, requestedApprovalId, replaceSelectionQuery, selected?.id])
+  useEffect(() => {
+    if (!selected?.id) return
+    if (!haveWorkflowGraphChanges(nodes, edges, selected) && !haveWorkflowScheduleChanges(schedule, selected.schedule)) return
+    const preparedSchedule = prepareWorkflowScheduleForSave(schedule)
+    if (!preparedSchedule.ok) { setAutosaveState('error'); return }
+    const requestId = ++autosaveRequestIdRef.current
+    setAutosaveState('saving')
+    const timer = window.setTimeout(() => { if (requestId === autosaveRequestIdRef.current) void persistWorkflow(false) }, 800)
+    return () => window.clearTimeout(timer)
+  }, [edges, nodes, persistWorkflow, schedule, selected])
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      const tagName = target?.tagName?.toLowerCase()
+      if (target?.isContentEditable || tagName === 'input' || tagName === 'textarea' || tagName === 'select') return
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return
+      if (!selectedNode) return
+      event.preventDefault()
+      setNodes((current) => current.filter((node) => node.id !== selectedNode.id))
+      setEdges((current) => current.filter((edge) => edge.source !== selectedNode.id && edge.target !== selectedNode.id))
+      setSelectedNodeId(null)
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [selectedNode, setEdges, setNodes])
 
+  const addNode = useCallback((type: WorkflowNodeData['type'], position?: { x: number; y: number }) => {
+    const nextNode = createWorkflowFlowNode(type, nodes.length, position)
+    setNodes((current) => [...current, nextNode])
+    setSelectedNodeId(nextNode.id)
+  }, [nodes.length, setNodes])
   const onConnect = useCallback((connection: Connection) => {
+    if (connection.source && connection.target && connection.source === connection.target) return toast({ title: '连线无效', description: '节点不能连接到自身', variant: 'destructive' })
     setEdges((current) => upsertConnectedEdge(current, connection, nodes))
   }, [nodes, setEdges])
-
-  const handleEdgeUpdateStart = useCallback(() => {
-    setEdgeReconnectSuccessful(false)
-  }, [])
-
+  const handleEdgeUpdateStart = useCallback(() => setEdgeReconnectSuccessful(false), [])
   const handleEdgeUpdate = useCallback((oldEdge: Edge, newConnection: Connection) => {
     if (!newConnection.source || !newConnection.target) return
-
+    if (newConnection.source === newConnection.target) {
+      setEdgeReconnectSuccessful(true)
+      return toast({ title: '重连无效', description: '节点不能连接到自身', variant: 'destructive' })
+    }
     setEdgeReconnectSuccessful(true)
     setEdges((current) => upsertConnectedEdge(current, newConnection, nodes, oldEdge.id))
   }, [nodes, setEdges])
+  const handleEdgeUpdateEnd = useCallback((_: unknown, edge: Edge) => { if (!edgeReconnectSuccessful) setEdges((current) => current.filter((item) => item.id !== edge.id)) }, [edgeReconnectSuccessful, setEdges])
+  const updateSelectedNode = useCallback((patch: Partial<WorkflowNodeData>) => { if (!selectedNode) return; setNodes((current) => current.map((node) => node.id === selectedNode.id ? { ...node, data: { ...(node.data as WorkflowNodeData), ...patch } } : node)) }, [selectedNode, setNodes])
+  const handleDeleteSelectedNode = useCallback(() => { if (!selectedNode) return; setNodes((current) => current.filter((node) => node.id !== selectedNode.id)); setEdges((current) => current.filter((edge) => edge.source !== selectedNode.id && edge.target !== selectedNode.id)); setSelectedNodeId(null) }, [selectedNode, setEdges, setNodes])
 
-  const handleEdgeUpdateEnd = useCallback((_: unknown, edge: Edge) => {
-    if (edgeReconnectSuccessful) return
-    setEdges((current) => current.filter((item) => item.id !== edge.id))
-  }, [edgeReconnectSuccessful, setEdges])
-
-  const handleSave = async () => {
-    if (!selected) return
-    const nextSchedule =
-      schedule.enabled && schedule.cron.trim()
-        ? {
-            ...schedule,
-            cron: schedule.cron.trim(),
-            timezone: schedule.timezone.trim() || DEFAULT_WORKFLOW_TIMEZONE,
-            window:
-              schedule.window?.start && schedule.window?.end
-                ? {
-                    start: schedule.window.start,
-                    end: schedule.window.end,
-                    timezone: schedule.window.timezone?.trim() || schedule.timezone.trim() || DEFAULT_WORKFLOW_TIMEZONE,
-                  }
-                : null,
-          }
-        : null
-
-    if (schedule.enabled && !schedule.cron.trim()) {
-      toast({ title: '保存失败', description: '开启定时执行后必须填写 Cron 表达式', variant: 'destructive' })
-      return
-    }
-
-    setSaving(true)
-    try {
-      const updated = await api.put<WorkflowDefinition>(`/workflows/${selected.id}`, {
-        name: selected.name,
-        nodes: serializeNodes(nodes, edges),
-        edges: serializeEdges(edges),
-        schedule: nextSchedule,
-      })
-      setSelected(updated)
-      setSchedule(normalizeSchedule(updated.schedule))
-      setWorkflows((current) => current.map((workflow) => (workflow.id === updated.id ? updated : workflow)))
-      toast({ title: '工作流已保存' })
-    } catch (error) {
-      toast({ title: '保存失败', description: error instanceof Error ? error.message : '未知错误', variant: 'destructive' })
-    } finally {
-      setSaving(false)
-    }
-  }
-
+  const handleSave = async () => { setSaving(true); await persistWorkflow(true); setSaving(false) }
   const handleExecute = async () => {
     if (!selected) return
     try {
       const nextExecution = await api.post<WorkflowExecution>(`/workflows/${selected.id}/execute`)
       setExecution(nextExecution)
-      setSearchParams((current) => {
-        const next = new URLSearchParams(current)
-        next.set('workflowId', selected.id)
-        next.set('executionId', nextExecution.id)
-        return next
-      })
-      window.setTimeout(() => {
-        void refreshExecution(nextExecution.id)
-      }, 800)
+      replaceSelectionQuery(selected.id, nextExecution.id, null)
+      window.setTimeout(() => { void refreshExecution(nextExecution.id).catch((error) => console.error(error)) }, 800)
       toast({ title: '工作流开始执行', description: `执行 ID: ${nextExecution.id}` })
     } catch (error) {
+      console.error(error)
       toast({ title: '执行失败', description: error instanceof Error ? error.message : '未知错误', variant: 'destructive' })
     }
   }
-
   const handleStop = async () => {
     if (!selected || !execution) return
     try {
@@ -626,927 +332,58 @@ export function WorkflowEditorPage() {
       await refreshExecution(execution.id)
       toast({ title: '已发送停止请求' })
     } catch (error) {
+      console.error(error)
       toast({ title: '停止失败', description: error instanceof Error ? error.message : '未知错误', variant: 'destructive' })
     }
   }
-
   const handleResolveApproval = async (approved: boolean) => {
     if (!pendingApproval) return
-
     setApprovalBusy(approved ? 'approve' : 'reject')
     try {
-      if (approved) {
-        await api.post(`/approvals/${pendingApproval.id}/approve`)
-      } else {
-        await api.post(`/approvals/${pendingApproval.id}/reject`, {
-          reject_reason: '通过工作流页面驳回',
-        })
-      }
-
+      if (approved) await api.post(`/approvals/${pendingApproval.id}/approve`)
+      else await api.post(`/approvals/${pendingApproval.id}/reject`, { reject_reason: '通过工作流页面驳回' })
       setPendingApproval(null)
-      if (execution?.id) {
-        await refreshExecution(execution.id)
-      }
+      if (execution?.id) await refreshExecution(execution.id)
       toast({ title: approved ? '审批已通过' : '审批已驳回' })
     } catch (error) {
-      toast({
-        title: approved ? '审批通过失败' : '审批驳回失败',
-        description: error instanceof Error ? error.message : '未知错误',
-        variant: 'destructive',
-      })
+      console.error(error)
+      toast({ title: approved ? '审批通过失败' : '审批驳回失败', description: error instanceof Error ? error.message : '未知错误', variant: 'destructive' })
     } finally {
       setApprovalBusy(null)
     }
   }
-
   const handleCreate = async () => {
     if (!newName.trim()) return
     const resolvedTeamId = newTeamId.trim() || teamOptions[0]?.id || ''
-    if (!resolvedTeamId) {
-      toast({ title: '创建失败', description: '请先创建至少一个工作室', variant: 'destructive' })
-      return
-    }
+    if (!resolvedTeamId) return toast({ title: '创建失败', description: '请先创建至少一个工作室', variant: 'destructive' })
     setCreating(true)
     try {
       const workflow = await api.post<WorkflowDefinition>('/workflows', { teamId: resolvedTeamId, name: newName.trim(), nodes: {}, edges: [] })
       setWorkflows((current) => [workflow, ...current])
-      openWorkflow(workflow)
       setNewName('')
-      setNewTeamId(teamOptions[0]?.id || '')
       setCreateDialogOpen(false)
+      openWorkflow(workflow)
       toast({ title: '工作流已创建' })
     } catch (error) {
+      console.error(error)
       toast({ title: '创建失败', description: error instanceof Error ? error.message : '未知错误', variant: 'destructive' })
     } finally {
       setCreating(false)
     }
   }
 
-  const addNode = (type: WorkflowNodeData['type']) => {
-    const nodeId = `${type}-${Date.now()}`
-    const baseData: Record<WorkflowNodeData['type'], WorkflowNodeData> = {
-      task: { type: 'task', label: '任务节点', agentId: '', task: '', timeoutSeconds: 60, requireResponse: true, requireArtifacts: false, minOutputLength: 1, successPattern: '', position: { x: 240, y: 120 } },
-      condition: { type: 'condition', label: '条件节点', expression: 'true', branches: { yes: '', no: '' }, position: { x: 240, y: 120 } },
-      approval: { type: 'approval', label: '审批节点', title: '请确认', description: '', approver: 'web-user', timeoutMinutes: 30, onTimeout: 'reject', position: { x: 240, y: 120 } },
-      join: { type: 'join', label: '汇合节点', joinMode: 'and', waitForAll: true, position: { x: 240, y: 120 } },
-      parallel: { type: 'parallel', label: '汇合节点', joinMode: 'and', waitForAll: true, position: { x: 240, y: 120 } },
-      meeting: { type: 'meeting', label: '会议节点', meetingType: 'brainstorm', topic: '', participants: [], position: { x: 240, y: 120 } },
-      debate: { type: 'debate', label: '辩论节点', topic: '', participants: [], maxRounds: 3, position: { x: 240, y: 120 } },
-    }
-
-    const nextNode: Node = {
-      id: nodeId,
-      type,
-      position: { x: 180 + nodes.length * 30, y: 100 + nodes.length * 20 },
-      data: baseData[type],
-    }
-
-    setNodes((current) => [...current, nextNode])
-    setSelectedNodeId(nodeId)
-  }
-
-  const updateSelectedNode = (patch: Partial<WorkflowNodeData>) => {
-    if (!selectedNode) return
-    setNodes((current) =>
-      current.map((node) =>
-        node.id === selectedNode.id
-          ? {
-              ...node,
-              data: {
-                ...(node.data as WorkflowNodeData),
-                ...patch,
-              },
-            }
-          : node
-      )
-    )
-  }
-
-  const handleDeleteSelectedNode = useCallback(() => {
-    if (!selectedNode) return
-    setNodes((current) => current.filter((node) => node.id !== selectedNode.id))
-    setEdges((current) =>
-      current.filter((edge) => edge.source !== selectedNode.id && edge.target !== selectedNode.id)
-    )
-    setSelectedNodeId(null)
-  }, [selectedNode, setEdges, setNodes])
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null
-      const tagName = target?.tagName?.toLowerCase()
-      const isEditable =
-        target?.isContentEditable || tagName === 'input' || tagName === 'textarea' || tagName === 'select'
-
-      if (isEditable) return
-      if (event.key !== 'Delete' && event.key !== 'Backspace') return
-      if (!selectedNode) return
-
-      event.preventDefault()
-      setNodes((current) => current.filter((node) => node.id !== selectedNode.id))
-      setEdges((current) =>
-        current.filter((edge) => edge.source !== selectedNode.id && edge.target !== selectedNode.id)
-      )
-      setSelectedNodeId(null)
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selectedNode, setEdges, setNodes])
-
-  const selectedConditionConnections = useMemo(() => {
-    if (!selectedNode || (selectedNode.data as WorkflowNodeData).type !== 'condition') return { yes: null, no: null }
-    const resolveTarget = (handleId: 'yes' | 'no') => {
-      const selectedNodeData = selectedNode.data as Extract<WorkflowNodeData, { type: 'condition' }>
-      const edge = edges.find((item) => item.source === selectedNode.id && normalizeConditionHandle(
-        typeof item.sourceHandle === 'string'
-          ? item.sourceHandle
-          : typeof item.label === 'string'
-            ? item.label
-            : undefined
-      ) === handleId)
-      const fallbackTargetId = handleId === 'yes'
-        ? (selectedNodeData.branches?.yes || selectedNodeData.branches?.true || '')
-        : (selectedNodeData.branches?.no || selectedNodeData.branches?.false || '')
-      const targetId = edge?.target || fallbackTargetId
-      if (!targetId) return null
-      const targetNode = nodes.find((node) => node.id === targetId)
-      const targetData = targetNode?.data as WorkflowNodeData | undefined
-      return {
-        id: targetId,
-        label: targetData?.label || targetId,
-        agentId: (targetData as any)?.agentId || '',
-      }
-    }
-    return { yes: resolveTarget('yes'), no: resolveTarget('no') }
-  }, [edges, nodes, selectedNode])
-
-  useEffect(() => {
-    if (!selectedNode) return
-    const selectedData = selectedNode.data as WorkflowNodeData
-    if ((selectedData.type !== 'join' && selectedData.type !== 'parallel') || selectedData.joinMode !== 'xor') return
-
-    const preferredSourceNodeId = (selectedData as any).preferredSourceNodeId || ''
-    if (!preferredSourceNodeId) return
-    if (selectedNodeUpstreamOptions.some((option) => option.id === preferredSourceNodeId)) return
-
-    updateSelectedNode({ preferredSourceNodeId: selectedNodeUpstreamOptions[0]?.id || '' } as Partial<WorkflowNodeData>)
-  }, [selectedNode, selectedNodeUpstreamOptions])
-
   return (
-    <div className="flex h-full min-h-0 overflow-hidden">
-      {/* ── Sidebar: Workflow list ── */}
-      <div className="flex h-full min-h-0 w-64 flex-shrink-0 flex-col overflow-hidden border-r border-white/5 bg-cyber-surface/20">
-        <div className="p-4 border-b border-white/5 flex items-center justify-between">
-          <div>
-            <h2 className="text-white font-bold text-sm flex items-center gap-2">
-              <GitBranch className="w-4 h-4 text-cyber-amber" />
-              工作流
-            </h2>
-            <p className="text-white/20 text-[10px] mt-0.5">编排 Agent 协作任务</p>
-          </div>
-          <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
-            <DialogTrigger asChild>
-              <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-white/30 hover:text-white cursor-pointer">
-                <Plus className="w-4 h-4" />
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="bg-cyber-surface border-white/10">
-              <DialogHeader><DialogTitle className="text-white">新建工作流</DialogTitle></DialogHeader>
-              <div className="space-y-4 pt-4">
-                <Input
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  placeholder="工作流名称"
-                  className="bg-cyber-bg border-white/10 text-white"
-                  onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
-                />
-                <Input
-                  value={newTeamId}
-                  onChange={(e) => setNewTeamId(e.target.value)}
-                  placeholder="Team ID（默认首个工作室）"
-                  className="bg-cyber-bg border-white/10 text-white"
-                />
-                {teamOptions[0] ? (
-                  <p className="text-xs text-white/45">
-                    默认工作室：{teamOptions[0].name}（{teamOptions[0].id}）
-                  </p>
-                ) : (
-                  <p className="text-xs text-amber-300/80">当前没有工作室，先去“工作室”页创建一个。</p>
-                )}
-                <Button onClick={handleCreate} className="w-full bg-gradient-to-r from-cyber-amber/80 to-cyber-amber" disabled={creating || !newName.trim()}>
-                  {creating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
-                  创建
-                </Button>
-              </div>
-            </DialogContent>
-          </Dialog>
-        </div>
-        <div className="flex-1 overflow-y-auto p-2 space-y-1">
-          {workflows.length === 0 ? (
-            <EmptyState scene="no-workflows" className="py-8" />
-          ) : (
-            workflows.map((wf, i) => (
-              <button
-                key={wf.id}
-                onClick={() => openWorkflow(wf)}
-                className={cn(
-                  'w-full flex items-center gap-2 p-3 rounded-xl transition-all cursor-pointer text-left animate-fade-in group',
-                  selected?.id === wf.id
-                    ? 'cartoon-card border-cyber-amber/30'
-                    : 'hover:bg-white/5 border-2 border-transparent'
-                )}
-                style={{ animationDelay: `${i * 40}ms` }}
-              >
-                <div className={cn(
-                  'w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors',
-                  selected?.id === wf.id ? 'bg-cyber-amber/15' : 'bg-white/5'
-                )}>
-                  <GitBranch className={cn(
-                    'w-3.5 h-3.5 transition-colors',
-                    selected?.id === wf.id ? 'text-cyber-amber' : 'text-white/25'
-                  )} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-white text-xs font-medium truncate group-hover:text-white/90">{wf.name}</p>
-                  <p className="text-white/20 text-[10px]">{Object.keys(wf.nodes).length} 节点</p>
-                </div>
-              </button>
-            ))
-          )}
-        </div>
-      </div>
-
-      {/* ── Canvas ── */}
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        {!selected ? (
-          <div className="flex-1 flex flex-col items-center justify-center">
-            <EmptyState
-              scene="no-workflows"
-              title="选择或创建工作流"
-              description="从左侧列表选择工作流开始编辑，或创建一个新的"
-            />
-          </div>
-        ) : (
-          <div className="flex h-full min-h-0 overflow-hidden">
-            <div className="relative h-full min-w-0 flex-1 overflow-hidden">
-              <ReactFlow
-                nodes={executionDecorations.nodes}
-                edges={executionDecorations.edges}
-                onNodesChange={onNodesChange}
-                onEdgesChange={onEdgesChange}
-                onConnect={onConnect}
-                onEdgeUpdateStart={handleEdgeUpdateStart}
-                onEdgeUpdate={handleEdgeUpdate}
-                onEdgeUpdateEnd={handleEdgeUpdateEnd}
-                onNodeClick={(_, node) => setSelectedNodeId(node.id)}
-                onPaneClick={() => setSelectedNodeId(null)}
-                nodeTypes={workflowNodeTypes}
-                defaultEdgeOptions={{ style: EDGE_STYLE, reconnectable: 'source' }}
-                edgesUpdatable
-                fitView
-                className="bg-cyber-bg"
-              >
-                <Background color="#6366F110" gap={20} size={1} />
-                <Controls className="!bg-cyber-panel/90 !border-white/10 !rounded-xl [&>button]:!bg-cyber-panel [&>button]:!border-white/10 [&>button]:!text-white/50 !backdrop-blur-sm" />
-                <MiniMap nodeColor="#6366F1" maskColor="#0F0F2390" className="!bg-cyber-panel/90 !border-white/10 !rounded-xl !backdrop-blur-sm" />
-
-                {/* Top toolbar — cartoon-card style */}
-                <Panel position="top-left" className="flex gap-2">
-                  <button
-                    onClick={() => addNode('task')}
-                    className="cartoon-card flex items-center gap-1.5 px-3 py-2 text-xs text-white/50 hover:text-white transition-all cursor-pointer"
-                  >
-                    <Zap className="w-3.5 h-3.5 text-cyber-blue" /> 任务
-                  </button>
-                  <button
-                    onClick={() => addNode('condition')}
-                    className="cartoon-card flex items-center gap-1.5 px-3 py-2 text-xs text-white/50 hover:text-white transition-all cursor-pointer"
-                  >
-                    <Split className="w-3.5 h-3.5 text-cyber-amber" /> 条件
-                  </button>
-                  <button
-                    onClick={() => addNode('approval')}
-                    className="cartoon-card flex items-center gap-1.5 px-3 py-2 text-xs text-white/50 hover:text-white transition-all cursor-pointer"
-                  >
-                    <UserCheck className="w-3.5 h-3.5 text-yellow-400" /> 审批
-                  </button>
-                  <button onClick={() => addNode('join')} className="cartoon-card flex items-center gap-1.5 px-3 py-2 text-xs text-white/50 hover:text-white hover:border-cyber-green/30 transition-all cursor-pointer">
-                    <Merge className="w-3.5 h-3.5 text-cyber-green" /> 汇合
-                  </button>
-                  <button
-                    onClick={() => addNode('meeting')}
-                    className="cartoon-card flex items-center gap-1.5 px-3 py-2 text-xs text-white/50 hover:text-white hover:border-purple-400/30 transition-all cursor-pointer"
-                  >
-                    <MessageSquare className="w-3.5 h-3.5 text-purple-400" /> 会议
-                  </button>
-                  <button
-                    onClick={() => addNode('debate')}
-                    className="cartoon-card flex items-center gap-1.5 px-3 py-2 text-xs text-white/50 hover:text-white hover:border-orange-400/30 transition-all cursor-pointer"
-                  >
-                    <Swords className="w-3.5 h-3.5 text-orange-400" /> 辩论
-                  </button>
-                </Panel>
-
-                {/* Bottom controls — cartoon-card style */}
-                <Panel position="bottom-center" className="flex items-center gap-3 cartoon-card px-4 py-2.5">
-                  <Button
-                    size="sm"
-                    onClick={handleExecute}
-                    disabled={executionIsActive}
-                    className="bg-cyber-green/15 text-cyber-green border border-cyber-green/25 hover:bg-cyber-green/25 h-8 rounded-lg"
-                  >
-                    {executionIsActive
-                      ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" />
-                      : <Play className="w-3.5 h-3.5 mr-1" />
-                    }
-                    执行
-                  </Button>
-                  <Button
-                    size="sm"
-                    onClick={handleStop}
-                    disabled={!executionIsActive}
-                    variant="destructive"
-                    className="h-8 rounded-lg"
-                  >
-                    <Square className="w-3.5 h-3.5 mr-1" /> 停止
-                  </Button>
-                  <div className="w-px h-5 bg-white/8" />
-                  <Button
-                    size="sm"
-                    onClick={handleSave}
-                    disabled={saving}
-                    className="bg-cyber-purple/15 text-cyber-lavender border border-cyber-purple/25 hover:bg-cyber-purple/25 h-8 rounded-lg"
-                  >
-                    {saving
-                      ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" />
-                      : <Save className="w-3.5 h-3.5 mr-1" />
-                    }
-                    保存
-                  </Button>
-                  {execution && (
-                    <span className={cn(
-                      'text-[10px] px-2 py-0.5 rounded-full border',
-                      getExecutionBadge(execution.status).tone
-                    )}>
-                      {getExecutionBadge(execution.status).label}
-                    </span>
-                  )}
-                </Panel>
-              </ReactFlow>
-            </div>
-
-            <div className="flex h-full min-h-0 w-96 flex-shrink-0 flex-col overflow-hidden border-l border-white/5 bg-cyber-surface/30">
-              <div className="p-4 border-b border-white/5">
-                <h3 className="text-white font-semibold text-sm">节点配置</h3>
-              </div>
-              <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                {execution?.status === 'waiting_approval' ? (
-                  <div ref={approvalPanelRef} className="rounded-xl border border-yellow-500/20 bg-yellow-500/8 p-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0 space-y-1">
-                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-yellow-300/90">等待审批</p>
-                        <p className="text-sm font-medium text-white/90">{pendingApproval?.title || '当前执行正在等待审批'}</p>
-                        <p className="text-xs text-white/50">
-                          执行：{execution.id}
-                          {execution.currentNodeId ? ` · 节点：${execution.currentNodeId}` : ''}
-                        </p>
-                      </div>
-                      <span className="rounded-md border border-yellow-500/20 bg-yellow-500/10 px-2 py-1 text-[10px] font-medium text-yellow-200">
-                        waiting_approval
-                      </span>
-                    </div>
-                    <div className="mt-3 rounded-lg border border-white/8 bg-black/20 px-3 py-2 text-xs text-white/70">
-                      {pendingApproval?.description?.trim() || '当前执行已暂停，等待人工审批后继续。'}
-                    </div>
-                    {pendingApproval ? (
-                      <div className="mt-3 flex items-center gap-2">
-                        <Button
-                          type="button"
-                          size="sm"
-                          onClick={() => void handleResolveApproval(true)}
-                          disabled={approvalBusy !== null}
-                          className="border border-green-500/25 bg-green-500/15 text-green-300 hover:bg-green-500/25"
-                        >
-                          {approvalBusy === 'approve' ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : null}
-                          通过
-                        </Button>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="destructive"
-                          onClick={() => void handleResolveApproval(false)}
-                          disabled={approvalBusy !== null}
-                        >
-                          {approvalBusy === 'reject' ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : null}
-                          驳回
-                        </Button>
-                      </div>
-                    ) : (
-                      <p className="mt-3 text-xs text-yellow-100/70">
-                        当前执行状态显示为等待审批，但没有查到可操作的 pending approval 记录。
-                      </p>
-                    )}
-                  </div>
-                ) : null}
-                {selectedNode ? (
-                  <>
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex-1 space-y-2">
-                        <Label className="text-xs text-white/60">节点名称</Label>
-                        <Input value={(selectedNode.data as WorkflowNodeData).label || ''} onChange={(event) => updateSelectedNode({ label: event.target.value } as Partial<WorkflowNodeData>)} placeholder="节点名称" className="bg-cyber-bg border-white/10 text-white" />
-                      </div>
-                      <Button
-                        type="button"
-                        size="icon"
-                        variant="destructive"
-                        className="mt-6 h-9 w-9"
-                        onClick={handleDeleteSelectedNode}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-                    {(selectedNode.data as WorkflowNodeData).type === 'task' ? (
-                      <>
-                        <div className="space-y-2">
-                          <Label className="text-xs text-white/60">Agent ID</Label>
-                          <Select value={(selectedNode.data as any).agentId || '__manual__'} onValueChange={(value) => updateSelectedNode({ agentId: value === '__manual__' ? '' : value } as Partial<WorkflowNodeData>)}>
-                            <SelectTrigger className="bg-cyber-bg border-white/10 text-white">
-                              <SelectValue placeholder="选择一个 Agent" />
-                            </SelectTrigger>
-                            <SelectContent className="bg-cyber-panel border-white/10 text-white">
-                              {agents.map((agent) => (
-                                <SelectItem key={agent.id} value={agent.id}>
-                                  {agent.name || agent.id} ({agent.id})
-                                </SelectItem>
-                              ))}
-                              <SelectItem value="__manual__">手动输入</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        {(!(selectedNode.data as any).agentId || !agents.some((agent) => agent.id === (selectedNode.data as any).agentId)) ? (
-                          <div className="space-y-2">
-                            <Label className="text-xs text-white/60">手动填写 Agent ID</Label>
-                            <Input value={(selectedNode.data as any).agentId || ''} onChange={(event) => updateSelectedNode({ agentId: event.target.value } as Partial<WorkflowNodeData>)} placeholder="例如：worker-b" className="bg-cyber-bg border-white/10 text-white" />
-                          </div>
-                        ) : null}
-                        <div className="space-y-2">
-                          <Label className="text-xs text-white/60">任务内容</Label>
-                          <textarea value={(selectedNode.data as any).task || ''} onChange={(event) => updateSelectedNode({ task: event.target.value } as Partial<WorkflowNodeData>)} placeholder="要发送给 Agent 的任务内容" className="w-full min-h-28 rounded-lg border border-white/10 bg-cyber-bg px-3 py-2 text-sm text-white outline-none resize-y" />
-                        </div>
-                        <div className="space-y-2">
-                          <Label className="text-xs text-white/60">超时时间（秒）</Label>
-                          <Input type="number" min={1} value={(selectedNode.data as any).timeoutSeconds ?? 60} onChange={(event) => updateSelectedNode({ timeoutSeconds: Number(event.target.value || 60) } as Partial<WorkflowNodeData>)} placeholder="timeoutSeconds" className="bg-cyber-bg border-white/10 text-white" />
-                        </div>
-                        <div className="grid grid-cols-2 gap-3 rounded-lg border border-white/5 bg-cyber-bg/30 p-3">
-                          <label className="flex items-center gap-2 text-xs text-white/70">
-                            <input type="checkbox" checked={(selectedNode.data as any).requireResponse ?? true} onChange={(event) => updateSelectedNode({ requireResponse: event.target.checked } as Partial<WorkflowNodeData>)} />
-                            要求有文本输出
-                          </label>
-                          <label className="flex items-center gap-2 text-xs text-white/70">
-                            <input type="checkbox" checked={(selectedNode.data as any).requireArtifacts ?? false} onChange={(event) => updateSelectedNode({ requireArtifacts: event.target.checked } as Partial<WorkflowNodeData>)} />
-                            要求有产物
-                          </label>
-                          <div className="space-y-2">
-                            <Label className="text-[11px] text-white/45">最小输出长度</Label>
-                            <Input type="number" min={0} value={(selectedNode.data as any).minOutputLength ?? 1} onChange={(event) => updateSelectedNode({ minOutputLength: Number(event.target.value || 0) } as Partial<WorkflowNodeData>)} placeholder="1" className="bg-cyber-bg border-white/10 text-white" />
-                          </div>
-                          <div className="space-y-2">
-                            <Label className="text-[11px] text-white/45">成功关键字</Label>
-                            <Input value={(selectedNode.data as any).successPattern || ''} onChange={(event) => updateSelectedNode({ successPattern: event.target.value } as Partial<WorkflowNodeData>)} placeholder="例如：DONE" className="bg-cyber-bg border-white/10 text-white" />
-                          </div>
-                        </div>
-                      </>
-                    ) : null}
-                    {(selectedNode.data as WorkflowNodeData).type === 'condition' ? (
-                      <>
-                        <div className="space-y-2">
-                          <Label className="text-xs text-white/60">条件表达式</Label>
-                          <textarea value={(selectedNode.data as any).expression || ''} onChange={(event) => updateSelectedNode({ expression: event.target.value } as Partial<WorkflowNodeData>)} placeholder="例如：latest.status == 'sent'" className="w-full min-h-24 rounded-lg border border-white/10 bg-cyber-bg px-3 py-2 text-sm text-white outline-none resize-y" />
-                        </div>
-                        <div className="space-y-3 rounded-lg border border-white/5 bg-cyber-bg/30 p-3">
-                          <Label className="text-xs text-white/60">条件分支</Label>
-                          <div className="space-y-2">
-                            <Label className="text-[11px] text-white/45">命中分支</Label>
-                            <div className="rounded-lg border border-white/10 bg-cyber-bg px-3 py-2 text-sm text-white/80">
-                              {selectedConditionConnections.yes ? `${selectedConditionConnections.yes.label}${selectedConditionConnections.yes.agentId ? ` · ${selectedConditionConnections.yes.agentId}` : ''}` : '未连接'}
-                            </div>
-                          </div>
-                          <div className="space-y-2">
-                            <Label className="text-[11px] text-white/45">未命中分支</Label>
-                            <div className="rounded-lg border border-white/10 bg-cyber-bg px-3 py-2 text-sm text-white/80">
-                              {selectedConditionConnections.no ? `${selectedConditionConnections.no.label}${selectedConditionConnections.no.agentId ? ` · ${selectedConditionConnections.no.agentId}` : ''}` : '未连接'}
-                            </div>
-                          </div>
-                        </div>
-                        <p className="text-xs text-white/40">条件分支完全由连线决定：绿色 yes 口是命中，红色 no 口是未命中，这里只读展示。</p>
-                      </>
-                    ) : null}
-                    {(selectedNode.data as WorkflowNodeData).type === 'approval' ? (
-                      <>
-                        <div className="space-y-2">
-                          <Label className="text-xs text-white/60">审批处理人</Label>
-                          <Select
-                            value={(() => {
-                              const approver = String((selectedNode.data as any).approver || 'web-user')
-                              if (approver === 'web-user') return 'web-user'
-                              const matchedAgent = agents.find((agent) => approver === agent.id || approver === `agent:${agent.id}`)
-                              return matchedAgent ? `agent:${matchedAgent.id}` : '__manual__'
-                            })()}
-                            onValueChange={(value) => updateSelectedNode({ approver: value === '__manual__' ? '' : value } as Partial<WorkflowNodeData>)}
-                          >
-                            <SelectTrigger className="bg-cyber-bg border-white/10 text-white">
-                              <SelectValue placeholder="选择审批处理人" />
-                            </SelectTrigger>
-                            <SelectContent className="bg-cyber-panel border-white/10 text-white">
-                              <SelectItem value="web-user">人工审批（控制台）</SelectItem>
-                              {agents.map((agent) => (
-                                <SelectItem key={agent.id} value={`agent:${agent.id}`}>
-                                  Agent 审批：{agent.name || agent.id} ({agent.id})
-                                </SelectItem>
-                              ))}
-                              <SelectItem value="__manual__">手动输入</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        {(() => {
-                          const approver = String((selectedNode.data as any).approver || 'web-user')
-                          const matchedAgent = agents.some((agent) => approver === agent.id || approver === `agent:${agent.id}`)
-                          return approver !== 'web-user' && !matchedAgent
-                        })() ? (
-                          <div className="space-y-2">
-                            <Label className="text-xs text-white/60">手动填写审批处理人</Label>
-                            <Input
-                              value={(selectedNode.data as any).approver || ''}
-                              onChange={(event) => updateSelectedNode({ approver: event.target.value } as Partial<WorkflowNodeData>)}
-                              placeholder="例如：agent:reviewer-1"
-                              className="bg-cyber-bg border-white/10 text-white"
-                            />
-                          </div>
-                        ) : null}
-                        <div className="space-y-2">
-                          <Label className="text-xs text-white/60">审批标题</Label>
-                          <Input value={(selectedNode.data as any).title || ''} onChange={(event) => updateSelectedNode({ title: event.target.value } as Partial<WorkflowNodeData>)} placeholder="审批标题" className="bg-cyber-bg border-white/10 text-white" />
-                        </div>
-                        <div className="space-y-2">
-                          <Label className="text-xs text-white/60">审批说明</Label>
-                          <textarea value={(selectedNode.data as any).description || ''} onChange={(event) => updateSelectedNode({ description: event.target.value } as Partial<WorkflowNodeData>)} placeholder="审批说明" className="w-full min-h-24 rounded-lg border border-white/10 bg-cyber-bg px-3 py-2 text-sm text-white outline-none resize-y" />
-                        </div>
-                        <div className="space-y-2">
-                          <Label className="text-xs text-white/60">超时时间（分钟）</Label>
-                          <Input type="number" min={1} value={(selectedNode.data as any).timeoutMinutes ?? 30} onChange={(event) => updateSelectedNode({ timeoutMinutes: Number(event.target.value || 30) } as Partial<WorkflowNodeData>)} placeholder="timeoutMinutes" className="bg-cyber-bg border-white/10 text-white" />
-                        </div>
-                        <p className="text-xs text-white/40">选择 `agent:xxx` 后，后端会尝试让该 Agent 自动返回批准 / 驳回 JSON；解析失败时保留人工审批。</p>
-                      </>
-                    ) : null}
-                    {((selectedNode.data as WorkflowNodeData).type === 'join' || (selectedNode.data as WorkflowNodeData).type === 'parallel') ? (
-                      <>
-                        <div className="space-y-2">
-                          <Label className="text-xs text-white/60">汇合模式</Label>
-                          <Select
-                            value={(selectedNode.data as any).joinMode || 'and'}
-                            onValueChange={(value) => updateSelectedNode({ joinMode: value as any, waitForAll: value === 'and', preferredSourceNodeId: value === 'xor' ? (selectedNodeUpstreamOptions[0]?.id || '') : undefined } as Partial<WorkflowNodeData>)}
-                          >
-                            <SelectTrigger className="bg-cyber-bg border-white/10 text-white">
-                              <SelectValue placeholder="选择汇合模式" />
-                            </SelectTrigger>
-                            <SelectContent className="bg-cyber-panel border-white/10 text-white">
-                              <SelectItem value="and">AND：全部到齐后继续</SelectItem>
-                              <SelectItem value="or">OR：任一到达即继续</SelectItem>
-                              <SelectItem value="xor">XOR：仅指定上游可放行</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        {((selectedNode.data as any).joinMode || 'and') === 'xor' ? (
-                          <div className="space-y-2">
-                            <Label className="text-xs text-white/60">允许放行的上游节点</Label>
-                            <Select
-                              value={(selectedNode.data as any).preferredSourceNodeId || selectedNodeUpstreamOptions[0]?.id || '__none__'}
-                              onValueChange={(value) => updateSelectedNode({ preferredSourceNodeId: value === '__none__' ? '' : value } as Partial<WorkflowNodeData>)}
-                            >
-                              <SelectTrigger className="bg-cyber-bg border-white/10 text-white">
-                                <SelectValue placeholder="选择一个上游节点" />
-                              </SelectTrigger>
-                              <SelectContent className="bg-cyber-panel border-white/10 text-white">
-                                {selectedNodeUpstreamOptions.length ? selectedNodeUpstreamOptions.map((option) => (
-                                  <SelectItem key={option.id} value={option.id}>
-                                    {option.label} ({option.id})
-                                  </SelectItem>
-                                )) : <SelectItem value="__none__">暂无上游节点</SelectItem>}
-                              </SelectContent>
-                            </Select>
-                          </div>
-                        ) : null}
-                        <p className="text-xs text-white/40">普通节点接出多条线时会并行分发；汇合节点根据这里的逻辑门决定何时放行下游。</p>
-                      </>
-                    ) : null}
-                    {(selectedNode.data as WorkflowNodeData).type === 'meeting' ? (
-                      <>
-                        <div className="space-y-2">
-                          <Label className="text-xs text-white/60">会议类型</Label>
-                          <Select value={(selectedNode.data as any).meetingType || 'brainstorm'} onValueChange={(value) => updateSelectedNode({ meetingType: value } as Partial<WorkflowNodeData>)}>
-                            <SelectTrigger className="bg-cyber-bg border-white/10 text-white">
-                              <SelectValue placeholder="选择会议类型" />
-                            </SelectTrigger>
-                            <SelectContent className="bg-cyber-panel border-white/10 text-white">
-                              {(['standup', 'kickoff', 'review', 'brainstorm', 'decision', 'retro'] as MeetingType[]).map((type) => (
-                                <SelectItem key={type} value={type}>{MEETING_TYPE_LABELS[type]}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div className="space-y-2">
-                          <Label className="text-xs text-white/60">会议议题</Label>
-                          <Input value={(selectedNode.data as any).topic || ''} onChange={(event) => updateSelectedNode({ topic: event.target.value } as Partial<WorkflowNodeData>)} placeholder="会议要讨论的主题" className="bg-cyber-bg border-white/10 text-white" />
-                        </div>
-                        <div className="space-y-2">
-                          <Label className="text-xs text-white/60">议题描述</Label>
-                          <textarea value={(selectedNode.data as any).topicDescription || ''} onChange={(event) => updateSelectedNode({ topicDescription: event.target.value } as Partial<WorkflowNodeData>)} placeholder="补充背景、目标和上下文" className="w-full min-h-20 rounded-lg border border-white/10 bg-cyber-bg px-3 py-2 text-sm text-white outline-none resize-y" />
-                        </div>
-                        <div className="space-y-2">
-                          <Label className="text-xs text-white/60">参与者 Agent ID（逗号分隔）</Label>
-                          <Input value={((selectedNode.data as any).participants || []).join(', ')} onChange={(event) => updateSelectedNode({ participants: event.target.value.split(',').map((item: string) => item.trim()).filter(Boolean) } as Partial<WorkflowNodeData>)} placeholder="agent-1, agent-2, agent-3" className="bg-cyber-bg border-white/10 text-white" />
-                          {agents.length > 0 ? (
-                            <div className="flex flex-wrap gap-1">
-                              {agents.map((agent) => {
-                                const participants: string[] = (selectedNode.data as any).participants || []
-                                const isSelected = participants.includes(agent.id)
-                                return (
-                                  <button
-                                    key={agent.id}
-                                    type="button"
-                                    onClick={() => updateSelectedNode({
-                                      participants: isSelected
-                                        ? participants.filter((item) => item !== agent.id)
-                                        : [...participants, agent.id],
-                                    } as Partial<WorkflowNodeData>)}
-                                    className={cn(
-                                      'rounded border px-1.5 py-0.5 text-[10px] transition-all',
-                                      isSelected
-                                        ? 'border-purple-400/30 bg-purple-400/15 text-purple-200'
-                                        : 'border-white/10 bg-white/5 text-white/45 hover:border-white/20'
-                                    )}
-                                  >
-                                    {agent.name || agent.id}
-                                  </button>
-                                )
-                              })}
-                            </div>
-                          ) : null}
-                        </div>
-                        <div className="space-y-2">
-                          <Label className="text-xs text-white/60">主持人 Agent</Label>
-                          <Select value={(selectedNode.data as any).leadAgentId || '__auto__'} onValueChange={(value) => updateSelectedNode({ leadAgentId: value === '__auto__' ? undefined : value } as Partial<WorkflowNodeData>)}>
-                            <SelectTrigger className="bg-cyber-bg border-white/10 text-white">
-                              <SelectValue placeholder="自动（Team Lead）" />
-                            </SelectTrigger>
-                            <SelectContent className="bg-cyber-panel border-white/10 text-white">
-                              <SelectItem value="__auto__">自动（Team Lead）</SelectItem>
-                              {agents.map((agent) => (
-                                <SelectItem key={agent.id} value={agent.id}>{agent.name || agent.id}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div className="space-y-2">
-                          <Label className="text-xs text-white/60">Team ID（可选）</Label>
-                          <Input value={(selectedNode.data as any).teamId || ''} onChange={(event) => updateSelectedNode({ teamId: event.target.value } as Partial<WorkflowNodeData>)} placeholder="留空则沿用工作流 Team" className="bg-cyber-bg border-white/10 text-white" />
-                        </div>
-                      </>
-                    ) : null}
-                    {(selectedNode.data as WorkflowNodeData).type === 'debate' ? (
-                      <>
-                        <div className="space-y-2">
-                          <Label className="text-xs text-white/60">辩题</Label>
-                          <Input value={(selectedNode.data as any).topic || ''} onChange={(event) => updateSelectedNode({ topic: event.target.value } as Partial<WorkflowNodeData>)} placeholder="需要辩论的问题" className="bg-cyber-bg border-white/10 text-white" />
-                        </div>
-                        <div className="space-y-2">
-                          <Label className="text-xs text-white/60">辩题描述</Label>
-                          <textarea value={(selectedNode.data as any).topicDescription || ''} onChange={(event) => updateSelectedNode({ topicDescription: event.target.value } as Partial<WorkflowNodeData>)} placeholder="补充背景、规则和判断标准" className="w-full min-h-20 rounded-lg border border-white/10 bg-cyber-bg px-3 py-2 text-sm text-white outline-none resize-y" />
-                        </div>
-                        <div className="grid grid-cols-2 gap-3">
-                          <div className="space-y-2">
-                            <Label className="text-xs text-white/60">正方 Agent</Label>
-                            <Select value={((selectedNode.data as any).participants || [])[0] || '__none__'} onValueChange={(value) => {
-                              const participants = [...((selectedNode.data as any).participants || ['', ''])]
-                              participants[0] = value === '__none__' ? '' : value
-                              updateSelectedNode({ participants } as Partial<WorkflowNodeData>)
-                            }}>
-                              <SelectTrigger className="bg-cyber-bg border-white/10 text-white">
-                                <SelectValue placeholder="选择 Agent" />
-                              </SelectTrigger>
-                              <SelectContent className="bg-cyber-panel border-white/10 text-white">
-                                <SelectItem value="__none__">未选择</SelectItem>
-                                {agents.map((agent) => (
-                                  <SelectItem key={agent.id} value={agent.id}>{agent.name || agent.id}</SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-                          <div className="space-y-2">
-                            <Label className="text-xs text-white/60">反方 Agent</Label>
-                            <Select value={((selectedNode.data as any).participants || ['', ''])[1] || '__none__'} onValueChange={(value) => {
-                              const participants = [...((selectedNode.data as any).participants || ['', ''])]
-                              participants[1] = value === '__none__' ? '' : value
-                              updateSelectedNode({ participants } as Partial<WorkflowNodeData>)
-                            }}>
-                              <SelectTrigger className="bg-cyber-bg border-white/10 text-white">
-                                <SelectValue placeholder="选择 Agent" />
-                              </SelectTrigger>
-                              <SelectContent className="bg-cyber-panel border-white/10 text-white">
-                                <SelectItem value="__none__">未选择</SelectItem>
-                                {agents.map((agent) => (
-                                  <SelectItem key={agent.id} value={agent.id}>{agent.name || agent.id}</SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-                        </div>
-                        <div className="space-y-2">
-                          <Label className="text-xs text-white/60">最大回合数</Label>
-                          <Select value={String((selectedNode.data as any).maxRounds || 3)} onValueChange={(value) => updateSelectedNode({ maxRounds: Number(value) } as Partial<WorkflowNodeData>)}>
-                            <SelectTrigger className="bg-cyber-bg border-white/10 text-white w-24">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent className="bg-cyber-panel border-white/10 text-white">
-                              {[2, 3, 4, 5].map((round) => (
-                                <SelectItem key={round} value={String(round)}>{round} 轮</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div className="space-y-2">
-                          <Label className="text-xs text-white/60">裁判 Agent</Label>
-                          <Select value={(selectedNode.data as any).judgeAgentId || '__auto__'} onValueChange={(value) => updateSelectedNode({ judgeAgentId: value === '__auto__' ? undefined : value } as Partial<WorkflowNodeData>)}>
-                            <SelectTrigger className="bg-cyber-bg border-white/10 text-white">
-                              <SelectValue placeholder="自动（Team Lead）" />
-                            </SelectTrigger>
-                            <SelectContent className="bg-cyber-panel border-white/10 text-white">
-                              <SelectItem value="__auto__">自动（Team Lead）</SelectItem>
-                              {agents.map((agent) => (
-                                <SelectItem key={agent.id} value={agent.id}>{agent.name || agent.id}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div className="space-y-2">
-                          <Label className="text-xs text-white/60">Team ID（可选）</Label>
-                          <Input value={(selectedNode.data as any).teamId || ''} onChange={(event) => updateSelectedNode({ teamId: event.target.value } as Partial<WorkflowNodeData>)} placeholder="留空则沿用工作流 Team" className="bg-cyber-bg border-white/10 text-white" />
-                        </div>
-                      </>
-                    ) : null}
-                  </>
-                ) : (
-                  <p className="text-sm text-white/35">点击画布中的节点后可编辑其字段。</p>
-                )}
-              </div>
-              <div className="p-4 border-t border-white/5 space-y-4">
-                <div className="flex items-center justify-between gap-3">
-                  <h3 className="text-sm font-semibold text-white">定时执行</h3>
-                  <ScheduleToggle
-                    checked={schedule.enabled}
-                    onCheckedChange={(checked) => setSchedule((current) => ({ ...current, enabled: checked }))}
-                    label={schedule.enabled ? '已启用' : '已关闭'}
-                  />
-                </div>
-                {schedule.enabled ? (
-                  <>
-                    <div className="space-y-2">
-                      <Label className="text-xs text-white/60">Cron 表达式</Label>
-                      <Input
-                        value={schedule.cron}
-                        onChange={(event) => setSchedule((current) => ({ ...current, cron: event.target.value }))}
-                        placeholder="例如：*/15 * * * *"
-                        className="bg-cyber-bg border-white/10 text-white"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label className="text-xs text-white/60">时区</Label>
-                      <Input
-                        value={schedule.timezone}
-                        onChange={(event) => setSchedule((current) => ({ ...current, timezone: event.target.value }))}
-                        placeholder="例如：Asia/Shanghai"
-                        className="bg-cyber-bg border-white/10 text-white"
-                      />
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-2">
-                        <Label className="text-xs text-white/60">生效开始</Label>
-                        <Input
-                          type="datetime-local"
-                          value={toDateTimeLocalValue(schedule.activeFrom)}
-                          onChange={(event) => setSchedule((current) => ({ ...current, activeFrom: fromDateTimeLocalValue(event.target.value) }))}
-                          className="bg-cyber-bg border-white/10 text-white"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label className="text-xs text-white/60">生效截止</Label>
-                        <Input
-                          type="datetime-local"
-                          value={toDateTimeLocalValue(schedule.activeUntil)}
-                          onChange={(event) => setSchedule((current) => ({ ...current, activeUntil: fromDateTimeLocalValue(event.target.value) }))}
-                          className="bg-cyber-bg border-white/10 text-white"
-                        />
-                      </div>
-                    </div>
-                    <div className="rounded-lg border border-white/5 bg-cyber-bg/30 p-3 space-y-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <Label className="text-xs text-white/60">每日时间段限制</Label>
-                        <ScheduleToggle
-                          checked={Boolean(schedule.window)}
-                          onCheckedChange={(checked) =>
-                            setSchedule((current) => ({
-                              ...current,
-                              window: checked
-                                ? { start: '09:00', end: '18:00', timezone: current.timezone || DEFAULT_WORKFLOW_TIMEZONE }
-                                : null,
-                            }))
-                          }
-                          label={schedule.window ? '已启用' : '已关闭'}
-                        />
-                      </div>
-                      {schedule.window ? (
-                        <>
-                          <div className="grid grid-cols-2 gap-3">
-                            <div className="space-y-2">
-                              <Label className="text-[11px] text-white/45">开始时间</Label>
-                              <Input
-                                type="time"
-                                value={schedule.window.start}
-                                onChange={(event) =>
-                                  setSchedule((current) => ({
-                                    ...current,
-                                    window: current.window ? { ...current.window, start: event.target.value } : null,
-                                  }))
-                                }
-                                className="bg-cyber-bg border-white/10 text-white"
-                              />
-                            </div>
-                            <div className="space-y-2">
-                              <Label className="text-[11px] text-white/45">结束时间</Label>
-                              <Input
-                                type="time"
-                                value={schedule.window.end}
-                                onChange={(event) =>
-                                  setSchedule((current) => ({
-                                    ...current,
-                                    window: current.window ? { ...current.window, end: event.target.value } : null,
-                                  }))
-                                }
-                                className="bg-cyber-bg border-white/10 text-white"
-                              />
-                            </div>
-                          </div>
-                          <div className="space-y-2">
-                            <Label className="text-[11px] text-white/45">时间段时区</Label>
-                            <Input
-                              value={schedule.window.timezone || schedule.timezone}
-                              onChange={(event) =>
-                                setSchedule((current) => ({
-                                  ...current,
-                                  window: current.window ? { ...current.window, timezone: event.target.value } : null,
-                                }))
-                              }
-                              placeholder="例如：Asia/Shanghai"
-                              className="bg-cyber-bg border-white/10 text-white"
-                            />
-                          </div>
-                        </>
-                      ) : (
-                        <p className="text-xs text-white/40">关闭后仅按 Cron 触发，不限制每天的可执行时段。</p>
-                      )}
-                    </div>
-                    <p className="text-xs text-white/40">启用后由后端调度器轮询执行；若当前已有运行中的流程，会跳过该次触发。</p>
-                  </>
-                ) : null}
-              </div>
-
-              <div className="p-4 border-t border-white/5 space-y-3">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-white font-semibold text-sm">执行日志</h3>
-                  {execution ? <span className="text-[10px] text-white/35">{execution.id}</span> : null}
-                </div>
-                {execution?.logs?.length ? (
-                  <div className="space-y-2 max-h-80 overflow-y-auto">
-                    {execution.logs.map((log, index) => (
-                      <div key={`${log.timestamp}-${index}`} className="rounded-lg border border-white/5 bg-cyber-bg/40 p-3">
-                        <div className="flex items-center justify-between gap-3 mb-1">
-                          <span className={cn('text-[10px] uppercase', log.level === 'error' ? 'text-red-300' : log.level === 'warn' ? 'text-yellow-300' : 'text-cyber-green')}>{log.level}</span>
-                          <span className="text-[10px] text-white/30">{new Date(log.timestamp).toLocaleString()}</span>
-                        </div>
-                        <p className="text-[11px] text-white/50 mb-1">节点: {log.nodeId}</p>
-                        <p className="text-sm text-white/80 whitespace-pre-wrap">{log.message}</p>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-sm text-white/35">执行后会在这里显示真实日志和失败原因。</p>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
+    <div className="flex h-full min-h-0 flex-col">
+      <WorkflowEditorShell
+        hasSelection={Boolean(selected)}
+        sidebar={<div className="flex h-full w-72 flex-col overflow-hidden bg-cyber-surface/20"><div className="flex items-center justify-between border-b border-white/6 p-4"><div><p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-cyan-200/70">Workflow Hub</p><h3 className="mt-1 text-base font-semibold text-white">工作流列表</h3></div><Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}><DialogTrigger asChild><Button size="sm" className="border border-cyber-amber/30 bg-cyber-amber/20 text-cyber-amber hover:bg-cyber-amber/30"><Plus className="mr-1 h-3.5 w-3.5" /> 新建</Button></DialogTrigger><DialogContent className="border-white/10 bg-cyber-surface text-white"><DialogHeader><DialogTitle>新建工作流</DialogTitle></DialogHeader><div className="space-y-4 pt-4"><Input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="工作流名称" className="border-white/10 bg-cyber-bg text-white" onKeyDown={(event) => event.key === 'Enter' && void handleCreate()} autoFocus /><div className="space-y-2"><Label className="text-xs text-white/60">所属工作室</Label><Select value={newTeamId || teamOptions[0]?.id || '__none__'} onValueChange={(value) => setNewTeamId(value === '__none__' ? '' : value)}><SelectTrigger className="border-white/10 bg-cyber-bg text-white"><SelectValue placeholder="选择一个工作室" /></SelectTrigger><SelectContent className="border-white/10 bg-cyber-panel text-white">{teamOptions.length ? teamOptions.map((team) => <SelectItem key={team.id} value={team.id}>{team.name}（{team.memberCount} 成员）</SelectItem>) : <SelectItem value="__none__">暂无可用工作室</SelectItem>}</SelectContent></Select></div><Button onClick={() => void handleCreate()} className="w-full bg-gradient-to-r from-cyber-amber/80 to-cyber-amber" disabled={creating || !newName.trim()}>{creating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}创建</Button></div></DialogContent></Dialog></div><div className="min-h-0 flex-1 overflow-y-auto p-3">{workflows.length === 0 ? <EmptyState scene="no-workflows" className="py-10" /> : <div className="space-y-2">{workflows.map((workflow) => <button key={workflow.id} type="button" onClick={() => openWorkflow(workflow)} className={cn('group flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left transition-all', selected?.id === workflow.id ? 'border-cyber-amber/35 bg-cyber-amber/12 text-white' : 'border-transparent bg-white/[0.02] text-white/55 hover:border-white/[0.08] hover:bg-white/[0.05]')}><span className="flex h-9 w-9 items-center justify-center rounded-2xl border border-white/10 bg-white/5"><GitBranch className="h-4 w-4 text-cyber-amber/70" /></span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{workflow.name}</span><span className="block text-[10px] text-white/30">{Object.keys(workflow.nodes).length} 节点</span></span></button>)}</div>}</div></div>}
+        palette={<WorkflowNodePalette onCreateNode={(type) => addNode(type)} />}
+        topbar={<WorkflowCanvasTopbar eyebrow="Workflow Studio" title={selected?.name || '选择或创建一个工作流'} subtitle={selected ? `画布优先编辑模式 · 当前团队：${currentWorkflowTeam?.name || selected.teamId}` : '从左侧列表选择工作流后，即可在中央画布拖拽节点。'} badges={<>{statusBadge ? <span className={cn('rounded-full border px-2 py-0.5 text-[10px]', statusBadge.tone)}>{statusBadge.label}</span> : null}<span className={cn('rounded-full border px-2 py-0.5 text-[10px]', autosaveState === 'error' ? 'border-amber-400/20 bg-amber-400/10 text-amber-200' : 'border-white/10 bg-white/5 text-white/55')}>{autosaveLabel}</span></>} />}
+        canvas={<WorkflowCanvas nodes={executionDecorations.nodes} edges={executionDecorations.edges} selectedNodeId={selectedNodeId} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect} onEdgeUpdateStart={handleEdgeUpdateStart} onEdgeUpdate={handleEdgeUpdate} onEdgeUpdateEnd={handleEdgeUpdateEnd} onNodeSelect={setSelectedNodeId} onCreateNodeAt={addNode} />}
+        dock={<WorkflowCanvasDock saving={saving} executionActive={executionIsActive} onExecute={() => void handleExecute()} onStop={() => void handleStop()} onSave={() => void handleSave()} statusBadge={statusBadge ? <span className={cn('rounded-full border px-2 py-0.5 text-[10px]', statusBadge.tone)}>{statusBadge.label}</span> : null} />}
+        inspector={<NodePropertiesPanel selectedNode={selectedNode as any} agents={scopedAgents} upstreamOptions={selectedNodeUpstreamOptions} selectedConditionConnections={selectedConditionConnections} instructionManual={selectedNodeInstructionManual} onUpdate={updateSelectedNode} onDelete={handleDeleteSelectedNode}><div className="workflow-frost-panel rounded-3xl p-4">{execution?.status === 'waiting_approval' ? <div className="rounded-2xl border border-yellow-500/20 bg-yellow-500/10 p-4"><div className="flex items-start justify-between gap-3"><div className="space-y-1"><p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-yellow-200">等待审批</p><p className="text-sm font-medium text-white">{pendingApproval?.title || '当前执行正在等待审批'}</p><p className="text-xs text-white/45">执行：{execution.id}{execution.currentNodeId ? ` · 节点：${execution.currentNodeId}` : ''}</p></div><span className="rounded-full border border-yellow-500/20 bg-yellow-500/10 px-2 py-0.5 text-[10px] text-yellow-100">waiting_approval</span></div><p className="mt-3 rounded-xl border border-white/[0.08] bg-black/20 px-3 py-2 text-xs text-white/70">{pendingApproval?.description || '当前执行已暂停，等待人工审批后继续。'}</p>{pendingApproval ? <div className="mt-3 flex items-center gap-2"><Button size="sm" onClick={() => void handleResolveApproval(true)} disabled={approvalBusy !== null} className="border border-emerald-400/25 bg-emerald-400/15 text-emerald-200 hover:bg-emerald-400/25">{approvalBusy === 'approve' ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : null}通过</Button><Button size="sm" variant="destructive" onClick={() => void handleResolveApproval(false)} disabled={approvalBusy !== null}>{approvalBusy === 'reject' ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : null}驳回</Button></div> : null}</div> : <div><h3 className="text-sm font-semibold text-white">流程配置</h3><p className="mt-1 text-sm text-white/45">全局调度、执行日志和审批状态从这里统一查看。</p></div>}</div><div className="workflow-frost-panel rounded-3xl p-4"><div className="flex items-center justify-between gap-3"><h3 className="text-sm font-semibold text-white">定时执行</h3><ToggleButton checked={schedule.enabled} onToggle={() => setSchedule((current) => ({ ...current, enabled: !current.enabled }))} label={schedule.enabled ? '已启用' : '已关闭'} /></div>{schedule.enabled ? <div className="mt-4 space-y-3"><div className="space-y-2"><Label className="text-xs text-white/60">Cron 表达式</Label><Input value={schedule.cron} onChange={(event) => setSchedule((current) => ({ ...current, cron: event.target.value }))} className="border-white/10 bg-cyber-bg text-white" /></div><div className="space-y-2"><Label className="text-xs text-white/60">时区</Label><Input value={schedule.timezone} onChange={(event) => setSchedule((current) => ({ ...current, timezone: event.target.value }))} className="border-white/10 bg-cyber-bg text-white" /></div><div className="grid grid-cols-2 gap-3"><div className="space-y-2"><Label className="text-xs text-white/60">生效开始</Label><Input type="datetime-local" value={toDateTimeLocalValue(schedule.activeFrom)} onChange={(event) => setSchedule((current) => ({ ...current, activeFrom: fromDateTimeLocalValue(event.target.value) }))} className="border-white/10 bg-cyber-bg text-white" /></div><div className="space-y-2"><Label className="text-xs text-white/60">生效截止</Label><Input type="datetime-local" value={toDateTimeLocalValue(schedule.activeUntil)} onChange={(event) => setSchedule((current) => ({ ...current, activeUntil: fromDateTimeLocalValue(event.target.value) }))} className="border-white/10 bg-cyber-bg text-white" /></div></div></div> : <p className="mt-3 text-sm text-white/35">关闭后不会自动调度执行，仅支持手动触发。</p>}</div><div className="workflow-frost-panel rounded-3xl p-4"><div className="flex items-center justify-between"><h3 className="text-sm font-semibold text-white">执行日志</h3>{execution ? <span className="text-[10px] text-white/35">{execution.id}</span> : null}</div>{execution?.logs?.length ? <div className="mt-3 max-h-80 space-y-2 overflow-y-auto">{execution.logs.map((log, index) => <div key={`${log.timestamp}-${index}`} className="rounded-2xl border border-white/6 bg-cyber-bg/45 p-3"><div className="mb-1 flex items-center justify-between gap-3"><span className={cn('text-[10px] uppercase', log.level === 'error' ? 'text-red-300' : log.level === 'warn' ? 'text-yellow-300' : 'text-emerald-300')}>{log.level}</span><span className="text-[10px] text-white/30">{new Date(log.timestamp).toLocaleString()}</span></div><p className="mb-1 text-[11px] text-white/45">节点: {log.nodeId}</p><p className="whitespace-pre-wrap text-sm text-white/80">{log.message}</p></div>)}</div> : <p className="mt-3 text-sm text-white/35">执行后会在这里显示真实日志和失败原因。</p>}</div></NodePropertiesPanel>}
+        emptyState={<div className="flex h-full items-center justify-center rounded-[26px] border border-dashed border-white/10 bg-white/[0.02]"><div className="max-w-xl text-center"><p className="text-lg font-medium text-white">画布已准备好，先选择一个工作流</p><p className="mt-2 text-sm leading-6 text-white/45">左侧管理工作流，选中后可在中间画布拖拽节点、连接分支，并在右侧检查器里配置参数。</p></div></div>}
+      />
     </div>
   )
 }

@@ -6,11 +6,11 @@
 
 @layer base {
   :root {
-    --background: 240 20% 7%;
+    --background: 222 47% 7%;
     --foreground: 210 40% 98%;
-    --card: 240 17% 10%;
+    --card: 222 39% 10%;
     --card-foreground: 210 40% 98%;
-    --popover: 240 17% 10%;
+    --popover: 222 39% 10%;
     --popover-foreground: 210 40% 98%;
     --primary: 239 84% 67%;
     --primary-foreground: 210 40% 98%;
@@ -49,138 +49,219 @@
   }
 
   ::-webkit-scrollbar-thumb {
-    @apply bg-cyber-panel rounded-full;
+    @apply bg-white/[0.08] rounded-full;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    @apply bg-cyber-elevated;
+    @apply bg-white/15;
   }
 }
 
+/* ═════════════════════════════════════════════
+   Modern Glass Card System
+   ═════════════════════════════════════════════ */
+
 @layer utilities {
+  /* ── Glass Cards ── */
+  .glass-card {
+    @apply relative rounded-2xl border border-white/[0.06] backdrop-blur-xl;
+    background: linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.05) 0%,
+      rgba(255, 255, 255, 0.02) 100%
+    );
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 8px 24px rgba(0, 0, 0, 0.08);
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .glass-card:hover {
+    border-color: rgba(255, 255, 255, 0.1);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16), 0 16px 48px rgba(0, 0, 0, 0.12);
+    transform: translateY(-1px);
+  }
+
+  .glass-card-static {
+    @apply relative rounded-2xl border border-white/[0.06] backdrop-blur-xl;
+    background: linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.05) 0%,
+      rgba(255, 255, 255, 0.02) 100%
+    );
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 8px 24px rgba(0, 0, 0, 0.08);
+  }
+
+  /* Backward compat: cartoon-card now maps to glass-card */
+  .cartoon-card {
+    @apply relative rounded-2xl border border-white/[0.06] backdrop-blur-xl;
+    background: linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.05) 0%,
+      rgba(255, 255, 255, 0.02) 100%
+    );
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 8px 24px rgba(0, 0, 0, 0.08);
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .cartoon-card:hover {
+    border-color: rgba(255, 255, 255, 0.1);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16), 0 16px 48px rgba(0, 0, 0, 0.12);
+    transform: translateY(-1px);
+  }
+
+  /* ── Stat Card with accent stripe ── */
+  .stat-card {
+    @apply relative flex items-center gap-4 rounded-xl border border-white/[0.06] px-5 py-4;
+    background: rgba(255, 255, 255, 0.03);
+    transition: all 0.2s ease;
+  }
+
+  .stat-card::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 3px;
+    height: 60%;
+    border-radius: 0 4px 4px 0;
+    background: var(--accent-color, #6366F1);
+  }
+
+  .stat-card:hover {
+    border-color: rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  /* ── Section Title ── */
+  .section-title {
+    @apply flex items-center gap-2.5 text-[15px] font-semibold tracking-tight;
+    color: rgba(255, 255, 255, 0.88);
+  }
+
+  /* ── Glass utilities ── */
   .glass {
-    @apply bg-white/5 backdrop-blur-md border border-white/10;
+    @apply bg-white/[0.04] backdrop-blur-xl border border-white/[0.06];
   }
 
   .glass-strong {
-    @apply bg-white/10 backdrop-blur-xl border border-white/15;
+    @apply bg-white/[0.08] backdrop-blur-2xl border border-white/[0.08];
   }
 
+  .glass-subtle {
+    @apply bg-white/[0.02] backdrop-blur-md border border-white/[0.04];
+  }
+
+  /* ── Glow effects ── */
   .glow-purple {
-    box-shadow: 0 0 20px rgba(99, 102, 241, 0.3),
-                0 0 40px rgba(99, 102, 241, 0.1);
+    box-shadow: 0 0 20px rgba(99, 102, 241, 0.15), 0 0 4px rgba(99, 102, 241, 0.3);
   }
 
   .glow-green {
-    box-shadow: 0 0 15px rgba(34, 197, 94, 0.3);
+    box-shadow: 0 0 20px rgba(34, 197, 94, 0.15), 0 0 4px rgba(34, 197, 94, 0.3);
   }
 
   .glow-red {
-    box-shadow: 0 0 15px rgba(239, 68, 68, 0.3);
+    box-shadow: 0 0 15px rgba(239, 68, 68, 0.2);
   }
 
   .glow-blue {
-    box-shadow: 0 0 15px rgba(59, 130, 246, 0.3);
+    box-shadow: 0 0 15px rgba(59, 130, 246, 0.2);
   }
 
-  .neon-text {
-    text-shadow: 0 0 10px currentColor,
-                 0 0 20px currentColor,
-                 0 0 40px currentColor;
-  }
-
+  /* ── Gradient utilities ── */
   .gradient-border {
     border-image: linear-gradient(135deg, #6366F1, #8B5CF6, #A78BFA) 1;
   }
 
-  .cyber-grid {
+  .gradient-text-primary {
+    background: linear-gradient(135deg, #818CF8 0%, #6366F1 50%, #8B5CF6 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .gradient-text-cyan {
+    background: linear-gradient(135deg, #67E8F9 0%, #06B6D4 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* ── Subtle background pattern ── */
+  .bg-grid-subtle {
     background-image:
-      linear-gradient(rgba(99, 102, 241, 0.03) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(99, 102, 241, 0.03) 1px, transparent 1px);
-    background-size: 40px 40px;
+      linear-gradient(rgba(255, 255, 255, 0.015) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+    background-size: 48px 48px;
   }
 
-  .isometric {
-    transform: rotateX(60deg) rotateZ(-45deg);
-    transform-style: preserve-3d;
-  }
-
-  /* ── Cartoon Office Theme ── */
-  .cartoon-office-bg {
-    background: linear-gradient(180deg, #1e2a3a 0%, #2a1f3d 40%, #1a2433 100%);
-    position: relative;
-  }
-
-  .cartoon-floor {
-    background: linear-gradient(180deg, transparent 0%, rgba(139, 92, 246, 0.04) 50%, rgba(99, 102, 241, 0.06) 100%);
-  }
-
-  .cartoon-card {
-    background: linear-gradient(135deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.03) 100%);
-    border: 2px solid rgba(255,255,255,0.1);
-    border-radius: 16px;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.08);
-    transition: all 0.3s ease;
-  }
-
-  .cartoon-card:hover {
-    border-color: rgba(139, 92, 246, 0.4);
-    box-shadow: 0 8px 32px rgba(139, 92, 246, 0.15), inset 0 1px 0 rgba(255,255,255,0.1);
-    transform: translateY(-2px);
-  }
-
+  /* ── Backward compat aliases ── */
   .cartoon-desk {
-    background: linear-gradient(135deg, rgba(139, 92, 246, 0.1) 0%, rgba(99, 102, 241, 0.06) 100%);
-    border: 2px solid rgba(139, 92, 246, 0.2);
-    border-radius: 20px;
-    box-shadow: 0 6px 24px rgba(0,0,0,0.15), inset 0 1px 0 rgba(255,255,255,0.06);
-    transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+    @apply relative rounded-2xl border border-white/[0.08] backdrop-blur-xl;
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.06) 0%, rgba(139, 92, 246, 0.03) 100%);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   }
 
   .cartoon-desk:hover {
-    border-color: rgba(139, 92, 246, 0.5);
-    box-shadow: 0 10px 40px rgba(139, 92, 246, 0.2), inset 0 1px 0 rgba(255,255,255,0.1);
-    transform: translateY(-4px) scale(1.02);
-  }
-
-  .cartoon-empty-desk {
-    background: linear-gradient(135deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.01) 100%);
-    border: 2px dashed rgba(255,255,255,0.12);
-    border-radius: 20px;
-    transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
-  }
-
-  .cartoon-empty-desk:hover {
-    border-color: rgba(34, 197, 94, 0.5);
-    background: linear-gradient(135deg, rgba(34, 197, 94, 0.08) 0%, rgba(34, 197, 94, 0.03) 100%);
-    box-shadow: 0 6px 24px rgba(34, 197, 94, 0.12);
+    border-color: rgba(99, 102, 241, 0.25);
+    box-shadow: 0 8px 32px rgba(99, 102, 241, 0.1);
     transform: translateY(-2px);
   }
 
+  .cartoon-empty-desk {
+    @apply rounded-2xl border-2 border-dashed border-white/[0.08];
+    background: rgba(255, 255, 255, 0.02);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .cartoon-empty-desk:hover {
+    border-color: rgba(34, 197, 94, 0.3);
+    background: rgba(34, 197, 94, 0.04);
+  }
+
   .cartoon-avatar {
-    border-radius: 50%;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.3);
-    transition: all 0.3s ease;
+    @apply rounded-full;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    transition: all 0.2s ease;
   }
 
   .cartoon-avatar:hover {
-    transform: scale(1.08);
-    box-shadow: 0 6px 24px rgba(0,0,0,0.4);
+    transform: scale(1.05);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  }
+
+  .cartoon-office-bg {
+    background: linear-gradient(180deg, #0B0F19 0%, #111827 40%, #0B0F19 100%);
+  }
+
+  .cartoon-floor {
+    background: linear-gradient(180deg, transparent 0%, rgba(99, 102, 241, 0.02) 50%, rgba(99, 102, 241, 0.04) 100%);
   }
 
   .cartoon-window {
-    background: linear-gradient(180deg, #2a3f5f 0%, #1e2a3a 60%, #3d2a5f 100%);
-    border: 2px solid rgba(255,255,255,0.08);
+    background: linear-gradient(180deg, #1A2332 0%, #111827 60%, #1F2937 100%);
+    border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 12px;
     overflow: hidden;
   }
 
   .cartoon-plant {
-    filter: drop-shadow(0 4px 8px rgba(0,0,0,0.3));
+    filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.2));
+  }
+
+  /* ── Isometric kept for possible 3D views ── */
+  .isometric {
+    transform: rotateX(60deg) rotateZ(-45deg);
+    transform-style: preserve-3d;
   }
 }
 
-/* ── Cartoon Office Animations ── */
+/* ═════════════════════════════════════════════
+   Animations (kept outside @layer for global scope)
+   ═════════════════════════════════════════════ */
+
+/* PixiJS office scene animations — used in TeamDetail */
 @keyframes cartoon-bob {
   0%, 100% { transform: translateY(0px); }
   50% { transform: translateY(-3px); }
@@ -237,7 +318,9 @@
   50% { box-shadow: 0 0 12px 2px currentColor; opacity: 1; }
 }
 
-/* ─── Markdown Preview 样式 ─── */
+/* ═════════════════════════════════════════════
+   Markdown Preview
+   ═════════════════════════════════════════════ */
 
 .md-preview {
   color: rgba(255, 255, 255, 0.7);
@@ -251,7 +334,7 @@
   color: rgba(255, 255, 255, 0.95);
   margin: 1.25rem 0 0.75rem;
   padding-bottom: 0.5rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .md-preview .md-h2 {
@@ -260,7 +343,7 @@
   color: rgba(255, 255, 255, 0.9);
   margin: 1rem 0 0.5rem;
   padding-bottom: 0.35rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
 }
 
 .md-preview .md-h3 {
@@ -324,8 +407,8 @@
 .md-preview .md-inline-code {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.8rem;
-  background: rgba(99, 102, 241, 0.1);
-  border: 1px solid rgba(99, 102, 241, 0.15);
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.12);
   color: rgba(167, 139, 250, 0.9);
   padding: 0.1rem 0.4rem;
   border-radius: 0.25rem;
@@ -334,8 +417,8 @@
 .md-preview .md-code-block {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.8rem;
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.04);
   border-radius: 0.5rem;
   padding: 0.75rem 1rem;
   margin: 0.5rem 0;
@@ -345,7 +428,7 @@
 }
 
 .md-preview .md-quote {
-  border-left: 3px solid rgba(99, 102, 241, 0.4);
+  border-left: 3px solid rgba(99, 102, 241, 0.3);
   padding: 0.25rem 0.75rem;
   margin: 0.5rem 0;
   color: rgba(255, 255, 255, 0.5);
@@ -356,7 +439,7 @@
 .md-preview .md-hr {
   border: none;
   height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(99, 102, 241, 0.3), transparent);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.08), transparent);
   margin: 1rem 0;
 }
 
@@ -377,19 +460,21 @@
   color: rgba(147, 197, 253, 1);
 }
 
-/* 鈹€鈹€鈹€ Empire Dashboard 鈹€鈹€鈹€ */
+/* ═════════════════════════════════════════════
+   Empire Dashboard — game panel kept for PixiJS
+   ═════════════════════════════════════════════ */
 
 .game-panel {
   position: relative;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 1.25rem;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 1rem;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.02)),
-    rgba(8, 15, 31, 0.86);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.015)),
+    rgba(11, 15, 25, 0.9);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 12px 32px rgba(2, 6, 23, 0.35);
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 8px 24px rgba(0, 0, 0, 0.2);
   backdrop-filter: blur(18px);
 }
 
@@ -398,21 +483,20 @@
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: linear-gradient(135deg, rgba(34, 211, 238, 0.08), transparent 28%, transparent 72%, rgba(168, 85, 247, 0.08));
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.04), transparent 28%, transparent 72%, rgba(139, 92, 246, 0.04));
   opacity: 0.8;
 }
 
 .dashboard-title-gradient {
-  background: linear-gradient(90deg, #f8fafc 0%, #67e8f9 35%, #a78bfa 100%);
+  background: linear-gradient(90deg, #F9FAFB 0%, #818CF8 50%, #A78BFA 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  text-shadow: 0 0 24px rgba(34, 211, 238, 0.18);
 }
 
 .dashboard-time-display {
-  color: #f8fafc;
-  text-shadow: 0 0 18px rgba(34, 211, 238, 0.28);
+  color: #F9FAFB;
+  text-shadow: 0 0 12px rgba(99, 102, 241, 0.2);
 }
 
 .dashboard-ranking-gradient {
@@ -435,39 +519,84 @@
 }
 
 @keyframes neon-pulse-orange {
-  0%, 100% {
-    box-shadow: 0 0 0 rgba(251, 146, 60, 0);
-    filter: drop-shadow(0 0 0 rgba(251, 146, 60, 0));
-  }
-  50% {
-    box-shadow: 0 0 18px rgba(251, 146, 60, 0.26);
-    filter: drop-shadow(0 0 10px rgba(251, 146, 60, 0.35));
-  }
+  0%, 100% { box-shadow: 0 0 0 rgba(251, 146, 60, 0); }
+  50% { box-shadow: 0 0 12px rgba(251, 146, 60, 0.2); }
 }
 
 @keyframes cta-glow {
-  0%, 100% {
-    box-shadow: 0 6px 22px rgba(34, 211, 238, 0.22);
-  }
-  50% {
-    box-shadow: 0 10px 30px rgba(59, 130, 246, 0.36);
-  }
+  0%, 100% { box-shadow: 0 6px 18px rgba(99, 102, 241, 0.15); }
+  50% { box-shadow: 0 10px 28px rgba(99, 102, 241, 0.25); }
 }
 
 @keyframes crown-wiggle {
-  0%, 100% {
-    transform: rotate(0deg) scale(1);
-  }
-  20% {
-    transform: rotate(-6deg) scale(1.03);
-  }
-  40% {
-    transform: rotate(5deg) scale(1.06);
-  }
-  60% {
-    transform: rotate(-3deg) scale(1.04);
-  }
-  80% {
-    transform: rotate(2deg) scale(1.02);
-  }
+  0%, 100% { transform: rotate(0deg) scale(1); }
+  20% { transform: rotate(-4deg) scale(1.02); }
+  40% { transform: rotate(3deg) scale(1.04); }
+  60% { transform: rotate(-2deg) scale(1.03); }
+  80% { transform: rotate(1deg) scale(1.01); }
 }
+
+/* ═════════════════════════════════════════════
+   Workflow Studio
+   ═════════════════════════════════════════════ */
+
+.workflow-frost-panel {
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.74), rgba(15, 23, 42, 0.58)),
+    radial-gradient(circle at top, rgba(99, 102, 241, 0.08), transparent 42%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.03),
+    0 16px 48px rgba(0, 0, 0, 0.16);
+  backdrop-filter: blur(20px);
+}
+
+.workflow-studio-sidebar {
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(2, 6, 23, 0.78)),
+    radial-gradient(circle at top, rgba(34, 197, 94, 0.06), transparent 38%);
+}
+
+.workflow-studio-canvas {
+  background:
+    radial-gradient(circle at top, rgba(99, 102, 241, 0.08), transparent 22%),
+    linear-gradient(180deg, rgba(11, 15, 25, 0.98), rgba(11, 15, 25, 1));
+}
+
+.workflow-studio-canvas .react-flow__pane {
+  cursor: grab;
+}
+
+.workflow-studio-canvas .react-flow__pane:active {
+  cursor: grabbing;
+}
+
+.workflow-studio-canvas .react-flow__node.selected > div,
+.workflow-studio-canvas .react-flow__node:focus-visible > div {
+  box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.3), 0 0 16px rgba(99, 102, 241, 0.2);
+}
+
+.workflow-palette-card {
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.82), rgba(15, 23, 42, 0.62));
+}
+
+.workflow-palette-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.16);
+}
+
+.workflow-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.workflow-scroll::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.workflow-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Removed legacy: neon-text, cyber-grid are deprecated */

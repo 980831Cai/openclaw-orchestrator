@@ -15,6 +15,16 @@ from typing import Any
 
 from openclaw_orchestrator.database.db import get_db
 
+try:
+    from openclaw_orchestrator.services.workflow_scheduler import workflow_scheduler
+except Exception:  # pragma: no cover - optional dependency fallback
+    class _WorkflowSchedulerFallback:
+        @staticmethod
+        def get_next_run_at(_workflow: dict[str, Any]) -> None:
+            return None
+
+    workflow_scheduler = _WorkflowSchedulerFallback()
+
 
 _MESSAGE_TABLE = "live_feed_messages"
 _EVENT_TABLE = "live_feed_events"
@@ -65,7 +75,6 @@ class LiveFeedService:
 
         from openclaw_orchestrator.services.notification_service import notification_service
         from openclaw_orchestrator.services.workflow_engine import workflow_engine
-        from openclaw_orchestrator.services.workflow_scheduler import workflow_scheduler
 
         scheduled_workflows: list[dict[str, Any]] = []
         for workflow in workflow_engine.list_workflows():

@@ -3,24 +3,27 @@ import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ArrowRight,
+  Bot,
   Building2,
+  ChevronRight,
   ClipboardList,
   Clock3,
   Radio,
   ShieldCheck,
+  Users,
   Waypoints,
   Wifi,
   Zap,
 } from 'lucide-react'
-import { Logo } from '@/components/brand/Logo'
+import { AgentAvatar } from '@/components/avatar/AgentAvatar'
 import { EmptyState } from '@/components/brand/EmptyState'
-import { EmpireOfficeBoard } from '@/components/empire-dashboard/EmpireOfficeBoard'
 import {
   buildAgentRooms,
   buildLiveFeed,
   resolveAgents,
   timeAgo,
   type LiveFeedItem,
+  type ResolvedAgent,
 } from '@/components/empire-dashboard/model'
 import { useAgents } from '@/hooks/use-agents'
 import { useTeams } from '@/hooks/use-teams'
@@ -28,6 +31,11 @@ import { getActiveWorkflowCount, getActiveWorkflowSignals, getSchedulableWorkflo
 import { cn } from '@/lib/utils'
 import { useMonitorStore } from '@/stores/monitor-store'
 import type { CommunicationEvent, TeamListItem, WorkflowDefinition, WorkflowRuntimeSignal } from '@/types'
+
+/* ═══════════════════════════════════════════════
+   DashboardPage — 总部大厅
+   Modern data-driven overview dashboard
+   ═══════════════════════════════════════════════ */
 
 export function DashboardPage() {
   const navigate = useNavigate()
@@ -69,21 +77,15 @@ export function DashboardPage() {
   })
 
   const busyCount = resolvedAgents.filter((agent) => agent.resolvedStatus === 'busy').length
-  const agentRooms = buildAgentRooms(teams, resolvedAgents)
+  const onlineCount = resolvedAgents.filter((a) => a.resolvedStatus !== 'offline').length
   const liveFeedItems = useMemo(
     () => buildLiveFeed(events, realtimeMessages, workflowSignalList, notifications).slice(0, 10),
     [events, notifications, realtimeMessages, workflowSignalList],
   )
   const allActiveWorkflowSignals = useMemo(() => getActiveWorkflowSignals(workflowSignalList), [workflowSignalList])
-  const activeWorkflowSignals = useMemo(
-    () => allActiveWorkflowSignals.slice(0, 6),
-    [allActiveWorkflowSignals],
-  )
+  const activeWorkflowSignals = useMemo(() => allActiveWorkflowSignals.slice(0, 6), [allActiveWorkflowSignals])
   const activeScheduledWorkflows = useMemo(() => getSchedulableWorkflows(workflowCatalog), [workflowCatalog])
-  const scheduledWorkflows = useMemo(
-    () => activeScheduledWorkflows.slice(0, 5),
-    [activeScheduledWorkflows],
-  )
+  const scheduledWorkflows = useMemo(() => activeScheduledWorkflows.slice(0, 5), [activeScheduledWorkflows])
 
   const visibleWorkflowCount = useMemo(
     () => getActiveWorkflowCount({ signals: workflowSignalList, workflows: workflowCatalog }),
@@ -103,152 +105,319 @@ export function DashboardPage() {
     : '实时通道未连接，首页状态可能不完整'
 
   return (
-    <div className="h-full overflow-auto p-8">
-      <div className="cartoon-card relative mb-8 overflow-hidden p-8">
-        <div
-          className="pointer-events-none absolute inset-0"
-          style={{
-            background:
-              'radial-gradient(ellipse at 20% 50%, rgba(99,102,241,0.08) 0%, transparent 60%), radial-gradient(ellipse at 80% 50%, rgba(139,92,246,0.06) 0%, transparent 60%)',
-          }}
-        />
-
-        <div className="relative z-10 flex items-center justify-between gap-6">
-          <div className="flex items-center gap-5">
-            <Logo size="lg" mood={connected ? 'waving' : 'worried'} animated />
-            <div>
-              <h1 className="text-2xl font-bold text-white/90">{greeting}，指挥官 👋</h1>
-              <p className="mt-1 text-sm text-white/30">{systemSummary}</p>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-6">
-            <StatCard
-              icon={<Radio className={cn('h-4 w-4', connected ? 'text-cyber-cyan' : 'text-cyber-red')} />}
-              label="实时通道"
-              value={connected ? '已连' : '断开'}
-              valueColor={connected ? 'text-cyber-cyan' : 'text-cyber-red'}
-            />
-            <StatCard
-              icon={<Wifi className={cn('h-4 w-4', gatewayConnected ? 'text-cyber-green' : 'text-cyber-red')} />}
-              label="Gateway RPC"
-              value={gatewayConnected ? '在线' : '离线'}
-              valueColor={gatewayConnected ? 'text-cyber-green' : 'text-cyber-red'}
-            />
-            <StatCard
-              icon={<ShieldCheck className={cn('h-4 w-4', gatewayRuntimeRunning ? 'text-cyber-amber' : 'text-white/25')} />}
-              label="Gateway 进程"
-              value={gatewayRuntimeRunning ? '运行中' : '未运行'}
-              valueColor={gatewayRuntimeRunning ? 'text-cyber-amber' : 'text-white/45'}
-            />
-            <StatCard icon={<Zap className="h-4 w-4 text-cyber-purple" />} label="活跃 Agent" value={String(busyCount)} valueColor="text-cyber-purple" />
-            <StatCard icon={<Waypoints className="h-4 w-4 text-cyber-cyan" />} label="活跃工作流" value={String(visibleWorkflowCount)} valueColor="text-cyber-cyan" />
-            <StatCard icon={<ClipboardList className="h-4 w-4 text-cyber-amber" />} label="实时流" value={String(liveFeedItems.length)} valueColor="text-cyber-amber" />
-          </div>
-        </div>
-      </div>
-
-      <div className="group mb-6">
-        <div className="mb-4 flex items-center justify-between">
+    <div className="h-full overflow-auto">
+      <div className="mx-auto max-w-[1440px] space-y-6 p-6 lg:p-8">
+        {/* ── Header: Greeting + System Health ── */}
+        <header className="flex items-center justify-between">
           <div>
-            <h2 className="flex items-center gap-2 text-lg font-bold text-white">
-              <Building2 className="h-5 w-5 text-cyber-cyan" />
-              工作室入口
-            </h2>
-            {teams.length > 0 ? <p className="mt-1 text-[10px] text-white/25">悬停展开全部工作室</p> : null}
+            <h1 className="text-2xl font-bold tracking-tight text-white/90">{greeting}，指挥官</h1>
+            <p className="mt-1 text-[13px] text-white/35">
+              {connected ? '系统运行中' : '实时通道未连接'} · {agents.length} 位 Agent · {teams.length} 个工作室
+            </p>
           </div>
-          {teams.length > 0 ? (
-            <button
-              onClick={() => navigate('/teams')}
-              className="flex cursor-pointer items-center gap-1 text-xs text-white/25 transition-colors hover:text-white/50"
+          <div className="flex items-center gap-3">
+            <HealthDot active={connected} label="实时通道" />
+            <HealthDot active={gatewayConnected} label="Gateway" />
+            <HealthDot active={gatewayRuntimeRunning} label="进程" />
+          </div>
+        </header>
+
+        {/* ── Stats Row ── */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          <StatCard
+            icon={<Bot className="h-4 w-4" />}
+            label="活跃 Agent"
+            value={String(busyCount)}
+            accentColor="#6366F1"
+          />
+          <StatCard
+            icon={<Users className="h-4 w-4" />}
+            label="在线 Agent"
+            value={String(onlineCount)}
+            accentColor="#22C55E"
+          />
+          <StatCard
+            icon={<Waypoints className="h-4 w-4" />}
+            label="活跃工作流"
+            value={String(visibleWorkflowCount)}
+            accentColor="#06B6D4"
+          />
+          <StatCard
+            icon={<ClipboardList className="h-4 w-4" />}
+            label="实时事件"
+            value={String(liveFeedItems.length)}
+            accentColor="#F59E0B"
+          />
+          <StatCard
+            icon={<Radio className="h-4 w-4" />}
+            label="实时通道"
+            value={connected ? '已连接' : '断开'}
+            accentColor={connected ? '#22C55E' : '#EF4444'}
+          />
+          <StatCard
+            icon={<Wifi className="h-4 w-4" />}
+            label="Gateway"
+            value={gatewayConnected ? '在线' : '离线'}
+            accentColor={gatewayConnected ? '#22C55E' : '#EF4444'}
+          />
+        </div>
+
+        {/* ── Main Content: Two Column Layout ── */}
+        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1fr_380px] xl:items-start">
+          <div className="space-y-6">
+            {/* ── Team Hub ── */}
+            <Section
+              title="工作室"
+              icon={<Building2 className="h-4 w-4 text-cyber-cyan" />}
+              action={teams.length > 0 ? { label: '查看全部', onClick: () => navigate('/teams') } : undefined}
             >
-              全部 <ArrowRight className="h-3 w-3" />
-            </button>
-          ) : null}
-        </div>
+              {teams.length === 0 ? (
+                <div className="glass-card-static">
+                  <EmptyState scene="no-teams" className="py-8" />
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {teams.slice(0, 6).map((team) => (
+                    <TeamCard key={team.id} team={team} onClick={() => navigate(`/teams/${team.id}`)} />
+                  ))}
+                </div>
+              )}
+            </Section>
 
-        {teams.length === 0 ? (
-          <div className="cartoon-card">
-            <EmptyState scene="no-teams" className="py-8" />
+            {/* ── Agent Quick View ── */}
+            <Section
+              title="Agent 总览"
+              icon={<Bot className="h-4 w-4 text-cyber-purple" />}
+              action={agents.length > 0 ? { label: '查看全部', onClick: () => navigate('/agents') } : undefined}
+            >
+              {agents.length === 0 ? (
+                <div className="glass-card-static">
+                  <EmptyState scene="no-agents" className="py-8" />
+                </div>
+              ) : (
+                <div className="glass-card-static overflow-hidden">
+                  <div className="divide-y divide-white/[0.04]">
+                    {resolvedAgents.slice(0, 8).map((agent, i) => (
+                      <AgentRow
+                        key={agent.id}
+                        agent={agent}
+                        style={{ animationDelay: `${i * 50}ms` }}
+                        onClick={() => navigate(`/chat?agent=${encodeURIComponent(agent.id)}`)}
+                      />
+                    ))}
+                  </div>
+                  {resolvedAgents.length > 8 && (
+                    <button
+                      onClick={() => navigate('/agents')}
+                      className="flex w-full cursor-pointer items-center justify-center gap-1 border-t border-white/[0.04] py-3 text-xs text-white/30 transition hover:text-white/50"
+                    >
+                      查看全部 {resolvedAgents.length} 位 Agent <ChevronRight className="h-3 w-3" />
+                    </button>
+                  )}
+                </div>
+              )}
+            </Section>
           </div>
-        ) : (
-          <div className="cartoon-card overflow-hidden p-3 transition-all duration-300 group-hover:shadow-[0_14px_36px_rgba(56,189,248,0.12)]">
-            <div className="flex h-[84px] items-stretch gap-3 overflow-x-auto overflow-y-hidden pb-1 pr-1">
-              {teams.map((team) => (
-                <TeamDoorRailCard key={team.id} team={team} onClick={() => navigate(`/teams/${team.id}`)} />
-              ))}
-            </div>
+
+          {/* ── Right Sidebar: Workflow + Live Feed ── */}
+          <div className="space-y-6">
+            <WorkflowStatusPanel
+              activeSignals={activeWorkflowSignals}
+              activeSignalCount={allActiveWorkflowSignals.length}
+              scheduledWorkflows={scheduledWorkflows}
+              scheduledWorkflowCount={activeScheduledWorkflows.length}
+              onOpenWorkflows={() => navigate('/workflows')}
+              onOpenWorkflow={(workflowId, executionId, approvalId) =>
+                navigate(
+                  `/workflows?workflowId=${encodeURIComponent(workflowId)}${
+                    executionId ? `&executionId=${encodeURIComponent(executionId)}` : ''
+                  }${approvalId ? `&approvalId=${encodeURIComponent(approvalId)}` : ''}`,
+                )
+              }
+            />
+
+            <LiveFeedPanel
+              items={liveFeedItems}
+              gatewayConnected={gatewayConnected}
+              gatewayRuntimeRunning={gatewayRuntimeRunning}
+              onOpenChat={() => navigate('/chat')}
+            />
           </div>
-        )}
-      </div>
-
-      <div className="grid grid-cols-1 gap-8 xl:grid-cols-[minmax(0,1.9fr)_360px] xl:items-start">
-        <div className="min-w-0 space-y-4">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="flex items-center gap-2 text-lg font-bold text-white">
-              <Zap className="h-5 w-5 text-cyber-purple" />
-              Agent 广场
-            </h2>
-            {agents.length > 0 ? (
-              <button
-                onClick={() => navigate('/agents')}
-                className="flex cursor-pointer items-center gap-1 text-xs text-white/25 transition-colors hover:text-white/50"
-              >
-                查看全部 <ArrowRight className="h-3 w-3" />
-              </button>
-            ) : null}
-          </div>
-
-          <div className="cartoon-card flex min-h-[420px] flex-col overflow-hidden p-4 sm:p-6 xl:min-h-[760px]">
-            {agents.length === 0 ? (
-              <EmptyState scene="no-agents" />
-            ) : (
-              <EmpireOfficeBoard
-                rooms={agentRooms}
-                onOpenRoom={(roomId) => navigate(`/teams/${roomId}`)}
-                onOpenAgent={(agentId) => navigate(`/chat?agent=${encodeURIComponent(agentId)}`)}
-              />
-            )}
-          </div>
-        </div>
-
-        <div className="space-y-6 xl:pr-1">
-          <WorkflowStatusPanel
-            activeSignals={activeWorkflowSignals}
-            activeSignalCount={allActiveWorkflowSignals.length}
-            scheduledWorkflows={scheduledWorkflows}
-            scheduledWorkflowCount={activeScheduledWorkflows.length}
-            onOpenWorkflows={() => navigate('/workflows')}
-            onOpenWorkflow={(workflowId, executionId, approvalId) =>
-              navigate(
-                `/workflows?workflowId=${encodeURIComponent(workflowId)}${
-                  executionId ? `&executionId=${encodeURIComponent(executionId)}` : ''
-                }${approvalId ? `&approvalId=${encodeURIComponent(approvalId)}` : ''}`,
-              )
-            }
-          />
-
-          <LiveFeedPanel
-            items={liveFeedItems}
-            gatewayConnected={gatewayConnected}
-            gatewayRuntimeRunning={gatewayRuntimeRunning}
-            onOpenChat={() => navigate('/chat')}
-          />
         </div>
       </div>
     </div>
   )
 }
 
-function StatCard({ icon, label, value, valueColor }: { icon: ReactNode; label: string; value: string; valueColor: string }) {
+/* ─── Shared Components ─── */
+
+function HealthDot({ active, label }: { active: boolean; label: string }) {
   return (
-    <div className="flex flex-col items-center gap-1">
-      <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-white/5 bg-white/5">{icon}</div>
-      <span className={cn('font-mono text-sm font-bold', valueColor)}>{value}</span>
-      <span className="text-[9px] text-white/20">{label}</span>
+    <div className="flex items-center gap-1.5">
+      <span
+        className={cn(
+          'h-1.5 w-1.5 rounded-full transition-colors',
+          active ? 'bg-cyber-green' : 'bg-white/15',
+        )}
+      />
+      <span className="text-[11px] text-white/25">{label}</span>
     </div>
   )
 }
+
+function Section({
+  title,
+  icon,
+  action,
+  children,
+}: {
+  title: string
+  icon: ReactNode
+  action?: { label: string; onClick: () => void }
+  children: ReactNode
+}) {
+  return (
+    <section>
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="section-title">
+          {icon}
+          {title}
+        </h2>
+        {action ? (
+          <button
+            onClick={action.onClick}
+            className="flex cursor-pointer items-center gap-1 text-xs text-white/25 transition-colors hover:text-white/50"
+          >
+            {action.label} <ArrowRight className="h-3 w-3" />
+          </button>
+        ) : null}
+      </div>
+      {children}
+    </section>
+  )
+}
+function ScheduledWorkflowCard({ workflow, onClick }: { workflow: WorkflowDefinition; onClick: () => void }) {
+  const nextRunAt = workflow.schedule?.nextRunAt
+  const windowLabel = workflow.schedule?.window
+    ? `${workflow.schedule.window.start} - ${workflow.schedule.window.end}`
+    : null
+
+function StatCard({
+  icon,
+  label,
+  value,
+  accentColor,
+}: {
+  icon: ReactNode
+  label: string
+  value: string
+  accentColor: string
+}) {
+  return (
+    <div className="stat-card" style={{ '--accent-color': accentColor } as React.CSSProperties}>
+      <div
+        className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg"
+        style={{ backgroundColor: `${accentColor}15`, color: accentColor }}
+      >
+        {icon}
+      </div>
+      <div className="min-w-0">
+        <p className="font-mono text-lg font-bold leading-none" style={{ color: accentColor }}>
+          {value}
+        </p>
+        <p className="mt-1 text-[11px] text-white/30">{label}</p>
+      </div>
+    </div>
+  )
+}
+
+function TeamCard({ team, onClick }: { team: TeamListItem; onClick: () => void }) {
+  const hasActivity = (team.activeTaskCount ?? 0) > 0
+
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        'glass-card group flex items-center gap-4 p-4 text-left',
+        hasActivity && 'border-cyber-amber/15',
+      )}
+    >
+      <div
+        className={cn(
+          'flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl border border-white/[0.06] transition-colors',
+          hasActivity ? 'bg-cyber-amber/[0.08]' : 'bg-white/[0.03]',
+        )}
+      >
+        <Building2
+          className={cn('h-4 w-4 transition-colors', hasActivity ? 'text-cyber-amber' : 'text-white/30')}
+        />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium text-white/80 transition-colors group-hover:text-white/95">
+          {team.name}
+        </p>
+        <p className="mt-0.5 text-[11px] text-white/25">
+          {team.memberCount} 成员
+          {hasActivity ? (
+            <span className="ml-2 text-cyber-amber/80">· {team.activeTaskCount} 任务进行中</span>
+          ) : null}
+        </p>
+      </div>
+      <ChevronRight className="h-4 w-4 flex-shrink-0 text-white/10 transition-colors group-hover:text-white/30" />
+    </button>
+  )
+}
+
+function AgentRow({
+  agent,
+  style,
+  onClick,
+}: {
+  agent: ResolvedAgent
+  style?: React.CSSProperties
+  onClick: () => void
+}) {
+  const statusColor: Record<string, string> = {
+    busy: 'text-cyber-green bg-cyber-green/10 border-cyber-green/20',
+    idle: 'text-white/40 bg-white/[0.04] border-white/[0.06]',
+    scheduled: 'text-cyber-amber bg-cyber-amber/10 border-cyber-amber/20',
+    error: 'text-cyber-red bg-cyber-red/10 border-cyber-red/20',
+    offline: 'text-white/20 bg-white/[0.02] border-white/[0.04]',
+  }
+  const statusLabel: Record<string, string> = {
+    busy: '工作中',
+    idle: '待命',
+    scheduled: '值守中',
+    error: '异常',
+    offline: '离线',
+  }
+
+  return (
+    <button
+      onClick={onClick}
+      className="animate-fade-in-up flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-white/[0.02]"
+      style={style}
+    >
+      <AgentAvatar emoji={agent.emoji} theme={agent.theme} status={agent.resolvedStatus} size="sm" />
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium text-white/80">{agent.name}</p>
+        <p className="mt-0.5 truncate text-[11px] text-white/25">
+          {agent.currentTask || agent.empireReason || '暂无活动'}
+        </p>
+      </div>
+      <span
+        className={cn(
+          'rounded-md border px-2 py-0.5 text-[10px] font-medium',
+          statusColor[agent.resolvedStatus] ?? statusColor.idle,
+        )}
+      >
+        {statusLabel[agent.resolvedStatus] ?? '未知'}
+      </span>
+    </button>
+  )
+}
+
+/* ─── Workflow Status Panel ─── */
 
 function WorkflowStatusPanel({
   activeSignals,
@@ -266,32 +435,31 @@ function WorkflowStatusPanel({
   onOpenWorkflow: (workflowId: string, executionId?: string, approvalId?: string) => void
 }) {
   return (
-    <div className="cartoon-card p-4">
+    <div className="glass-card-static p-5">
       <div className="mb-4 flex items-center justify-between gap-3">
-        <div>
-          <h2 className="flex items-center gap-2 text-sm font-bold text-white">
-            <Waypoints className="h-4 w-4 text-cyber-purple" />
-            工作流状态
-          </h2>
-          <p className="mt-1 text-[10px] text-white/35">首页直接查看进行中、待审批和已启用的定时任务。</p>
-        </div>
+        <h2 className="section-title">
+          <Waypoints className="h-4 w-4 text-cyber-purple" />
+          工作流状态
+        </h2>
         <button
           type="button"
           onClick={onOpenWorkflows}
-          className="flex cursor-pointer items-center gap-1 text-[10px] text-white/25 transition-colors hover:text-white/55"
+          className="flex cursor-pointer items-center gap-1 text-[11px] text-white/25 transition-colors hover:text-white/50"
         >
           打开 DAG <ArrowRight className="h-3 w-3" />
         </button>
       </div>
 
-      <div className="space-y-3">
+      <div className="space-y-4">
         <div>
           <div className="mb-2 flex items-center justify-between">
-            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/30">运行中</p>
-            <span className="text-[10px] text-white/25">{activeSignalCount}</span>
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-white/25">运行中</p>
+            <span className="text-[10px] text-white/20">{activeSignalCount}</span>
           </div>
           {activeSignals.length === 0 ? (
-            <div className="rounded-xl border border-white/6 bg-white/[0.03] px-3 py-4 text-[10px] text-white/30">当前没有运行中的工作流。</div>
+            <div className="rounded-xl border border-white/[0.04] bg-white/[0.02] px-3 py-4 text-center text-[11px] text-white/25">
+              当前没有运行中的工作流
+            </div>
           ) : (
             <div className="space-y-2">
               {activeSignals.map((signal) => (
@@ -313,11 +481,13 @@ function WorkflowStatusPanel({
 
         <div>
           <div className="mb-2 flex items-center justify-between">
-            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/30">已启用定时</p>
-            <span className="text-[10px] text-white/25">{scheduledWorkflowCount}</span>
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-white/25">已启用定时</p>
+            <span className="text-[10px] text-white/20">{scheduledWorkflowCount}</span>
           </div>
           {scheduledWorkflows.length === 0 ? (
-            <div className="rounded-xl border border-white/6 bg-white/[0.03] px-3 py-4 text-[10px] text-white/30">没有启用中的定时任务。</div>
+            <div className="rounded-xl border border-white/[0.04] bg-white/[0.02] px-3 py-4 text-center text-[11px] text-white/25">
+              没有启用中的定时任务
+            </div>
           ) : (
             <div className="space-y-2">
               {scheduledWorkflows.map((workflow) => (
@@ -330,6 +500,7 @@ function WorkflowStatusPanel({
     </div>
   )
 }
+
 function WorkflowSignalCard({ signal, onClick }: { signal: WorkflowRuntimeSignal; onClick: () => void }) {
   const toneClass =
     signal.status === 'waiting_approval'
@@ -353,21 +524,24 @@ function WorkflowSignalCard({ signal, onClick }: { signal: WorkflowRuntimeSignal
     <button
       type="button"
       onClick={onClick}
-      className="w-full rounded-xl border border-white/6 bg-white/[0.03] p-3 text-left transition hover:border-white/12 hover:bg-white/[0.05]"
+      className="w-full rounded-xl border border-white/[0.04] bg-white/[0.02] p-3 text-left transition hover:border-white/[0.08] hover:bg-white/[0.04]"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className={cn('rounded-md border px-2 py-0.5 text-[9px] font-bold uppercase', toneClass)}>{signal.status}</span>
-            <p className="truncate text-sm font-medium text-white/85">{title}</p>
+            <span className={cn('rounded-md border px-2 py-0.5 text-[9px] font-bold uppercase', toneClass)}>
+              {signal.status}
+            </span>
+            <p className="truncate text-sm font-medium text-white/80">{title}</p>
           </div>
-          <p className="mt-1 line-clamp-2 text-[10px] text-white/35">{summary || '运行中，但当前还没有更多上下文。'}</p>
+          <p className="mt-1 line-clamp-2 text-[11px] text-white/30">{summary || '运行中'}</p>
         </div>
-        <span className="text-[9px] text-white/20">{timeAgo(signal.updatedAt ?? new Date().toISOString())}</span>
+        <span className="text-[10px] text-white/15">{timeAgo(signal.updatedAt ?? new Date().toISOString())}</span>
       </div>
     </button>
   )
 }
+
 function ScheduledWorkflowCard({ workflow, onClick }: { workflow: WorkflowDefinition; onClick: () => void }) {
   const nextRunAt = workflow.schedule?.nextRunAt
   const windowLabel = workflow.schedule?.window
@@ -378,7 +552,7 @@ function ScheduledWorkflowCard({ workflow, onClick }: { workflow: WorkflowDefini
     <button
       type="button"
       onClick={onClick}
-      className="w-full rounded-xl border border-white/6 bg-white/[0.03] p-3 text-left transition hover:border-white/12 hover:bg-white/[0.05]"
+      className="w-full rounded-xl border border-white/[0.04] bg-white/[0.02] p-3 text-left transition hover:border-white/[0.08] hover:bg-white/[0.04]"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
@@ -386,20 +560,23 @@ function ScheduledWorkflowCard({ workflow, onClick }: { workflow: WorkflowDefini
             <span className="rounded-md border border-cyber-cyan/20 bg-cyber-cyan/10 px-2 py-0.5 text-[9px] font-bold uppercase text-cyber-cyan">
               定时
             </span>
-            <p className="truncate text-sm font-medium text-white/85">{workflow.name}</p>
+            <p className="truncate text-sm font-medium text-white/80">{workflow.name}</p>
           </div>
-          <p className="mt-1 line-clamp-2 text-[10px] text-white/35">
+          <p className="mt-1 line-clamp-2 text-[11px] text-white/30">
             {nextRunAt
               ? `下次执行 ${new Date(nextRunAt).toLocaleString()}`
-              : `当前暂无可执行时间 · Cron: ${workflow.schedule?.cron ?? '未配置'}`}
+              : `Cron: ${workflow.schedule?.cron ?? '未配置'}`}
             {windowLabel ? ` · 时间窗 ${windowLabel}` : ''}
           </p>
         </div>
-        <Clock3 className="mt-0.5 h-4 w-4 flex-shrink-0 text-cyber-cyan/70" />
+        <Clock3 className="mt-0.5 h-4 w-4 flex-shrink-0 text-cyber-cyan/50" />
       </div>
     </button>
   )
 }
+
+/* ─── Live Feed Panel ─── */
+
 function LiveFeedPanel({
   items,
   gatewayConnected,
@@ -420,49 +597,51 @@ function LiveFeedPanel({
       : 'RPC 离线 / 进程未运行'
 
   return (
-    <div>
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="flex items-center gap-2 text-sm font-bold text-white">
+    <div className="glass-card-static p-5">
+      <div className="mb-4 flex items-center justify-between">
+        <h2 className="section-title">
           <Zap className="h-4 w-4 text-cyber-amber" />
           实时事件流
         </h2>
         <button
           type="button"
           onClick={onOpenChat}
-          className="flex cursor-pointer items-center gap-1 text-[10px] text-white/25 transition-colors hover:text-white/55"
+          className="flex cursor-pointer items-center gap-1 text-[11px] text-white/25 transition-colors hover:text-white/50"
         >
           通信频道 <ArrowRight className="h-3 w-3" />
         </button>
       </div>
-      <div className="cartoon-card max-h-[320px] overflow-y-auto p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <span className="text-[10px] text-white/35">消息 / 工作流 / 通知统一流</span>
-          <span
-            className={cn(
-              'rounded-md border px-2 py-0.5 text-[9px] font-bold',
-              gatewayConnected ? 'border-cyber-green/20 bg-cyber-green/10 text-cyber-green' : 'border-cyber-red/20 bg-cyber-red/10 text-cyber-red',
-            )}
-          >
-            {gatewayLabel}
-          </span>
-        </div>
 
-        {items.length === 0 ? (
-          <EmptyState scene="no-events" className="py-6" />
-        ) : (
-          <div className="space-y-2">
-            {items.map((item) => (
-              <LiveFeedRow key={item.id} item={item} />
-            ))}
-          </div>
-        )}
+      <div className="mb-3 flex items-center justify-between">
+        <span className="text-[11px] text-white/25">消息 / 工作流 / 通知统一流</span>
+        <span
+          className={cn(
+            'rounded-md border px-2 py-0.5 text-[9px] font-bold',
+            gatewayConnected
+              ? 'border-cyber-green/20 bg-cyber-green/10 text-cyber-green'
+              : 'border-cyber-red/20 bg-cyber-red/10 text-cyber-red',
+          )}
+        >
+          {gatewayLabel}
+        </span>
       </div>
+
+      {items.length === 0 ? (
+        <EmptyState scene="no-events" className="py-6" />
+      ) : (
+        <div className="max-h-[320px] space-y-2 overflow-y-auto">
+          {items.map((item) => (
+            <LiveFeedRow key={item.id} item={item} />
+          ))}
+        </div>
+      )}
     </div>
   )
 }
+
 function LiveFeedRow({ item }: { item: LiveFeedItem }) {
   return (
-    <article className="rounded-xl border border-white/6 bg-white/[0.03] p-3 transition-colors hover:bg-white/[0.05]">
+    <article className="rounded-xl border border-white/[0.04] bg-white/[0.02] p-3 transition-colors hover:bg-white/[0.04]">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
@@ -475,73 +654,12 @@ function LiveFeedRow({ item }: { item: LiveFeedItem }) {
                     ? 'ALERT'
                     : 'MSG'}
             </span>
-            <p className="truncate text-sm font-medium text-white/85">{item.title}</p>
+            <p className="truncate text-sm font-medium text-white/80">{item.title}</p>
           </div>
-          <p className="mt-1 line-clamp-2 text-[10px] text-white/35">{item.summary}</p>
+          <p className="mt-1 line-clamp-2 text-[11px] text-white/30">{item.summary}</p>
         </div>
-        <span className="text-[9px] text-white/20">{timeAgo(item.timestamp)}</span>
+        <span className="text-[10px] text-white/15">{timeAgo(item.timestamp)}</span>
       </div>
     </article>
-  )
-}
-
-function TeamDoorRailCard({ team, onClick }: { team: TeamListItem; onClick: () => void }) {
-  const hasActivity = (team.activeTaskCount ?? 0) > 0
-
-  return (
-    <button
-      onClick={onClick}
-      className={cn(
-        'group flex h-[72px] w-[216px] flex-none items-center gap-3 overflow-hidden rounded-xl border border-white/6 bg-white/[0.03] p-4 text-left transition-[width,transform,background-color,border-color] duration-200 hover:w-[280px] hover:translate-y-[-1px] hover:bg-white/[0.05]',
-        hasActivity && 'border-cyber-amber/20'
-      )}
-    >
-      <div
-        className={cn(
-          'flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl border border-white/5 transition-colors',
-          hasActivity ? 'bg-cyber-amber/10' : 'bg-white/5'
-        )}
-      >
-        <Building2 className={cn('h-4 w-4 transition-colors', hasActivity ? 'text-cyber-amber' : 'text-cyber-lavender/60')} />
-      </div>
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium text-white/80 transition-colors group-hover:text-white">{team.name}</p>
-        <p className="mt-1 text-[10px] text-white/20">{team.memberCount} 成员</p>
-      </div>
-      <div className="flex items-center gap-2">
-        {hasActivity ? (
-          <span className="rounded-md border border-cyber-amber/20 bg-cyber-amber/10 px-1.5 py-0.5 text-[9px] text-cyber-amber">
-            {team.activeTaskCount}
-          </span>
-        ) : null}
-        <ArrowRight className="h-3 w-3 text-white/10 transition-colors group-hover:text-white/30" />
-      </div>
-    </button>
-  )
-}
-function EventTimelineItem({ event }: { event: CommunicationEvent }) {
-  const typeColors: Record<string, string> = {
-    message: 'bg-cyber-blue',
-    task_assign: 'bg-cyber-amber',
-    task_complete: 'bg-cyber-green',
-    error: 'bg-cyber-red',
-  }
-  const dotColor = typeColors[event.eventType ?? event.type] || 'bg-white/30'
-
-  return (
-    <div className="animate-slide-in flex items-start gap-3 pl-1">
-      <div className={cn('mt-1 h-[9px] w-[9px] flex-shrink-0 rounded-full ring-2 ring-cyber-bg', dotColor)} />
-      <div className="mt-[-2px] min-w-0 flex-1">
-        <div className="flex items-center gap-1.5 text-[10px]">
-          <span className="font-medium text-white/50">{event.fromAgentId}</span>
-          <span className="text-white/15">→</span>
-          <span className="text-white/40">{event.toAgentId}</span>
-        </div>
-        <p className="mt-0.5 truncate text-[10px] text-white/20">{event.message ?? event.content}</p>
-      </div>
-      <span className="mt-0.5 flex-shrink-0 text-[9px] text-white/10">
-        {new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-      </span>
-    </div>
   )
 }

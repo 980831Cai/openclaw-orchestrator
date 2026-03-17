@@ -89,7 +89,7 @@ class LiveFeedServiceTests(unittest.TestCase):
             "openclaw_orchestrator.services.workflow_engine.workflow_engine.list_workflows",
             return_value=scheduled_workflows,
         ) as workflow_list_mock, patch(
-            "openclaw_orchestrator.services.workflow_scheduler.workflow_scheduler.get_next_run_at",
+            "openclaw_orchestrator.services.live_feed_service.workflow_scheduler.get_next_run_at",
             return_value="2026-03-12T10:05:00Z",
         ) as next_run_mock, patch(
             "openclaw_orchestrator.services.notification_service.notification_service.get_notifications",
